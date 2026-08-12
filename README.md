@@ -2,7 +2,7 @@
   <strong>English</strong> · <a href="README_zh.md">中文</a>
 </p>
 
-<h1 align="center">where paper go</h1>
+<h1 align="center">Where Papers Go</h1>
 
 <p align="center">
   <strong>Quality-first venue discovery for clear and fuzzy research topics</strong><br>
@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-%E2%89%A53.10-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10 or newer"></a>
-  <a href="https://github.com/rudykon/where_paper_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_paper_go/tests.yml?branch=main&style=flat-square&label=tests" alt="Test status"></a>
+  <a href="https://github.com/rudykon/where_papers_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_papers_go/tests.yml?branch=main&style=flat-square&label=tests" alt="Test status"></a>
   <a href="#retrieval-pipeline"><img src="https://img.shields.io/badge/Retrieval-LightRAG%20%2B%20Vector-4C4E8A?style=flat-square" alt="LightRAG and vector retrieval"></a>
   <a href="#data-coverage"><img src="https://img.shields.io/badge/Source%20records-45%2C207-918DAB?style=flat-square" alt="45,207 source records"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-FB7C1C?style=flat-square" alt="Apache License 2.0"></a>
@@ -28,12 +28,12 @@
 </p>
 
 > [!IMPORTANT]
-> **where paper go is a venue-discovery assistant, not an acceptance predictor.** Rankings express topic fit within the available data. Always verify the latest aims and scope, Call for Papers, deadlines, and submission rules on the official venue website.
+> **Where Papers Go is a venue-discovery assistant, not an acceptance predictor.** Rankings express topic fit within the available data. Always verify the latest aims and scope, Call for Papers, deadlines, and submission rules on the official venue website.
 
 <a id="overview"></a>
 ## Overview
 
-where paper go turns a paper title, abstract, keyword set, or early research idea into a ranked list of conferences and journals. It is designed for both precise technical descriptions and fuzzy, cross-domain expressions that keyword dictionaries alone cannot cover.
+Where Papers Go turns a paper title, abstract, keyword set, or early research idea into a ranked list of conferences and journals. It is designed for both precise technical descriptions and fuzzy, cross-domain expressions that keyword dictionaries alone cannot cover.
 
 | Goal | Approach | Output |
 | --- | --- | --- |
@@ -113,8 +113,8 @@ See [retrieval architecture](docs/retrieval-architecture.md) for scoring, failur
 ### 1. Install
 
 ```bash
-git clone https://github.com/rudykon/where_paper_go.git
-cd where_paper_go
+git clone https://github.com/rudykon/where_papers_go.git
+cd where_papers_go
 
 python3 -m venv .venv
 source .venv/bin/activate

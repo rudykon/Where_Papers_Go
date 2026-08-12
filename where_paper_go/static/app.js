@@ -7,7 +7,7 @@
 
   const messages = {
     zh: {
-      document_title: "where paper go · 投稿目标推荐",
+      document_title: "Where Papers Go · 投稿目标推荐",
       skip_to_search: "跳到主题检索",
       main_navigation: "主导航",
       brand_caption: "智能选刊",
@@ -89,7 +89,7 @@
       health_vector_initial: "向量索引",
       health_graph_index: "图谱索引",
       health_api_config: "接口配置",
-      footer: "where paper go · 投稿前请以官网最新信息为准",
+      footer: "Where Papers Go · 投稿前请以官网最新信息为准",
       close_details: "关闭详情",
       request_failed: "请求失败（{status}）",
       system_status_aria: "系统状态：{label}",
@@ -177,7 +177,7 @@
       field_name: "名称匹配",
     },
     en: {
-      document_title: "where paper go · Venue Finder",
+      document_title: "Where Papers Go · Venue Finder",
       skip_to_search: "Skip to topic search",
       main_navigation: "Main navigation",
       brand_caption: "Venue finder",
@@ -259,7 +259,7 @@
       health_vector_initial: "Vector index",
       health_graph_index: "Graph index",
       health_api_config: "API configuration",
-      footer: "where paper go · Verify the latest details on the official venue site before submitting",
+      footer: "Where Papers Go · Verify the latest details on the official venue site before submitting",
       close_details: "Close details",
       request_failed: "Request failed ({status})",
       system_status_aria: "System status: {label}",
