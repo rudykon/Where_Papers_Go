@@ -232,39 +232,12 @@ a {
 }
 
 .brand-mark {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 3px;
-  width: 44px;
-  height: 44px;
-  padding: 9px 8px;
-  border-radius: 15px;
-  color: var(--md-on-primary);
-  background: linear-gradient(145deg, #4c4e8a 0%, #7a78a0 62%, #bfb7c1 118%);
-  box-shadow: var(--shadow-2);
-  transform: rotate(-3deg);
-}
-
-.brand-mark span {
   display: block;
-  width: 5px;
-  border-radius: var(--radius-pill);
-  background: currentColor;
-}
-
-.brand-mark span:nth-child(1) {
-  height: 10px;
-  opacity: .58;
-}
-
-.brand-mark span:nth-child(2) {
-  height: 17px;
-  opacity: .82;
-}
-
-.brand-mark span:nth-child(3) {
-  height: 23px;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 5px 8px rgba(76, 78, 138, .20));
 }
 
 .brand-name {
