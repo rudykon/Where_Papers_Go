@@ -41,6 +41,7 @@ data/lightrag_storage.backup-*/
 data/.lightrag_storage.building-*/
 data/*.cleanup-bak
 
-# Locally collected research PDFs are not runtime data.
+# Local research papers and topic folders are not repository data.
 paper/
-papers/**/论文PDF/
+papers/*
+!papers/README.md

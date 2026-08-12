@@ -206,6 +206,11 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
             ),
             patch.object(
                 venue_embeddings,
+                "load_embedding_config",
+                return_value=object(),
+            ),
+            patch.object(
+                venue_embeddings,
                 "embed_query_graph",
                 side_effect=embed_concurrently,
             ),

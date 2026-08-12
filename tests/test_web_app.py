@@ -12,8 +12,27 @@ from where_paper_go import web_app
 
 class WebAppTests(TestCase):
     def test_health_reports_built_runtime_without_secrets(self) -> None:
-        payload = web_app._health_payload()
-        self.assertIn(payload["status"], {"ready", "incomplete"})
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "venue_graph.json.gz").touch()
+            (data_dir / "venue_graph_vectors.json.gz").touch()
+            lightrag_dir = data_dir / "lightrag_storage"
+            lightrag_dir.mkdir()
+            (lightrag_dir / "venue_import_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "query_mode": "mix",
+                        "embedding_model": "bge-m3",
+                        "embedding_dimensions": 1024,
+                        "counts": {"venues": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(web_app, "DATA_DIR", data_dir):
+                payload = web_app._health_payload()
+
+        self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["lightrag"]["mode"], "mix")
         self.assertEqual(payload["lightrag"]["embedding_model"], "bge-m3")
         self.assertEqual(payload["lightrag"]["dimensions"], 1024)
