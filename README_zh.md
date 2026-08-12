@@ -2,6 +2,10 @@
   <a href="README.md">English</a> · <strong>中文</strong>
 </p>
 
+<p align="center">
+  <img src="where_paper_go/static/brand-mark.png" width="180" alt="Where Papers Go 项目标志">
+</p>
+
 <h1 align="center">Where Papers Go</h1>
 
 <p align="center">
