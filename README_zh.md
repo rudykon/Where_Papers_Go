@@ -1,0 +1,210 @@
+<p align="center">
+  <a href="README.md">English</a> · <strong>中文</strong>
+</p>
+
+<h1 align="center">where paper go</h1>
+
+<p align="center">
+  <strong>面向明确主题与模糊研究想法的质量优先投稿目标检索</strong><br>
+  融合 LightRAG、精确向量召回、大模型推理与实时搜索证据的图谱推荐系统。
+</p>
+
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-%E2%89%A53.10-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10 或更高版本"></a>
+  <a href="https://github.com/rudykon/where_paper_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_paper_go/tests.yml?branch=main&style=flat-square&label=tests" alt="测试状态"></a>
+  <a href="#retrieval-pipeline"><img src="https://img.shields.io/badge/Retrieval-LightRAG%20%2B%20Vector-4C4E8A?style=flat-square" alt="LightRAG 与向量召回"></a>
+  <a href="#data-coverage"><img src="https://img.shields.io/badge/Source%20records-45%2C207-918DAB?style=flat-square" alt="45,207 条源记录"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-FB7C1C?style=flat-square" alt="Apache License 2.0"></a>
+</p>
+
+<p align="center">
+  <a href="#overview">项目概览</a> ·
+  <a href="#retrieval-pipeline">检索流水线</a> ·
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#data-coverage">数据覆盖</a> ·
+  <a href="#repository-map">项目结构</a> ·
+  <a href="#license">许可证</a>
+</p>
+
+> [!IMPORTANT]
+> **where paper go 是投稿目标发现工具，不是录用率预测器。** 排名仅表示候选在现有数据中的主题适配程度。投稿前仍需到会刊官网核对最新收稿范围、Call for Papers、截止日期和格式要求。
+
+<a id="overview"></a>
+## 项目概览
+
+where paper go 将论文题目、摘要、关键词或尚未定型的研究想法转换为会议与期刊推荐列表。系统同时面向明确的技术描述和跨学科、口语化的模糊表达，避免只靠关键词字典造成漏检。
+
+| 目标 | 实现方式 | 输出 |
+| --- | --- | --- |
+| 严格遵守投稿限制 | 按榜单、等级、会刊类型和研究方向硬过滤 | 只有符合范围的会刊进入召回 |
+| 覆盖多样主题表达 | LLM 意图解析 + 多语言向量 + LightRAG 图路径 | 对明确或模糊主题进行广泛召回 |
+| 推荐有事实依据 | Search API 证据 + 人工审核范围 + 已知会刊事实 | 输出带证据的真实候选，不由模型虚构会刊 |
+| 排名可以理解 | 多路融合、LLM 重排、前十结果解释 | 展示得分、概念命中、图路径和推荐理由 |
+
+核心行为：
+
+- 支持 CCF、TH-CPL、中科院和 JCR，多个目标等级之间是**或**关系。
+- 主题检索强制使用 **LightRAG + 精确向量召回 + LLM + Search API**，任一层失败时不会静默降级。
+- Search、向量和 LightRAG 并行执行，LLM 候选重排采用双并发批次。
+- 完整结果和 API 响应均可缓存；Web 端持续显示检索状态，并流式输出可用结果。
+- 在线查询使用可重建的文件化属性图谱，不需要 Neo4j 服务。
+
+<a id="retrieval-pipeline"></a>
+## 检索流水线
+
+```mermaid
+flowchart LR
+    Q[题目、摘要或想法] --> F[等级与方向硬过滤]
+    F --> I[LLM 意图解析]
+    I --> V[精确向量召回]
+    I --> G[LightRAG mix 召回]
+    I --> S[Search API 证据]
+    V --> M[候选融合]
+    G --> M
+    S --> M
+    M --> R[双并发 LLM 重排]
+    R --> O[流式推荐结果]
+    O --> E[前十结果解释]
+```
+
+文件化属性图保存会刊、等级、主题、审核范围、排除边界和证据之间的节点与关系。CSV/TSV 是可审计事实源；属性图、向量、LightRAG 库和查询缓存都是可重建产物，不进入 Git。
+
+评分、失败边界、缓存和存储设计详见[检索架构](docs/retrieval-architecture.md)。
+
+<a id="quick-start"></a>
+## 快速开始
+
+### 1. 安装
+
+```bash
+git clone https://github.com/rudykon/where_paper_go.git
+cd where_paper_go
+
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+```
+
+### 2. 配置必需的 API
+
+```bash
+cp api.example.json llmapi.json
+```
+
+编辑 `llmapi.json`，完整配置以下三节：
+
+| 配置节 | 用途 | 常见选择 |
+| --- | --- | --- |
+| `llm` | 理解查询、候选重排、生成解释 | OpenAI 兼容对话模型 |
+| `embedding` | 多语言语义向量 | bge-m3 或其他多语言向量模型 |
+| `search` | 获取最新收稿范围和 CFP 证据 | Tavily、Brave、Bing 或 SerpAPI |
+
+`llmapi.json` 已被 Git 忽略。请勿把真实密钥写入 `api.example.json`。
+
+### 3. 构建检索库
+
+```bash
+python3 -m scripts.prepare_retrieval --api-config llmapi.json
+```
+
+该命令会建立属性图、会刊精确向量和 LightRAG `mix` 知识库。首次构建需要一定时间，后续运行会复用索引与 embedding 缓存。
+
+### 4. 启动 Web 界面
+
+```bash
+where-paper-go-web --host 0.0.0.0 --port 8000
+```
+
+本机访问 `http://127.0.0.1:8000/`；通过 SSH 或局域网使用时访问 `http://<服务器IP>:8000/`。界面支持中英文切换、投稿范围组合筛选、常驻检索进度、流式结果和证据详情。
+
+<details>
+<summary><strong>命令行示例</strong></summary>
+
+仅列出全部 CCF-A 投稿目标，不运行 API 增强主题检索：
+
+```bash
+where-paper-go --target CCF-A --all
+```
+
+根据模糊研究描述推荐投稿目标：
+
+```bash
+where-paper-go \
+  --target 'CCF-A或者THCPL-A或者中科院1区' \
+  --query '跨模态、跨标签粒度，统一处理缺失标签、不确定性、标签冲突、层级关系和多任务监督的通用异构监督学习框架' \
+  --api-config llmapi.json \
+  --limit 20
+```
+
+在医学方向检索 JCR Q1–Q4 期刊：
+
+```bash
+where-paper-go \
+  --target 'JCR-Q1,JCR-Q2,JCR-Q3,JCR-Q4' \
+  --record-type journal \
+  --area 医学 \
+  --query-file abstract.txt \
+  --api-config llmapi.json
+```
+
+可通过 `--format json` 和 `--format csv` 获取机器可读输出。运行 `where-paper-go --help` 查看全部参数。
+
+</details>
+
+<a id="data-coverage"></a>
+## 数据覆盖
+
+| 榜单来源 | 版本 | 记录数 | 类型 | 等级 |
+| --- | ---: | ---: | --- | --- |
+| CCF | 2026 | 386 | 会议 | A / B / C |
+| TH-CPL | 2019 | 406 | 会议与期刊 | A / B |
+| 中科院期刊分区 | 2025 | 21,772 | 期刊 | 1 / 2 / 3 / 4 区 |
+| JCR | 2025 | 22,643 | 期刊 | Q1 / Q2 / Q3 / Q4 / N/A |
+
+细粒度审核范围已覆盖全部 58 个 CCF-A 会议、117 个 TH-CPL-A 投稿目标和 53 个中科院 1 区计算机科学大类期刊。跨榜单重复会刊复用同一条审核范围，因此这些数量不能直接相加为唯一实体数。
+
+数据来源与校验规则见 [`data/README.md`](data/README.md)。榜单名称、第三方数据和来源描述仍遵循各自的使用条款。
+
+<a id="validation"></a>
+## 验证
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+python3 -m scripts.benchmark_retrieval
+```
+
+测试覆盖等级表达式、源记录数量、实体合并、图谱完整性、模糊图路径、精确语义召回、LightRAG 引用、API 约束、流式输出、缓存和代表性主题排序。
+
+<a id="repository-map"></a>
+## 项目结构
+
+| 路径 | 用途 |
+| --- | --- |
+| `where_paper_go/` | 检索、图谱、LLM/Search 集成、Web 服务和前端 |
+| `scripts/` | 图谱/LightRAG 建库、补全、迁移和性能基准 |
+| `tests/` | 单元、集成和检索效果测试 |
+| `data/` | 可审计榜单与人工审核范围源数据 |
+| `docs/` | 架构、前端、数据补全和旧索引说明 |
+| `papers/` | 研究论文元数据；PDF 不进入版本控制 |
+| `api.example.json` | 不含真实密钥的 API 配置模板 |
+
+常用文档：
+
+- [检索架构](docs/retrieval-architecture.md)
+- [Web 前端与部署](docs/web-frontend.md)
+- [收稿范围补全流程](docs/enrichment.md)
+- [旧 SQLite 迁移说明](docs/legacy-sqlite-index.md)
+
+<a id="security"></a>
+## 安全与隐私
+
+- `llmapi.json`、`api.json`、`github_token.json`、`.env*`、生成索引、缓存和本地 PDF 均被 `.gitignore` 排除。
+- 主题查询、候选名称和部分收稿范围会发送给所配置的 LLM、embedding 与搜索服务商。
+- 提交未公开摘要前，请先检查服务商的数据留存和模型训练政策。
+- 搜索文本仅作为不可信证据；LLM 无权创建会刊实体或修改榜单事实。
+
+<a id="license"></a>
+## 许可证
+
+本仓库自行编写的源代码采用 [Apache License 2.0](LICENSE)。数据文件、榜单名称、论文、生成产物和第三方依赖可能适用其他条款。
