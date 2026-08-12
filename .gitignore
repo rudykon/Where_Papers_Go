@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.idea/
+.vscode/
+*.log
+.env
+.env.*
+!.env.example
+
+# Local API credentials.
+api.json
+llmapi.json
+github_token.json
+
+# Rebuildable enrichment and search artifacts.
+data/.aims_scope_cache/
+data/.query_api_cache/
+data/_backups/
+data/venue_index.sqlite3
+data/venue_index.sqlite3-*
+data/.embedding_cache.sqlite3
+data/.embedding_cache.sqlite3-*
+data/venue_graph.json.gz
+data/venue_graph_vectors.json.gz
+data/.embedding_cache.json.gz
+data/.query_embedding_cache.json.gz
+data/lightrag_custom_kg.json
+data/lightrag_storage/
+data/lightrag_storage.backup-*/
+data/.lightrag_storage.building-*/
+data/*.cleanup-bak
+
+# Locally collected research PDFs are not runtime data.
+paper/
+papers/**/论文PDF/

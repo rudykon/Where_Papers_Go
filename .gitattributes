@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+*.gz binary
+*.pdf binary
+*.sqlite3 binary
+
