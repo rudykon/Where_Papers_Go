@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#overview">项目概览</a> ·
+  <a href="#product-tour">功能展示</a> ·
   <a href="#retrieval-pipeline">检索流水线</a> ·
   <a href="#quick-start">快速开始</a> ·
   <a href="#data-coverage">数据覆盖</a> ·
@@ -48,6 +49,41 @@ where paper go 将论文题目、摘要、关键词或尚未定型的研究想�
 - Search、向量和 LightRAG 并行执行，LLM 候选重排采用双并发批次。
 - 完整结果和 API 响应均可缓存；Web 端持续显示检索状态，并流式输出可用结果。
 - 在线查询使用可重建的文件化属性图谱，不需要 Neo4j 服务。
+
+<a id="product-tour"></a>
+## 功能展示与使用步骤
+
+Web 界面把主题描述、投稿范围、推荐结果和证据核验集中在一个响应式工作区中。
+
+| 自然语言检索 | 全程可见进度 | 可核验推荐依据 |
+| --- | --- | --- |
+| 用明确或模糊表达描述论文，并组合投稿限制。 | 页面滚动到任意位置，底部检索进度仍保持可见。 | 打开任一结果，查看收稿边界、召回信号和外部证据。 |
+
+### 1. 描述研究并限定投稿范围
+
+输入论文题目、摘要或研究想法；需要限制等级、会刊类型、研究分类或返回数量时，再展开“投稿范围”。
+
+<p align="center">
+  <img src="docs/screenshots/01-search-and-filters-zh.png" alt="中文检索页：输入分布式 GPU 研究主题并展开投稿范围筛选" width="94%">
+</p>
+
+### 2. 边检索边查看推荐结果
+
+推荐结果会陆续进入页面；无论滚动到哪里，底部进度条都会显示 LLM 意图理解、向量召回、LightRAG 和 Search API 的状态。
+
+<p align="center">
+  <img src="docs/screenshots/02-ranked-results-zh.png" alt="中文推荐结果页与常驻显示的四阶段检索进度" width="94%">
+</p>
+
+### 3. 核对收稿范围与证据
+
+点击“查看收稿范围”，对照覆盖主题、明确排除方向、参与排序的检索信号和外部或官方证据，再决定是否投稿。
+
+<p align="center">
+  <img src="docs/screenshots/03-venue-details-zh.png" alt="中文会刊详情抽屉：展示覆盖主题、排除方向、检索信号与外部证据" width="94%">
+</p>
+
+<p align="center"><sub>截图来自当前运行系统的缓存示例查询；源数据和 API 更新后，推荐顺序与证据可能变化。</sub></p>
 
 <a id="retrieval-pipeline"></a>
 ## 检索流水线
@@ -185,7 +221,7 @@ python3 -m scripts.benchmark_retrieval
 | `scripts/` | 图谱/LightRAG 建库、补全、迁移和性能基准 |
 | `tests/` | 单元、集成和检索效果测试 |
 | `data/` | 可审计榜单与人工审核范围源数据 |
-| `docs/` | 架构、前端、数据补全和旧索引说明 |
+| `docs/` | 架构、前端、数据补全、旧索引说明和产品截图 |
 | `papers/` | 研究论文元数据；PDF 不进入版本控制 |
 | `api.example.json` | 不含真实密钥的 API 配置模板 |
 
