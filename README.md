@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#overview">Overview</a> ·
+  <a href="#product-tour">Product Tour</a> ·
   <a href="#retrieval-pipeline">Pipeline</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#data-coverage">Data</a> ·
@@ -48,6 +49,41 @@ Key product behavior:
 - Search, vector, and LightRAG work are parallelized; LLM reranking uses two concurrent batches.
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
+
+<a id="product-tour"></a>
+## Product tour and workflow
+
+The web interface keeps querying, scope controls, ranked recommendations, and evidence review in one responsive workspace.
+
+| Search broadly | Follow every stage | Verify the recommendation |
+| --- | --- | --- |
+| Describe a paper in natural language and combine venue constraints. | A persistent progress dock stays visible while scrolling. | Open any result to inspect scope boundaries, retrieval signals, and external evidence. |
+
+### 1. Describe the work and set the scope
+
+Enter a title, abstract, or research idea, then expand **Submission scope** only when you need to restrict tiers, venue type, area, or result count.
+
+<p align="center">
+  <img src="docs/screenshots/01-search-and-filters-en.png" alt="English search page with a distributed GPU research query and expanded submission filters" width="94%">
+</p>
+
+### 2. Review ranked results as retrieval completes
+
+Recommendations stream into the page while the bottom dock reports LLM intent parsing, vector recall, LightRAG, and Search API progress from any scroll position.
+
+<p align="center">
+  <img src="docs/screenshots/02-ranked-results-en.png" alt="Ranked conference results with the persistent four-stage retrieval progress dock" width="94%">
+</p>
+
+### 3. Inspect scope and evidence
+
+Open **View scope** to compare covered topics, explicit exclusions, contributing retrieval signals, and external or official evidence before submitting.
+
+<p align="center">
+  <img src="docs/screenshots/03-venue-details-en.png" alt="Venue detail drawer showing scope topics, exclusions, retrieval signals, and external evidence" width="94%">
+</p>
+
+<p align="center"><sub>Screenshots use a cached example query from the running application. Rankings and evidence may change as source data and APIs are updated.</sub></p>
 
 <a id="retrieval-pipeline"></a>
 ## Retrieval pipeline
@@ -185,7 +221,7 @@ The test suite covers target expressions, source counts, entity merging, graph i
 | `scripts/` | Graph/LightRAG builds, enrichment, migration, and benchmarks |
 | `tests/` | Unit, integration, and retrieval-quality tests |
 | `data/` | Auditable ranking and reviewed-scope source data |
-| `docs/` | Architecture, frontend, enrichment, and legacy-index notes |
+| `docs/` | Architecture, frontend, enrichment, legacy-index notes, and product screenshots |
 | `papers/` | Research-paper metadata; PDF files are not version controlled |
 | `api.example.json` | Credential-free API configuration template |
 
