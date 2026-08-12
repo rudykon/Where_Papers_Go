@@ -737,7 +737,7 @@ class VenueHandler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="where paper go venue recommendation web app")
+    parser = argparse.ArgumentParser(description="Where Papers Go venue recommendation web app")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
@@ -750,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         server.server_close()
         parser.error(str(exc))
     print(
-        f"where paper go running at http://{args.host}:{args.port} "
+        f"Where Papers Go running at http://{args.host}:{args.port} "
         f"(retrieval preload {_SEARCH_RUNTIME.preload_ms} ms)",
         flush=True,
     )

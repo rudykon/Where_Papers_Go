@@ -2,7 +2,7 @@
   <a href="README.md">English</a> · <strong>中文</strong>
 </p>
 
-<h1 align="center">where paper go</h1>
+<h1 align="center">Where Papers Go</h1>
 
 <p align="center">
   <strong>面向明确主题与模糊研究想法的质量优先投稿目标检索</strong><br>
@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-%E2%89%A53.10-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10 或更高版本"></a>
-  <a href="https://github.com/rudykon/where_paper_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_paper_go/tests.yml?branch=main&style=flat-square&label=tests" alt="测试状态"></a>
+  <a href="https://github.com/rudykon/where_papers_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_papers_go/tests.yml?branch=main&style=flat-square&label=tests" alt="测试状态"></a>
   <a href="#retrieval-pipeline"><img src="https://img.shields.io/badge/Retrieval-LightRAG%20%2B%20Vector-4C4E8A?style=flat-square" alt="LightRAG 与向量召回"></a>
   <a href="#data-coverage"><img src="https://img.shields.io/badge/Source%20records-45%2C207-918DAB?style=flat-square" alt="45,207 条源记录"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-FB7C1C?style=flat-square" alt="Apache License 2.0"></a>
@@ -28,12 +28,12 @@
 </p>
 
 > [!IMPORTANT]
-> **where paper go 是投稿目标发现工具，不是录用率预测器。** 排名仅表示候选在现有数据中的主题适配程度。投稿前仍需到会刊官网核对最新收稿范围、Call for Papers、截止日期和格式要求。
+> **Where Papers Go 是投稿目标发现工具，不是录用率预测器。** 排名仅表示候选在现有数据中的主题适配程度。投稿前仍需到会刊官网核对最新收稿范围、Call for Papers、截止日期和格式要求。
 
 <a id="overview"></a>
 ## 项目概览
 
-where paper go 将论文题目、摘要、关键词或尚未定型的研究想法转换为会议与期刊推荐列表。系统同时面向明确的技术描述和跨学科、口语化的模糊表达，避免只靠关键词字典造成漏检。
+Where Papers Go 将论文题目、摘要、关键词或尚未定型的研究想法转换为会议与期刊推荐列表。系统同时面向明确的技术描述和跨学科、口语化的模糊表达，避免只靠关键词字典造成漏检。
 
 | 目标 | 实现方式 | 输出 |
 | --- | --- | --- |
@@ -113,8 +113,8 @@ flowchart LR
 ### 1. 安装
 
 ```bash
-git clone https://github.com/rudykon/where_paper_go.git
-cd where_paper_go
+git clone https://github.com/rudykon/where_papers_go.git
+cd where_papers_go
 
 python3 -m venv .venv
 source .venv/bin/activate

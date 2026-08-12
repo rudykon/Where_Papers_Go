@@ -1,4 +1,4 @@
-# where paper go Web 前端
+# Where Papers Go Web 前端
 
 本项目提供一个无需 Node.js、无需额外前端框架的同源 Web 工作台。浏览器只负责交互和展示，所有主题检索都由 `where_paper_go.recommender` 执行，因此前端不会绕过强制的 LightRAG、向量、LLM 或 Search API。界面采用 Material You（Material Design 3）视觉系统，前端换肤不会改变检索算法或 API 请求结构。
 
