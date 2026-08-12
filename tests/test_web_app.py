@@ -11,6 +11,19 @@ from where_paper_go import web_app
 
 
 class WebAppTests(TestCase):
+    def test_frontend_declares_brand_assets(self) -> None:
+        favicon_path = web_app.WEB_DIR / "favicon.png"
+        brand_path = web_app.WEB_DIR / "brand-mark.png"
+        html = (web_app.WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertTrue(favicon_path.is_file())
+        self.assertTrue(brand_path.is_file())
+        self.assertIn('rel="icon" href="/favicon.png"', html)
+        self.assertIn('class="brand-mark" src="/favicon.png"', html)
+        self.assertEqual(web_app.mimetypes.guess_type(favicon_path.name)[0], "image/png")
+        self.assertEqual(favicon_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(brand_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
     def test_health_reports_built_runtime_without_secrets(self) -> None:
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
