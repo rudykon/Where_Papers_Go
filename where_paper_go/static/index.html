@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#6750A4" />
+    <meta name="color-scheme" content="light" />
+    <title>where paper go · 投稿目标推荐</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&amp;display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#search-workbench" data-i18n="skip_to_search">跳到主题检索</a>
+    <div class="ambient-layer" aria-hidden="true">
+      <span class="ambient-shape ambient-shape-one"></span>
+      <span class="ambient-shape ambient-shape-two"></span>
+      <span class="ambient-shape ambient-shape-three"></span>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航" data-i18n-aria-label="main_navigation">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div>
+            <div class="brand-name">where paper go</div>
+            <div class="brand-caption" data-i18n="brand_caption">智能选刊</div>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <a class="nav-item active" href="#search-workbench" aria-label="前往主题检索" data-i18n-aria-label="nav_search_aria" aria-current="location">
+            <span class="nav-icon" aria-hidden="true">⌕</span><span data-i18n="nav_search">主题检索</span><span class="nav-dot" aria-hidden="true"></span>
+          </a>
+          <a class="nav-item" href="#result-area" aria-label="前往推荐结果" data-i18n-aria-label="nav_results_aria"><span class="nav-icon" aria-hidden="true">▦</span><span data-i18n="nav_results">推荐结果</span></a>
+          <a class="nav-item" href="#system-status" aria-label="前往系统状态" data-i18n-aria-label="nav_system_aria"><span class="nav-icon" aria-hidden="true">◌</span><span data-i18n="nav_system">系统状态</span></a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="sidebar-rule"></div>
+          <div class="mini-status"><span class="status-pulse loading"></span><span data-i18n="checking_pipeline">正在检查检索链路</span></div>
+          <div class="sidebar-note" data-i18n="four_way_retrieval">4 路联合检索</div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumb"><strong data-i18n="search">检索</strong></div>
+          <div class="topbar-actions">
+            <span class="live-badge loading" id="live-badge" aria-label="系统状态：正在检查">
+              <span class="status-pulse loading"></span>
+              <span id="live-badge-label">正在检查</span>
+              <span class="live-progress" aria-hidden="true">
+                <i data-live-step="llm"></i><i data-live-step="vector"></i><i data-live-step="graph"></i><i data-live-step="search"></i>
+              </span>
+            </span>
+            <button class="icon-button" id="refresh-health" type="button" title="刷新系统状态" aria-label="刷新系统状态" data-i18n-title="refresh_status" data-i18n-aria-label="refresh_status">↻</button>
+            <button class="language-button" id="language-toggle" type="button" title="Switch to English" aria-label="Switch to English"><span id="language-toggle-label" aria-hidden="true">EN</span></button>
+          </div>
+        </header>
+
+        <section class="hero" id="search-workbench" aria-labelledby="hero-title">
+          <div class="eyebrow"><span class="eyebrow-line"></span>WHERE PAPER GO</div>
+          <h1 id="hero-title" data-i18n-html="hero_title">你的论文，<br /><em>应该投哪里？</em></h1>
+
+          <form class="search-card" id="search-form">
+            <div class="query-field">
+              <div class="query-field-head">
+                <label for="query-input"><span data-i18n="query_label">论文主题</span> <small data-i18n="query_label_hint">题目、摘要或想法</small></label>
+                <div class="char-count" id="query-count"><span id="char-count">0</span> / 8,000</div>
+              </div>
+              <textarea id="query-input" name="query" rows="3" maxlength="8000" aria-describedby="query-count" required></textarea>
+            </div>
+            <div class="suggestion-row" aria-label="示例主题" data-i18n-aria-label="example_topics">
+              <button type="button" class="suggestion" data-query="面向大模型训练的分布式 GPU 通信与资源调度" data-query-zh="面向大模型训练的分布式 GPU 通信与资源调度" data-query-en="Distributed GPU communication and resource scheduling for large language model training" data-i18n="suggestion_distributed">分布式训练</button>
+              <button type="button" class="suggestion" data-query="让机器根据病历、影像和化验共同判断患者未来风险，并解释为什么" data-query-zh="让机器根据病历、影像和化验共同判断患者未来风险，并解释为什么" data-query-en="Explainable medical AI that predicts patient risk from records, images, and lab results" data-i18n="suggestion_medical">可解释医疗 AI</button>
+              <button type="button" class="suggestion" data-query="面向低轨卫星网络的动态路由和拥塞控制" data-query-zh="面向低轨卫星网络的动态路由和拥塞控制" data-query-en="Dynamic routing and congestion control for low-Earth-orbit satellite networks" data-i18n="suggestion_satellite">卫星网络</button>
+            </div>
+            <details class="scope-panel" id="scope-panel">
+              <summary>
+                <span class="scope-summary-icon" aria-hidden="true">⌗</span>
+                <span class="scope-summary-copy"><strong data-i18n="scope_compact_label">投稿范围</strong><small id="scope-summary">CCF-A · 会议 + 期刊 · 10 条</small></span>
+                <span class="scope-edit" data-i18n="scope_edit">调整</span>
+                <span class="scope-chevron" aria-hidden="true">⌄</span>
+              </summary>
+              <div class="scope-panel-body" aria-label="筛选条件" data-i18n-aria-label="filters_aria">
+                <div class="scope-panel-head"><strong data-i18n="scope_heading">限定投稿范围</strong><button class="text-button" type="button" id="reset-filters"><span data-i18n="reset_filters">重置筛选</span> <span aria-hidden="true">↺</span></button></div>
+                <div class="filter-grid">
+                  <div class="filter-block filter-targets">
+                    <div class="filter-label"><span data-i18n="target_rank">目标等级</span><small data-i18n="multi_select">可多选</small></div>
+                    <div class="target-list" id="target-list"><div class="skeleton target-skeleton"></div><div class="skeleton target-skeleton"></div><div class="skeleton target-skeleton"></div></div>
+                  </div>
+                  <div class="filter-block">
+                    <label class="filter-label" for="record-type" data-i18n="record_type">投稿类型</label>
+                    <div class="select-wrap"><select id="record-type"><option value="all" data-i18n="all_types">会议 + 期刊</option><option value="conference" data-i18n="conference">会议</option><option value="journal" data-i18n="journal">期刊</option></select><span aria-hidden="true">⌄</span></div>
+                  </div>
+                  <div class="filter-block">
+                    <label class="filter-label" for="area-select"><span data-i18n="research_area">研究分类</span> <small data-i18n="optional">可选</small></label>
+                    <div class="select-wrap"><select id="area-select"><option value="" data-i18n="all_areas">全部分类</option></select><span aria-hidden="true">⌄</span></div>
+                  </div>
+                  <div class="filter-block">
+                    <label class="filter-label" for="limit-input" data-i18n="result_limit">返回数量</label>
+                    <div class="number-wrap"><input id="limit-input" type="number" min="1" max="50" value="10" /><span data-i18n="items">条</span></div>
+                  </div>
+                </div>
+                <div class="advanced-row">
+                  <label class="check-control"><input id="reviewed-only" type="checkbox" /><span class="fake-check"></span><span data-i18n="reviewed_only">仅已审核范围</span></label>
+                  <label class="check-control"><input id="official-scope" type="checkbox" checked /><span class="fake-check"></span><span data-i18n="official_scope">补充官网范围</span></label>
+                  <div class="scope-input-wrap"><span class="scope-symbol" aria-hidden="true">⌗</span><label class="sr-only" for="scope-input" data-i18n="scope_input_aria">添加研究方向约束</label><input id="scope-input" type="text" placeholder="方向约束，如：无线网络" data-i18n-placeholder="scope_placeholder" /></div>
+                </div>
+              </div>
+            </details>
+            <div class="form-bottom">
+              <button class="primary-button" type="submit" id="search-button" aria-disabled="false"><span class="button-label" data-i18n="start_search">开始检索</span><span class="button-arrow" aria-hidden="true">→</span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="signal-section" id="signal-section" role="status" aria-live="polite" aria-atomic="false" aria-busy="false" hidden>
+          <div class="pipeline-dock-meta">
+            <span class="pipeline-dock-title" data-i18n="pipeline_heading">检索进度</span>
+            <span class="elapsed-label" id="elapsed-label" data-i18n="preparing">准备中</span>
+          </div>
+          <div class="pipeline" id="pipeline">
+            <div class="pipeline-step" data-step="llm"><span class="pipeline-icon" aria-hidden="true">✦</span><div><b data-i18n="pipeline_llm_title">LLM 意图理解</b><small data-i18n="step_llm_short">理解主题</small></div><span class="step-state" data-i18n="waiting">等待</span></div>
+            <div class="pipeline-line"></div>
+            <div class="pipeline-step" data-step="vector"><span class="pipeline-icon" aria-hidden="true">◎</span><div><b data-i18n="pipeline_vector_title">向量语义召回</b><small data-i18n="step_vector_short">语义召回</small></div><span class="step-state" data-i18n="waiting">等待</span></div>
+            <div class="pipeline-line"></div>
+            <div class="pipeline-step" data-step="graph"><span class="pipeline-icon" aria-hidden="true">⌘</span><div><b>LightRAG · mix</b><small data-i18n="step_graph_short">图谱关联</small></div><span class="step-state" data-i18n="waiting">等待</span></div>
+            <div class="pipeline-line"></div>
+            <div class="pipeline-step" data-step="search"><span class="pipeline-icon" aria-hidden="true">⌕</span><div><b data-i18n="pipeline_search_title">Search API + 重排</b><small data-i18n="step_search_short">证据重排</small></div><span class="step-state" data-i18n="waiting">等待</span></div>
+          </div>
+        </section>
+
+        <section class="results-section" id="result-area">
+          <div class="section-heading">
+            <div><span class="section-kicker">02 / RESULTS</span><h2 data-i18n="results_heading">推荐结果</h2></div>
+            <div class="result-actions"><span class="result-count" id="result-count" data-i18n="not_searched">尚未检索</span><button class="ghost-button" id="copy-summary" type="button" data-i18n="copy_summary" hidden>复制摘要</button></div>
+          </div>
+          <div class="result-summary" id="result-summary" hidden></div>
+          <div class="sr-only" id="result-announcement" role="status" aria-live="polite"></div>
+          <div class="results-layout">
+            <div class="result-list" id="result-list" aria-busy="false">
+              <div class="empty-state" id="empty-state"><div class="empty-orbit"><span></span><span></span><span></span></div><h3 data-i18n="empty_title">输入主题，开始推荐</h3></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="system-section" id="system-status">
+          <div class="section-heading compact-heading"><div><span class="section-kicker">03 / SYSTEM</span><h2 data-i18n="system_heading">系统状态</h2></div><div class="system-actions"><span class="index-count"><span data-i18n="index_label">索引</span> <b id="venue-count">—</b></span><button class="text-button" id="refresh-health-bottom" type="button"><span data-i18n="refresh">刷新</span> <span aria-hidden="true">↻</span></button></div></div>
+          <div class="status-grid" id="status-grid" aria-live="polite" aria-busy="true">
+            <div class="status-card loading"><div class="status-card-top"><span class="status-symbol" aria-hidden="true">◌</span><span class="status-card-state" data-i18n="checking">检查中</span></div><b data-i18n="health_graph_title">数据图谱</b><small data-i18n="health_graph_initial">投稿目标与等级</small></div>
+            <div class="status-card loading"><div class="status-card-top"><span class="status-symbol" aria-hidden="true">◎</span><span class="status-card-state" data-i18n="checking">检查中</span></div><b data-i18n="health_vector_title">语义向量</b><small data-i18n="health_vector_initial">向量索引</small></div>
+            <div class="status-card loading"><div class="status-card-top"><span class="status-symbol" aria-hidden="true">⌘</span><span class="status-card-state" data-i18n="checking">检查中</span></div><b>LightRAG</b><small data-i18n="health_graph_index">图谱索引</small></div>
+            <div class="status-card loading"><div class="status-card-top"><span class="status-symbol" aria-hidden="true">⌕</span><span class="status-card-state" data-i18n="checking">检查中</span></div><b>LLM / Search</b><small data-i18n="health_api_config">接口配置</small></div>
+          </div>
+        </section>
+
+        <footer class="footer"><span data-i18n="footer">where paper go · 投稿前请以官网最新信息为准</span></footer>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="drawer-backdrop" id="drawer-backdrop" aria-hidden="true" hidden></div>
+    <aside class="detail-drawer" id="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true" tabindex="-1" inert hidden>
+      <div class="drawer-head"><span class="section-kicker">VENUE</span><button class="icon-button" id="close-drawer" type="button" aria-label="关闭详情" data-i18n-aria-label="close_details">×</button></div>
+      <div id="drawer-content"></div>
+    </aside>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

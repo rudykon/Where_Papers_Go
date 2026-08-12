@@ -1,0 +1,2 @@
+# Mandatory graph+vector RAG runtime for topical retrieval.
+lightrag-hku>=1.4.14,<1.6

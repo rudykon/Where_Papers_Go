@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "where-paper-go"
+version = "0.1.0"
+description = "Quality-first academic venue recommendation with LightRAG, semantic vectors, LLMs, and web evidence."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "lightrag-hku>=1.4.14,<1.6",
+]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+]
+
+[project.scripts]
+where-paper-go = "where_paper_go.recommender:main"
+where-paper-go-web = "where_paper_go.web_app:main"
+where-paper-go-enrich = "where_paper_go.enrichment:main"
+
+[tool.setuptools.packages.find]
+include = ["where_paper_go*", "scripts*"]
+
+[tool.setuptools.package-data]
+where_paper_go = ["static/*"]

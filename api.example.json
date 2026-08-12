@@ -1,0 +1,33 @@
+{
+  "llm": {
+    "provider": "openai_compatible",
+    "base_url": "https://api.example.com/v1",
+    "api_key": "YOUR_LLM_API_KEY",
+    "model": "your-model-name",
+    "temperature": 0,
+    "timeout": 60,
+    "json_mode": false
+  },
+  "embedding": {
+    "provider": "openai_compatible",
+    "base_url": "https://api.example.com/v1",
+    "model": "your-multilingual-embedding-model",
+    "dimensions": 1024,
+    "send_dimensions": true,
+    "batch_size": 64,
+    "timeout": 60,
+    "max_chars": 8000,
+    "max_retries": 2
+  },
+  "search": {
+    "provider": "tavily",
+    "endpoint": "https://api.tavily.com/search",
+    "api_key": "YOUR_TAVILY_API_KEY",
+    "search_depth": "advanced",
+    "topic": "general",
+    "include_answer": false,
+    "include_raw_content": false,
+    "max_results": 8,
+    "direct_fallback": true
+  }
+}
