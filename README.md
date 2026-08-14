@@ -5,7 +5,7 @@
 <p align="center">
   <img src="docs/brand-mark.svg" width="520" alt="Where Papers Go brand mark">
 </p>
-<h1 align="center">Where Papers Go</h1>
+<h1 align="center">Where Shoud Your Papers Go ?</h1>
 
 <p align="center">
   <strong>Quality-first venue discovery for clear and fuzzy research topics</strong><br>
