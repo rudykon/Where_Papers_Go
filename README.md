@@ -3,9 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="where_paper_go/static/brand-mark.png" width="180" alt="Where Papers Go project mark">
+  <img src="docs/brand-mark.svg" width="520" alt="Where Papers Go brand mark">
 </p>
-
 <h1 align="center">Where Papers Go</h1>
 
 <p align="center">
@@ -248,3 +247,4 @@ Useful documentation:
 ## License
 
 Repository-authored source code is licensed under the [Apache License 2.0](LICENSE). Data files, ranking names, papers, generated artifacts, and third-party dependencies may have separate terms.
+
