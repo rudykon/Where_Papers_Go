@@ -55,7 +55,7 @@ python -m research evaluate --config research/configs/recent_500_baselines.json
 输出位于 `research/outputs/static-jcr-2025/`：
 
 - `manifest.json`：输入 SHA-256、有序 query/candidate 指纹、Git/环境/硬件、完整配置和单命令复现信息；
-- `leakage_audit.json`：时间、DOI、标题、内容指纹、摘要近重复、publication version 和跨分割重复审计；
+- `leakage_audit.json`：时间、DOI、标题、内容指纹、摘要近重复、publication version 和跨分割重复审计；审计与每个方法的实际 `document`/`prototypes` 索引视图一致，未进入索引的保留来源目录若与评测身份重合则单独记为 warning；
 - `runs/*.jsonl`：每个方法的可重用排名（包括显式空排名记录）；
 - `runs/*.jsonl.manifest.json`：逐 run 的强制 sidecar，绑定 dataset/profile/config/method/runtime 与完整 query 覆盖；
 - `metrics.json`：总体及学科/分区指标、配对置信区间和显著性检验。
