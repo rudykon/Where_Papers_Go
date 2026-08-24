@@ -145,6 +145,8 @@ python -m research collect-historical-corpus \
 
 PCL 与 Scope LLM 默认使用 OpenAI-compatible SSE 流式传输。后端会完整聚合所有 delta，收到 `[DONE]` 后才解析、验证并写入缓存；断流、错误事件、非法 UTF-8、超出 4 MB 或缺少结束标志均进入现有 fallback/重试链。`finish_reason=length/content_filter` 即使形成可解析 JSON 也不会缓存。生产配置将流空闲超时设为 60 秒、通用总生成超时设为 180 秒；真实 canary 后进一步将 Qwen3.6-35B/DeepSeek-V4-Pro 的总时限分别设为 90/120 秒，超时后仍由另一模型接续。传输模式不进入缓存键，因此既有有效非流式缓存仍可复用。
 
+完成 acquisition 后不直接将旧 PCL 画像用于因果评测。先运行 `rebuild-clean-corpus --mode deterministic` 从已存证据生成无网络、论文+冻结 catalog 身份的 lower bound，再运行 `--mode pcl` 仅用截止日前证据重新合成。派生目录分开写入 production/research evidence 与 prototypes，并对证据 ID、paper-backed fallback、逐期刊 PCL provenance 和全部哈希失败关闭。具体命令见[全期刊历史画像语料](../docs/historical-profile-corpus.md)。
+
 PCL bge-m3 的多原型向量分数在评测前冻结：
 
 ```bash

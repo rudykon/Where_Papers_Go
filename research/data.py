@@ -53,7 +53,16 @@ def sha256_file(path: Path) -> str:
 def normalize_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     text = text.replace("&", " and ")
-    return " ".join(re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", text).split())
+    # Keep every Unicode letter, number, and combining mark.  The previous
+    # ASCII+CJK whitelist erased Korean, Cyrillic, Persian, and Japanese kana,
+    # which made unrelated title-only papers collapse onto the same identity.
+    normalized = "".join(
+        character
+        if unicodedata.category(character)[0] in {"L", "M", "N"}
+        else " "
+        for character in text
+    )
+    return " ".join(normalized.split())
 
 
 def normalize_doi(value: object) -> str:

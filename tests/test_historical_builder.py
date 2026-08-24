@@ -14,8 +14,14 @@ from unittest.mock import patch
 from where_paper_go.enrichment import PageText
 
 from research.baselines import TfidfBaseline
+from research.clean_corpus import rebuild_clean_corpus
 from research.cli import _parser
-from research.data import DatasetBundle, ResearchDataError, load_jsonl_corpus
+from research.data import (
+    DatasetBundle,
+    ResearchDataError,
+    load_jsonl_corpus,
+    normalize_text,
+)
 from research.historical_builder import (
     CollectionPolicy,
     CrossrefHistoricalSource,
@@ -28,6 +34,7 @@ from research.historical_builder import (
     build_venue_profile,
     catalog_evidence,
     merge_paper_evidence,
+    paper_evidence_id,
     process_venue,
     run_historical_collection,
     stable_collection_queue,
@@ -382,6 +389,32 @@ class HistoricalCollectionTests(unittest.TestCase):
         self.assertEqual(rows[0]["abstract"], "Detailed abstract supplied by a second source.")
         self.assertEqual(rows[0]["sources"], ["crossref", "openalex"])
 
+    def test_unicode_title_identities_are_preserved_and_venue_aware(self) -> None:
+        titles = (
+            "한국어 암 영상 진단",
+            "Русское исследование рака",
+            "پژوهش تشخیص سرطان",
+            "日本語のがん画像診断",
+        )
+        normalized = [normalize_text(title) for title in titles]
+        self.assertTrue(all(normalized))
+        self.assertEqual(len(set(normalized)), len(titles))
+        identities = {
+            paper_evidence_id(
+                "jcr-one", title=title, published="2025-06-15"
+            )
+            for title in titles
+        }
+        self.assertEqual(len(identities), len(titles))
+        self.assertNotEqual(
+            paper_evidence_id(
+                "jcr-one", title=titles[0], published="2025-06-15"
+            ),
+            paper_evidence_id(
+                "jcr-two", title=titles[0], published="2025-06-15"
+            ),
+        )
+
     def test_process_venue_builds_grounded_multi_prototype_profile(self) -> None:
         crossref = FakeSource(
             "crossref",
@@ -469,6 +502,51 @@ class HistoricalCollectionTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         payload = json.loads(bytes(request.call_args.kwargs["body"]).decode("utf-8"))
         self.assertEqual(payload["max_tokens"], 321)
+
+    def test_pcl_prompt_excludes_every_non_temporal_evidence_row(self) -> None:
+        config = {
+            "llm": {
+                "api_key": "offline-test-key",
+                "base_url": "https://llmapi.pcl.ac.cn/v1",
+                "model": "fake-pcl",
+            }
+        }
+        captured_prompt = ""
+
+        def fake_request(url, **kwargs):
+            nonlocal captured_prompt
+            del url
+            payload = json.loads(bytes(kwargs["body"]).decode("utf-8"))
+            captured_prompt = json.dumps(payload["messages"], ensure_ascii=False)
+            return _pcl_envelope(_grounded_response("crossref:temporal"))
+
+        future = {
+            "evidence_id": "official:future",
+            "venue_id": "jcr-test",
+            "kind": "official_scope",
+            "source": "search:tavily",
+            "text": "future-only prompt contamination",
+            "valid_at": "2026-08-14",
+            "temporal_eligible": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "research.historical_builder.enrichment.http_request",
+            side_effect=fake_request,
+        ):
+            client = PCLPrototypeClient(config, Path(temporary))
+            prototypes, status = client.synthesize(
+                _venue(),
+                [_paper("crossref", "crossref:temporal"), future],
+                self.policy,
+            )
+
+        self.assertEqual(status, "ok")
+        self.assertNotIn("future-only", captured_prompt)
+        self.assertNotIn("official:future", captured_prompt)
+        generation = prototypes[0]["generation"]
+        self.assertEqual(generation["prompt_version"], client.PROMPT_VERSION)
+        self.assertEqual(generation["input_evidence_count"], 1)
+        self.assertTrue(generation["prompt_sha256"])
 
     def test_pcl_streams_and_caches_only_the_complete_grounded_result(self) -> None:
         config = {
@@ -1331,6 +1409,141 @@ class HistoricalCollectionTests(unittest.TestCase):
         )
         self.assertNotIn("future-only", profile["profile_text"])
         self.assertIn("future-only", profile["production_profile_text"])
+
+    def test_warm_profile_reserves_a_paper_backed_temporal_prototype(self) -> None:
+        venue = _venue()
+        evidence = catalog_evidence(venue, self.policy.cutoff)
+        papers = [
+            _paper(
+                "crossref",
+                f"paper:{index}",
+                title=f"Historical paper {index}",
+                abstract="paper evidence",
+            )
+            for index in range(5)
+        ]
+        evidence.extend(papers)
+        catalog_only_pcl = {
+            "prototype_id": f"{venue.venue_id}:pcl:0",
+            "kind": "historical_topic",
+            "label": "Catalog-only result",
+            "text": "catalog subject only",
+            "keywords": [],
+            "weight": 1.0,
+            "confidence": "high",
+            "source_ids": [f"catalog:{venue.venue_id}"],
+            "source_max_date": self.policy.cutoff,
+            "temporal_eligible": True,
+            "derived_by": "pcl_llm",
+            "model": "fake",
+        }
+        profile = build_venue_profile(
+            venue,
+            evidence,
+            [catalog_only_pcl],
+            cutoff=self.policy.cutoff,
+            pcl_status="ok",
+            pcl_model="fake",
+            max_prototypes=2,
+            collection_status="complete",
+        )
+        paper_ids = {str(row["evidence_id"]) for row in papers}
+        self.assertEqual(profile["metadata"]["profile_tier"], "warm")
+        self.assertTrue(
+            any(
+                paper_ids.intersection(prototype["source_ids"])
+                for prototype in profile["research_prototypes"]
+            )
+        )
+        self.assertGreater(
+            profile["metadata"]["paper_backed_temporal_prototype_count"], 0
+        )
+
+    def test_clean_rebuild_separates_production_from_paper_research(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            (source / "venues").mkdir(parents=True)
+            output = root / "clean-paper"
+            jcr = root / "jcr.csv"
+            jcr.write_text("fixture\n", encoding="utf-8")
+            (source / "manifest.json").write_text(
+                json.dumps({"schema_version": 2}), encoding="utf-8"
+            )
+            venue = replace(
+                _venue(), online_entity_id=7, identity_status="exact_issn"
+            )
+            evidence = catalog_evidence(venue, self.policy.cutoff)
+            paper = _paper(
+                "crossref",
+                "title:legacy-collision",
+                title="한국어 암 영상 진단",
+                abstract="historical paper evidence",
+            )
+            evidence.append(paper)
+            evidence.append(
+                {
+                    "evidence_id": "official:future",
+                    "venue_id": venue.venue_id,
+                    "kind": "official_scope",
+                    "source": "search:tavily",
+                    "text": "future-only scope",
+                    "valid_at": "2026-08-14",
+                    "temporal_eligible": False,
+                }
+            )
+            source_profile = build_venue_profile(
+                venue,
+                evidence,
+                (),
+                cutoff=self.policy.cutoff,
+                pcl_status="ok",
+                pcl_model="legacy",
+                max_prototypes=6,
+                collection_status="complete",
+            )
+            (source / "venues" / f"{venue.venue_id}.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "evidence": evidence,
+                        "profile": source_profile,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = rebuild_clean_corpus(
+                venues=[venue],
+                policy=self.policy,
+                source_dir=source,
+                output_dir=output,
+                jcr_csv=jcr,
+                mode="deterministic",
+                workers=1,
+            )
+            production = (output / "production_evidence.jsonl").read_text(
+                encoding="utf-8"
+            )
+            research = (output / "research_evidence.jsonl").read_text(
+                encoding="utf-8"
+            )
+            profile = json.loads(
+                (output / "venue_profiles.train.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()[0]
+            )
+
+        self.assertIn("future-only", production)
+        self.assertNotIn("future-only", research)
+        self.assertIn(f"paper:{venue.venue_id}:title:", research)
+        self.assertNotIn("future-only", profile["profile_text"])
+        self.assertEqual(
+            manifest["validation"][
+                "warm_few_without_paper_backed_prototype_count"
+            ],
+            0,
+        )
+        self.assertFalse(output.with_name(f".{output.name}.building").exists())
 
     def test_scope_source_falls_back_to_direct_official_page_when_search_is_blocked(self) -> None:
         config = {

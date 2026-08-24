@@ -73,11 +73,34 @@ PCL 与 Scope 请求默认设置 `stream: true`。SSE delta 只在内存中聚�
 
 模型上下文通过 `llm.model_context_windows` 配置，输入还会统一限制在 49,152 个保守 tokenizer 上界单位。当前已登记 GLM-5.2 1,024K、DeepSeek-V4-Pro 400K、DeepSeek-V4-Flash-0731 512K、Qwen3.6-35B 256K。MiniMax-M3 未提供真实上下文值，因此不伪造窗口，仅应用 32,768 的保守输入上限；获得官方值后可直接在配置中补充。
 
+## 因果清洁派生语料
+
+完成的 acquisition 目录是不可变输入。先在无网络请求的情况下构建 paper-only deterministic lower bound（除论文外只保留冻结 catalog 身份，以支撑候选集和 cold-start 静态原型）；再仅将已存储、`temporal_eligible=true` 且日期不晚于 cutoff 的证据发送给 PCL。两个目录分别原子发布，旧 acquisition shard、cache 和主输出不会被覆盖。
+
+```bash
+python -m research rebuild-clean-corpus \
+  --source-dir benchmark_artifacts/historical_venues_20260331 \
+  --output-dir benchmark_artifacts/historical_venues_20260331_clean_paper \
+  --jcr-csv data/jcr_partition_2025.csv --data-dir data \
+  --history-start 2021-01-01 --cutoff 2026-03-31 \
+  --mode deterministic --workers 6
+
+python -m research rebuild-clean-corpus \
+  --source-dir benchmark_artifacts/historical_venues_20260331 \
+  --output-dir benchmark_artifacts/historical_venues_20260331_clean_pcl \
+  --jcr-csv data/jcr_partition_2025.csv --data-dir data \
+  --history-start 2021-01-01 --cutoff 2026-03-31 \
+  --mode pcl --api-config llmapi.json --workers 3
+```
+
+无 DOI 论文使用 Unicode-preserving title + 完整发表日期 + venue ID 构造身份；`evidence_identity_crosswalk.jsonl` 保留旧新 ID 映射。每个 warm/few-shot 画像必须至少有一个 paper-backed temporal prototype；如 PCL 只引用 catalog/scope，会为确定性 paper fallback 保留一个席位。
+
 ## 输出
 
 - `venue_profiles.train.jsonl`：始终保留完整 20,087 候选；
-- `evidence.jsonl`：规范化来源、DOI、ISSN、日期、URL、许可状态和内容哈希；
-- `prototypes.jsonl`：一刊多个主题/范围/静态原型；
+- `research_evidence.jsonl` / `prototypes.jsonl`：因果时间合格的论文研究证据和原型；
+- `production_evidence.jsonl` / `production_prototypes.jsonl`：与研究输入物理分离的当前/生产证据和原型；
+- `evidence_identity_crosswalk.jsonl`：旧证据 ID 到 Unicode-safe、venue-aware ID 的一意映射；
 - `venue_identity_crosswalk.jsonl`：JCR 哈希 ID 到线上图实体 ID 的严格 ISSN 映射；
 - `lightrag_custom_kg.json`：仅导出截止日前原型以及 `HAS_PROTOTYPE/DERIVED_FROM` 关系，可直接作为 LightRAG custom KG；
 - `venues/*.json`：期刊级断点分片；
@@ -86,7 +109,8 @@ PCL 与 Scope 请求默认设置 `stream: true`。SSE delta 只在内存中聚�
 - `pcl_retry_attempts.jsonl`：每次 PCL 调用的耗时与脱敏错误；
 - `raw/pcl_model_attempts.jsonl`：逐模型状态、解析阶段、finish reason、长度与耗时，不保存响应原文或凭证；
 - `pcl_retry_state.json`：独立 PCL 队列的实时 pending/inflight/成功/失败计数；
-- `manifest.json`：边界、来源、PCL 模型、覆盖率与全部输出 SHA-256。
+- `pcl_generation.jsonl`：逐期刊记录实际模型、prompt 版本/哈希、参数、代码状态和输入指纹；
+- `manifest.json`：边界、来源、PCL 实测模型分布、全部退出校验与输出 SHA-256。
 
 画像等级为：A（至少 10 篇带摘要历史论文）、B（至少 10 篇历史标题）、C（少量历史或截止日前官方 scope）、D（静态冷启动）。历史状态独立定义为 warm（至少 5 篇）、few-shot（1--4 篇）和 cold（0 篇）。
 
