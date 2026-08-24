@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "fail_on_critical_leakage": true,
+  "output_dir": "../outputs/cached-crossref-baselines",
+  "dataset": {
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
+    "query_fields": [
+      "title",
+      "abstract"
+    ],
+    "relevance_field": "gold_journal_id"
+  },
+  "corpus": {
+    "type": "jsonl",
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/venue_profiles.train.jsonl",
+    "id_field": "venue_id",
+    "text_fields": [
+      "name",
+      "profile_text"
+    ],
+    "snapshot_field": "snapshot_date"
+  },
+  "temporal_split": {
+    "start": "2026-01-01",
+    "train_end": "2026-03-31",
+    "validation_end": "2026-05-31",
+    "test_end": "2026-06-30"
+  },
+  "baselines": [
+    {
+      "name": "bm25",
+      "type": "bm25",
+      "k1": 1.2,
+      "b": 0.75
+    },
+    {
+      "name": "tfidf",
+      "type": "tfidf",
+      "sublinear_tf": true
+    }
+  ],
+  "imported_runs": [],
+  "fusions": [
+    {
+      "name": "rrf",
+      "type": "rrf",
+      "sources": [
+        "bm25",
+        "tfidf"
+      ],
+      "rrf_k": 60
+    },
+    {
+      "name": "learned_linear",
+      "type": "learned_linear",
+      "sources": [
+        "bm25",
+        "tfidf"
+      ],
+      "epochs": 200,
+      "learning_rate": 0.08,
+      "l2": 0.01,
+      "hard_negatives": 20
+    }
+  ],
+  "evaluation": {
+    "retrieval_depth": 100,
+    "cutoffs": [
+      1,
+      3,
+      5,
+      10,
+      20,
+      50
+    ]
+  },
+  "statistics": {
+    "bootstrap_iterations": 2000,
+    "permutation_iterations": 2000,
+    "confidence": 0.95,
+    "seed": 20260814,
+    "comparisons": [
+      {
+        "left": "rrf",
+        "right": "tfidf",
+        "metric": "ndcg@10"
+      },
+      {
+        "left": "learned_linear",
+        "right": "tfidf",
+        "metric": "ndcg@10"
+      }
+    ]
+  }
+}
