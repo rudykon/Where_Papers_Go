@@ -56,6 +56,8 @@ class QueryPlanValidationTests(unittest.TestCase):
                 "topic_tags": ["wireless_mobile", "invented_tag"],
                 "search_queries": ["official mobile networking CFP"],
                 "venue_hints": ["MobiCom"],
+                "ambiguity": 0.72,
+                "cross_disciplinary": 0.41,
                 "matched_areas": [
                     "RADIOLOGY, NUCLEAR MEDICINE & MEDICAL IMAGING",
                     "HALLUCINATED AREA",
@@ -72,6 +74,17 @@ class QueryPlanValidationTests(unittest.TestCase):
             plan.matched_areas,
             ("RADIOLOGY, NUCLEAR MEDICINE & MEDICAL IMAGING",),
         )
+        self.assertAlmostEqual(plan.ambiguity or 0.0, 0.72)
+        self.assertAlmostEqual(plan.cross_disciplinary or 0.0, 0.41)
+
+    def test_plan_ignores_invalid_routing_scores(self) -> None:
+        plan = query_plan_from_payload(
+            {"ambiguity": 2, "cross_disciplinary": "unknown"},
+            set(),
+        )
+
+        self.assertIsNone(plan.ambiguity)
+        self.assertIsNone(plan.cross_disciplinary)
 
 
 class CandidateConstraintTests(unittest.TestCase):

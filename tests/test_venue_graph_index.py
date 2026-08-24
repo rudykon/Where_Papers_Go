@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from where_paper_go.embeddings import build_graph_vector_index
 from where_paper_go.graph_index import (
@@ -218,6 +219,13 @@ class PropertyGraphTests(unittest.TestCase):
                 provider_fingerprint=provider.fingerprint,
                 min_similarity=0.35,
             )
+            with patch("where_paper_go.graph_index._numpy", None):
+                scalar_recall = graph.vector_recall(
+                    allowed_entity_ids=[0, 2],
+                    query_vector=query_vector,
+                    provider_fingerprint=provider.fingerprint,
+                    min_similarity=0.35,
+                )
             with self.assertRaises(GraphIndexError):
                 graph.vector_recall(
                     allowed_entity_ids=[0, 2],
@@ -225,6 +233,13 @@ class PropertyGraphTests(unittest.TestCase):
                     provider_fingerprint="wrong-provider",
                 )
         self.assertEqual(recall.entity_ids[0], 0)
+        self.assertEqual(recall.entity_ids, scalar_recall.entity_ids)
+        for entity_id in recall.entity_ids:
+            self.assertAlmostEqual(
+                recall.similarities[entity_id],
+                scalar_recall.similarities[entity_id],
+                places=6,
+            )
         self.assertTrue(cache_path.exists())
         self.assertTrue(vector_path_for_graph(self.graph_path).exists())
         self.assertFalse(any(self.data_dir.glob("*.sqlite*")))

@@ -18,6 +18,9 @@ from where_paper_go.api_assistant import ApiCandidateScore, QueryPlan, SearchEvi
 from where_paper_go.graph_index import GraphVectorRecallResult, VenueGraphIndex
 from where_paper_go.lightrag import LightRAGRecall
 from where_paper_go.recommender import (
+    MULTICHANNEL_RECALL_WEIGHTS,
+    _allocate_adaptive_multichannel_quotas,
+    _allocate_multichannel_quotas,
     _article_intents,
     _matches_search_filter,
     area_summary,
@@ -37,6 +40,44 @@ from where_paper_go.recommender import (
 
 
 class TargetParsingTests(unittest.TestCase):
+    def test_default_multichannel_pool_reserves_all_recall_sources(self) -> None:
+        self.assertEqual(
+            _allocate_multichannel_quotas(40),
+            {
+                "combined": 12,
+                "semantic_vector": 8,
+                "lightrag_mix": 6,
+                "property_graph": 6,
+                "llm_area_route": 4,
+                "search_hint": 4,
+            },
+        )
+
+    def test_llm_routing_scores_change_adaptive_recall_budget(self) -> None:
+        channel_ids = {
+            name: list(range(100)) for name, _weight in MULTICHANNEL_RECALL_WEIGHTS
+        }
+        precise, _precise_metadata = _allocate_adaptive_multichannel_quotas(
+            "same input",
+            channel_ids,
+            limit=40,
+            ambiguity=0.0,
+            cross_disciplinary=0.0,
+        )
+        fuzzy, fuzzy_metadata = _allocate_adaptive_multichannel_quotas(
+            "same input",
+            channel_ids,
+            limit=40,
+            ambiguity=1.0,
+            cross_disciplinary=1.0,
+        )
+
+        self.assertEqual(sum(precise.values()), 40)
+        self.assertEqual(sum(fuzzy.values()), 40)
+        self.assertGreater(precise["combined"], fuzzy["combined"])
+        self.assertGreater(fuzzy["lightrag_mix"], precise["lightrag_mix"])
+        self.assertEqual(fuzzy_metadata["mode"], "scope_rank_adaptive")
+
     def test_quality_first_retrieval_defaults(self) -> None:
         args = build_parser().parse_args(["--target", "CCF-A"])
         self.assertEqual(args.candidate_pool, 0)
@@ -46,6 +87,7 @@ class TargetParsingTests(unittest.TestCase):
         self.assertTrue(args.vector_search)
         self.assertEqual(args.lightrag_top_k, 200)
         self.assertEqual(args.api_candidate_limit, 40)
+        self.assertFalse(args.fixed_recall_budget)
         self.assertIsNone(
             venue_recommender.rank_candidates_indexed.__kwdefaults__["lexical_limit"]
         )
@@ -859,6 +901,7 @@ class RealDataTests(unittest.TestCase):
         )[0]
         payload = candidate_to_dict(candidate)
         for key in (
+            "entity_id",
             "reviewed_scope_entries",
             "reviewed_scope_out_of_scope",
             "reviewed_scope_basis",
