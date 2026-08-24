@@ -1,6 +1,6 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-24 (Asia/Shanghai)
+> Updated: 2026-08-25 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Section 0 is the authoritative post-P0 state. Sections 1 onward retain the
 > original pre-P0 acquisition handoff as historical context; do not reinterpret
@@ -8,7 +8,7 @@
 
 ## 0. P0 completion addendum
 
-P0-A through P0-C were completed in order on 2026-08-24. No credentials,
+P0-A through P0-C were completed in order across 2026-08-24–25. No credentials,
 ignored benchmark data, paper files, API caches, or historical source artifacts
 were committed or removed. Nothing was pushed.
 
