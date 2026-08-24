@@ -26,6 +26,7 @@ github_token.json
 # Rebuildable enrichment and search artifacts.
 data/.aims_scope_cache/
 data/.query_api_cache/
+data/.tavily_key_pool_state.json*
 data/_backups/
 data/venue_index.sqlite3
 data/venue_index.sqlite3-*
@@ -35,11 +36,15 @@ data/venue_graph.json.gz
 data/venue_graph_vectors.json.gz
 data/.embedding_cache.json.gz
 data/.query_embedding_cache.json.gz
+data/..embedding_cache.json.gz.*.tmp
 data/lightrag_custom_kg.json
 data/lightrag_storage/
 data/lightrag_storage.backup-*/
 data/.lightrag_storage.building-*/
 data/*.cleanup-bak
+
+# Reproducible benchmark downloads and run outputs (may contain abstracts).
+benchmark_artifacts/
 
 # Local research papers and topic folders are not repository data.
 paper/

@@ -35,10 +35,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 
 from .paths import DATA_DIR, PROJECT_ROOT
+from .tavily_pool import TavilyKeyPool
 
 
 ROOT = PROJECT_ROOT
@@ -386,6 +387,346 @@ def http_request(
     return status, response_headers, content[:max_bytes]
 
 
+class OpenAIStreamError(ValueError):
+    """The server returned an incomplete or invalid chat-completion stream."""
+
+
+def _chat_content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                text = item.get("text") or item.get("content") or ""
+                if isinstance(text, Mapping):
+                    text = text.get("value") or ""
+                parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return "".join(parts)
+    return "" if value is None else str(value)
+
+
+def chat_message_text(message: Any) -> str:
+    """Read final text without mixing private reasoning into visible content."""
+
+    if not isinstance(message, Mapping):
+        return ""
+    content = _chat_content_text(message.get("content"))
+    if content.strip():
+        return content
+    return _chat_content_text(message.get("reasoning_content"))
+
+
+def _assemble_openai_stream(events: list[Mapping[str, Any]]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    choices: dict[int, dict[str, Any]] = {}
+    usage: Any = None
+    for event in events:
+        error = event.get("error")
+        if error:
+            raise OpenAIStreamError(f"chat stream returned an error event: {error}")
+        for key in ("id", "object", "created", "model", "system_fingerprint"):
+            if event.get(key) is not None:
+                metadata[key] = event[key]
+        if event.get("usage") is not None:
+            usage = event["usage"]
+        raw_choices = event.get("choices")
+        if not isinstance(raw_choices, list):
+            continue
+        for raw_choice in raw_choices:
+            if not isinstance(raw_choice, Mapping):
+                continue
+            try:
+                index = int(raw_choice.get("index", 0))
+            except (TypeError, ValueError):
+                index = 0
+            state = choices.setdefault(
+                index,
+                {
+                    "role": "assistant",
+                    "content": [],
+                    "reasoning_content": [],
+                    "annotations": [],
+                    "finish_reason": None,
+                },
+            )
+            delta = raw_choice.get("delta")
+            if not isinstance(delta, Mapping):
+                delta = raw_choice.get("message")
+            if not isinstance(delta, Mapping):
+                delta = {}
+            if delta.get("role"):
+                state["role"] = str(delta["role"])
+            content = _chat_content_text(delta.get("content"))
+            if content:
+                state["content"].append(content)
+            reasoning = _chat_content_text(delta.get("reasoning_content"))
+            if reasoning:
+                state["reasoning_content"].append(reasoning)
+            annotations = delta.get("annotations")
+            if isinstance(annotations, list):
+                state["annotations"].extend(annotations)
+            finish_reason = raw_choice.get("finish_reason")
+            if finish_reason is not None:
+                state["finish_reason"] = finish_reason
+
+    assembled_choices: list[dict[str, Any]] = []
+    for index in sorted(choices):
+        state = choices[index]
+        message: dict[str, Any] = {
+            "role": state["role"],
+            "content": "".join(state["content"]),
+        }
+        reasoning = "".join(state["reasoning_content"])
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if state["annotations"]:
+            message["annotations"] = state["annotations"]
+        assembled_choices.append(
+            {
+                "index": index,
+                "message": message,
+                "finish_reason": state["finish_reason"],
+            }
+        )
+    if not assembled_choices:
+        raise OpenAIStreamError("chat stream contained no choices")
+    result = {**metadata, "choices": assembled_choices}
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
+def parse_openai_chat_stream(
+    chunks: Iterable[bytes],
+    *,
+    max_bytes: int = 4_000_000,
+    require_done: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Parse OpenAI-compatible SSE into a normal chat-completion envelope.
+
+    A provider that ignores ``stream=true`` and returns ordinary JSON remains
+    compatible. SSE responses fail closed when malformed, oversized, or
+    missing the protocol terminator requested by production configuration.
+    """
+
+    raw = bytearray()
+    for chunk in chunks:
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise OpenAIStreamError("chat stream yielded a non-bytes chunk")
+        raw.extend(chunk)
+        if len(raw) > max_bytes:
+            raise OpenAIStreamError(
+                f"chat stream exceeded the {max_bytes}-byte transport limit"
+            )
+    if not raw:
+        raise OpenAIStreamError("chat stream was empty")
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OpenAIStreamError("chat stream was not valid UTF-8") from exc
+
+    # Some OpenAI-compatible gateways accept stream=true but still return a
+    # conventional application/json response. Preserve that safe fallback.
+    first_nonblank = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first_nonblank.startswith(("data:", "event:", "id:", "retry:", ":")):
+        try:
+            response = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise OpenAIStreamError("chat response was neither SSE nor JSON") from exc
+        if not isinstance(response, dict) or response.get("error"):
+            raise OpenAIStreamError("chat JSON response contained an error or invalid body")
+        return response, {
+            "streamed": False,
+            "stream_events": 0,
+            "stream_complete": True,
+            "wire_bytes": len(raw),
+        }
+
+    events: list[Mapping[str, Any]] = []
+    data_lines: list[str] = []
+    done = False
+
+    def flush_event() -> None:
+        nonlocal done
+        if not data_lines or done:
+            data_lines.clear()
+            return
+        payload = "\n".join(data_lines).strip()
+        data_lines.clear()
+        if not payload:
+            return
+        if payload == "[DONE]":
+            done = True
+            return
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise OpenAIStreamError("chat stream contained malformed JSON data") from exc
+        if not isinstance(event, Mapping):
+            raise OpenAIStreamError("chat stream event was not a JSON object")
+        events.append(event)
+
+    for line in text.splitlines():
+        if done:
+            break
+        if not line:
+            flush_event()
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            value = line[5:]
+            if value.startswith(" "):
+                value = value[1:]
+            data_lines.append(value)
+    flush_event()
+    response = _assemble_openai_stream(events)
+    terminal = any(
+        choice.get("finish_reason") not in (None, "")
+        for choice in response.get("choices", [])
+        if isinstance(choice, Mapping)
+    )
+    if require_done and not done:
+        raise OpenAIStreamError("chat stream ended before [DONE]")
+    if not done and not terminal:
+        raise OpenAIStreamError("chat stream ended before a terminal finish_reason")
+    return response, {
+        "streamed": True,
+        "stream_events": len(events),
+        "stream_complete": bool(done or terminal),
+        "wire_bytes": len(raw),
+    }
+
+
+def http_stream_request(
+    url: str,
+    *,
+    method: str = "POST",
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+    timeout: int = 60,
+    total_timeout: int = 180,
+    max_bytes: int = 4_000_000,
+    proxy: str | None | object = _USE_ENV_PROXY,
+) -> tuple[int, dict[str, str], bytes]:
+    """Read an SSE response incrementally with idle and total time limits."""
+
+    request_headers = dict(headers or {})
+    request_headers.setdefault("Accept", "text/event-stream")
+    request_headers.setdefault("Cache-Control", "no-cache")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers=request_headers,
+    )
+    opener = None
+    if proxy is not _USE_ENV_PROXY:
+        if proxy is None or str(proxy).strip().lower() in {"", "direct", "none", "off"}:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        else:
+            proxy_url = str(proxy).strip()
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            )
+    open_url = opener.open if opener is not None else urllib.request.urlopen
+    started = time.monotonic()
+    chunks: list[bytes] = []
+    wire_bytes = 0
+    with hard_timeout(max(1, int(total_timeout) + 2)):
+        with open_url(request, timeout=max(1, int(timeout))) as response:
+            status = int(getattr(response, "status", 200))
+            response_headers = {
+                key.lower(): value for key, value in response.headers.items()
+            }
+            read_chunk = getattr(response, "read1", response.read)
+            while True:
+                if time.monotonic() - started > total_timeout:
+                    raise TimeoutError(
+                        f"chat stream exceeded the {total_timeout}s total timeout"
+                    )
+                chunk = read_chunk(65_536)
+                if not chunk:
+                    break
+                wire_bytes += len(chunk)
+                if wire_bytes > max_bytes:
+                    raise OpenAIStreamError(
+                        f"chat stream exceeded the {max_bytes}-byte transport limit"
+                    )
+                chunks.append(bytes(chunk))
+    return status, response_headers, b"".join(chunks)
+
+
+def openai_chat_request(
+    url: str,
+    *,
+    payload: Mapping[str, Any],
+    config: Mapping[str, Any],
+    headers: dict[str, str] | None = None,
+    timeout: int = 60,
+    max_bytes: int = 2_000_000,
+    proxy: str | None | object = _USE_ENV_PROXY,
+) -> tuple[int, dict[str, str], bytes]:
+    """Call chat completions in streaming or conventional transport mode."""
+
+    request_payload = dict(payload)
+    if not bool(config.get("stream", False)):
+        return http_request(
+            url,
+            method="POST",
+            headers=headers,
+            body=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            timeout=timeout,
+            max_bytes=max_bytes,
+            proxy=proxy,
+        )
+
+    request_payload["stream"] = True
+    try:
+        idle_timeout = int(config.get("stream_idle_timeout", timeout))
+        total_timeout = int(config.get("stream_total_timeout", max(180, timeout * 3)))
+        stream_max_bytes = int(
+            config.get("max_stream_response_bytes", max(4_000_000, max_bytes))
+        )
+        model_timeouts = config.get("model_stream_total_timeouts")
+        model_name = str(request_payload.get("model") or "")
+        if isinstance(model_timeouts, Mapping) and model_name in model_timeouts:
+            total_timeout = int(model_timeouts[model_name])
+    except (TypeError, ValueError) as exc:
+        raise OpenAIStreamError("stream timeout and byte limits must be integers") from exc
+    if idle_timeout <= 0 or total_timeout < idle_timeout or stream_max_bytes < 65_536:
+        raise OpenAIStreamError("invalid stream timeout or byte-limit configuration")
+    request_headers = dict(headers or api_headers(dict(config)))
+    request_headers.setdefault("Accept", "text/event-stream")
+    status, response_headers, raw = http_stream_request(
+        url,
+        method="POST",
+        headers=request_headers,
+        body=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+        timeout=idle_timeout,
+        total_timeout=total_timeout,
+        max_bytes=stream_max_bytes,
+        proxy=proxy,
+    )
+    response, stream_meta = parse_openai_chat_stream(
+        [raw],
+        max_bytes=stream_max_bytes,
+        require_done=bool(config.get("stream_require_done", True)),
+    )
+    normalized_headers = dict(response_headers)
+    normalized_headers["x-wpg-streamed"] = "1" if stream_meta["streamed"] else "0"
+    normalized_headers["x-wpg-stream-events"] = str(stream_meta["stream_events"])
+    normalized_headers["x-wpg-stream-wire-bytes"] = str(stream_meta["wire_bytes"])
+    return (
+        status,
+        normalized_headers,
+        json.dumps(response, ensure_ascii=False).encode("utf-8"),
+    )
+
+
 def decode_bytes(content: bytes, headers: dict[str, str]) -> str:
     content_type = headers.get("content-type", "")
     match = re.search(r"charset=([\w.-]+)", content_type, flags=re.I)
@@ -585,14 +926,15 @@ def search_queries_for(row: dict[str, str]) -> list[str]:
             normalize_space(f'"{name}" {abbreviation} call for papers'),
             normalize_space(f'"{abbreviation}" conference call for papers topics'),
         ]
-    queries = []
+    # Names are markedly more discriminative for modern search APIs than a
+    # bare ISSN.  Keep ISSN queries as verification/fallback evidence.
+    queries = [normalize_space(f'"{name}" journal aims and scope official')]
     if row.get("issn"):
         queries.append(normalize_space(f'"{row["issn"]}" journal aims and scope'))
     if row.get("eissn"):
         queries.append(normalize_space(f'"{row["eissn"]}" journal aims and scope'))
     queries.extend(
         [
-            normalize_space(f'"{name}" journal aims and scope official'),
             normalize_space(f'"{name}" aims and scope'),
             normalize_space(f'"{name}" publisher journal scope'),
         ]
@@ -685,11 +1027,11 @@ def _llm_native_search(
         "max_tokens": int(config.get("max_tokens") or llm.get("max_tokens") or 900),
         "enable_search": True,
     }
-    _status, _headers, content = http_request(
+    _status, _headers, content = openai_chat_request(
         endpoint,
-        method="POST",
+        payload=payload,
+        config=llm,
         headers=api_headers(llm),
-        body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         timeout=timeout,
         max_bytes=4_000_000,
     )
@@ -787,8 +1129,11 @@ def search_web(
         ]
         if cached_results:
             return cached_results
+        if cached.get("empty_is_valid") is True:
+            return []
 
     results: list[SearchResult] = []
+    valid_empty_response = False
     try:
         if provider == "llm_native":
             results = _llm_native_search(query, config, limit, timeout)
@@ -854,9 +1199,22 @@ def search_web(
                 )
         elif provider == "tavily":
             endpoint = config.get("endpoint", "https://api.tavily.com/search")
-            api_key = str(config.get("api_key") or config.get("key") or "").strip()
-            if not api_key:
-                raise ValueError("tavily search requires api_key")
+            key_pool = TavilyKeyPool.from_config(config)
+            try:
+                configured_key_attempts = int(config.get("max_key_attempts", 3))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("tavily max_key_attempts must be a positive integer") from exc
+            if configured_key_attempts < 1:
+                raise ValueError("tavily max_key_attempts must be a positive integer")
+            max_key_attempts = min(key_pool.key_count, configured_key_attempts)
+            retry_empty_results = config.get("retry_empty_results", False)
+            if isinstance(retry_empty_results, str):
+                retry_empty_results = retry_empty_results.strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
             try:
                 configured_max_results = int(config.get("max_results", limit))
                 max_results = max(1, min(20, limit, configured_max_results))
@@ -878,17 +1236,6 @@ def search_web(
                     "include_raw_content": config.get("include_raw_content", False),
                 }
             ).encode("utf-8")
-            request_kwargs: dict[str, Any] = {
-                "method": "POST",
-                "headers": {
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "scope-enricher/1.0",
-                },
-                "body": payload,
-                "timeout": timeout,
-            }
             proxy_setting: str | None | object = _USE_ENV_PROXY
             if "proxy" in config:
                 configured_proxy = config.get("proxy")
@@ -901,27 +1248,129 @@ def search_web(
                     proxy_setting = None
                 elif str(configured_proxy).strip().lower() not in {"auto", "env"}:
                     proxy_setting = str(configured_proxy).strip()
-            if proxy_setting is not _USE_ENV_PROXY:
-                request_kwargs["proxy"] = proxy_setting
-            try:
-                _status, _headers, content = http_request(endpoint, **request_kwargs)
-            except urllib.error.HTTPError:
-                raise
-            except (
-                urllib.error.URLError,
-                TimeoutError,
-                OSError,
-                http.client.HTTPException,
-            ):
-                direct_fallback = config.get("direct_fallback", True)
-                if (
-                    isinstance(direct_fallback, str)
-                    and direct_fallback.strip().lower() in {"0", "false", "no", "off"}
-                ) or direct_fallback is False or proxy_setting is None:
-                    raise
-                request_kwargs["proxy"] = None
-                _status, _headers, content = http_request(endpoint, **request_kwargs)
-            data = json.loads(content.decode("utf-8"))
+            content: bytes | None = None
+            response_data: dict[str, Any] | None = None
+            last_error: Exception | None = None
+            for attempt_index in range(max_key_attempts):
+                lease = key_pool.acquire()
+                request_kwargs: dict[str, Any] = {
+                    "method": "POST",
+                    "headers": {
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {lease.api_key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "scope-enricher/1.0",
+                    },
+                    "body": payload,
+                    "timeout": timeout,
+                }
+                if proxy_setting is not _USE_ENV_PROXY:
+                    request_kwargs["proxy"] = proxy_setting
+                try:
+                    _status, _headers, content = http_request(endpoint, **request_kwargs)
+                    try:
+                        candidate_data = json.loads(content.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as exc:
+                        key_pool.report_failure(lease, event="response_parse_error")
+                        last_error = exc
+                        continue
+                    if not isinstance(candidate_data, dict):
+                        key_pool.report_failure(lease, event="response_shape_error")
+                        last_error = ValueError("tavily response must be a JSON object")
+                        continue
+                    candidate_results = candidate_data.get("results")
+                    empty = isinstance(candidate_results, list) and not candidate_results
+                    key_pool.report_success(lease, empty=empty)
+                    # An empty 200 response is normally a valid query result;
+                    # do not burn all configured keys on the same empty query.
+                    if (
+                        empty
+                        and retry_empty_results
+                        and attempt_index + 1 < max_key_attempts
+                    ):
+                        last_error = RuntimeError("tavily returned no search results")
+                        continue
+                    response_data = candidate_data
+                    break
+                except urllib.error.HTTPError as exc:
+                    retry_after: float | None = None
+                    if exc.headers is not None:
+                        raw_retry_after = exc.headers.get("Retry-After")
+                        try:
+                            retry_after = (
+                                float(raw_retry_after)
+                                if raw_retry_after is not None
+                                else None
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = None
+                    key_pool.report_failure(
+                        lease,
+                        http_status=exc.code,
+                        retry_after_seconds=retry_after,
+                        event=f"http_{exc.code}",
+                    )
+                    last_error = exc
+                    continue
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    OSError,
+                    http.client.HTTPException,
+                ) as exc:
+                    last_error = exc
+                    direct_fallback = config.get("direct_fallback", True)
+                    if (
+                        isinstance(direct_fallback, str)
+                        and direct_fallback.strip().lower() in {"0", "false", "no", "off"}
+                    ) or direct_fallback is False or proxy_setting is None:
+                        key_pool.report_failure(lease, event="transport_error")
+                        continue
+                    direct_kwargs = dict(request_kwargs)
+                    direct_kwargs["proxy"] = None
+                    try:
+                        key_pool.reserve_transport_retry(lease)
+                        _status, _headers, content = http_request(endpoint, **direct_kwargs)
+                        try:
+                            candidate_data = json.loads(content.decode("utf-8"))
+                        except (UnicodeError, json.JSONDecodeError) as parse_exc:
+                            key_pool.report_failure(lease, event="response_parse_error")
+                            last_error = parse_exc
+                            continue
+                        if not isinstance(candidate_data, dict):
+                            key_pool.report_failure(lease, event="response_shape_error")
+                            last_error = ValueError("tavily response must be a JSON object")
+                            continue
+                        candidate_results = candidate_data.get("results")
+                        empty = isinstance(candidate_results, list) and not candidate_results
+                        key_pool.report_success(lease, empty=empty)
+                        if (
+                            empty
+                            and retry_empty_results
+                            and attempt_index + 1 < max_key_attempts
+                        ):
+                            last_error = RuntimeError("tavily returned no search results")
+                            continue
+                        response_data = candidate_data
+                        break
+                    except urllib.error.HTTPError as direct_exc:
+                        key_pool.report_failure(
+                            lease,
+                            http_status=direct_exc.code,
+                            event=f"http_{direct_exc.code}",
+                        )
+                        last_error = direct_exc
+                        continue
+                    except Exception as direct_exc:
+                        key_pool.report_failure(lease, event="transport_error")
+                        last_error = direct_exc
+                        continue
+            if response_data is None:
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeError("tavily search failed without a response")
+            data = response_data
+            valid_empty_response = not data.get("results")
             for item in data.get("results", [])[:limit]:
                 results.append(
                     SearchResult(
@@ -946,6 +1395,7 @@ def search_web(
         TimeoutError,
         json.JSONDecodeError,
         ValueError,
+        RuntimeError,
         OSError,
         http.client.HTTPException,
     ) as exc:
@@ -961,7 +1411,13 @@ def search_web(
     results = [result for result in results if result.url and not is_bad_search_result(result.url)]
     write_json(
         path,
-        {"provider": provider, "query": query, "results": [result.__dict__ for result in results], "cached_at": now_iso()},
+        {
+            "provider": provider,
+            "query": query,
+            "results": [result.__dict__ for result in results],
+            "empty_is_valid": valid_empty_response,
+            "cached_at": now_iso(),
+        },
     )
     return results
 
@@ -1020,6 +1476,31 @@ def candidate_pages(
             continue
         seen.add(url)
         page = fetch_page(url, cache_dir, timeout=timeout, max_bytes=max_bytes)
+        if page is None:
+            # Publisher sites frequently block generic crawlers even though a
+            # configured Search API returned a useful official-page excerpt.
+            # Preserve that attributed excerpt as low-volume evidence instead
+            # of turning the whole entity into ``no_candidate_pages``.  The LLM
+            # still validates relevance and must cite this exact official URL.
+            search_result = next(
+                (result for result in search_results if result.url == url), None
+            )
+            snippet = normalize_space(search_result.snippet) if search_result else ""
+            snippet_page = PageText(
+                url=url,
+                title=search_result.title if search_result else "",
+                text=snippet,
+                links=[],
+            )
+            if (
+                search_result is not None
+                and len(snippet) >= 120
+                and (
+                    is_preferred_domain(url)
+                    or journal_issn_matches_page(row, snippet_page)
+                )
+            ):
+                page = snippet_page
         if not page:
             continue
         if use_as_candidate:
@@ -1140,26 +1621,67 @@ def call_llm(
         "messages": messages,
         "temperature": llm.get("temperature", 0),
     }
+    try:
+        max_output_tokens = int(
+            llm.get("max_output_tokens", llm.get("max_tokens", 1024))
+        )
+    except (TypeError, ValueError):
+        max_output_tokens = 1024
+    payload["max_tokens"] = max(64, min(16_384, max_output_tokens))
     if llm.get("json_mode"):
         payload["response_format"] = {"type": "json_object"}
-    cache_key = json.dumps({"endpoint": endpoint, "model": model, "messages": messages}, ensure_ascii=False)
+    # Output limiting changes transport cost, not the meaning of an already
+    # validated extraction; retain compatibility with existing cache keys.
+    cache_key = json.dumps(
+        {"endpoint": endpoint, "model": model, "messages": messages},
+        ensure_ascii=False,
+    )
     path = cache_path(cache_dir, "llm", cache_key)
     cached = read_json(path)
     if cached:
         return cached["result"]
-    _status, _headers, content = http_request(
-        endpoint,
-        method="POST",
-        headers=api_headers(llm),
-        body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        timeout=int(llm.get("timeout", timeout)),
-        max_bytes=2_000_000,
-    )
-    data = json.loads(content.decode("utf-8"))
-    message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    result = extract_json_object(message)
-    write_json(path, {"result": result, "cached_at": now_iso()})
-    return result
+    retries = max(0, int(llm.get("max_retries", 2)))
+    last_error: BaseException | None = None
+    for attempt in range(retries + 1):
+        try:
+            _status, _headers, content = openai_chat_request(
+                endpoint,
+                payload=payload,
+                config=llm,
+                headers=api_headers(llm),
+                timeout=int(llm.get("timeout", timeout)),
+                max_bytes=2_000_000,
+            )
+            data = json.loads(content.decode("utf-8"))
+            choice = data.get("choices", [{}])[0]
+            finish_reason = str(choice.get("finish_reason") or "").casefold()
+            if finish_reason in {"length", "content_filter"}:
+                raise ValueError(
+                    f"LLM extraction ended with finish_reason={finish_reason}"
+                )
+            message = chat_message_text(choice.get("message", {}))
+            result = extract_json_object(message)
+            write_json(path, {"result": result, "cached_at": now_iso()})
+            return result
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt >= retries:
+                raise
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            ValueError,
+            IndexError,
+            TypeError,
+        ) as exc:
+            last_error = exc
+            if attempt >= retries:
+                raise
+        time.sleep(min(8.0, 2.0**attempt))
+    raise RuntimeError(f"unreachable LLM retry state: {last_error}")
 
 
 def ensure_output_columns(fieldnames: list[str]) -> list[str]:
@@ -1263,7 +1785,14 @@ def enrich_row(
         if args.max_search_queries is not None:
             queries = queries[: args.max_search_queries]
         for query in queries:
-            for result in search_web(query, search_conf, args.cache_dir, args.timeout, args.search_results):
+            for result in search_web(
+                query,
+                search_conf,
+                args.cache_dir,
+                args.timeout,
+                args.search_results,
+                raise_on_error=True,
+            ):
                 if result.url in seen_urls:
                     continue
                 seen_urls.add(result.url)
@@ -1283,14 +1812,26 @@ def enrich_row(
         if not pages:
             return index, "no_candidate_pages", {"reason": "no_candidate_pages"}, ""
 
-        result = call_llm(
-            working_row,
-            pages,
-            config,
-            args.cache_dir,
-            timeout=args.timeout,
-            max_chars_per_page=args.max_chars_per_page,
-        )
+        llm_semaphore = getattr(args, "llm_semaphore", None)
+        if llm_semaphore is None:
+            result = call_llm(
+                working_row,
+                pages,
+                config,
+                args.cache_dir,
+                timeout=args.timeout,
+                max_chars_per_page=args.max_chars_per_page,
+            )
+        else:
+            with llm_semaphore:
+                result = call_llm(
+                    working_row,
+                    pages,
+                    config,
+                    args.cache_dir,
+                    timeout=args.timeout,
+                    max_chars_per_page=args.max_chars_per_page,
+                )
         status = "ok"
         if not result.get("is_relevant", False):
             reason = normalize_space(str(result.get("reason", "")))
@@ -1310,21 +1851,21 @@ def enrich_row(
             and source_url
             and not is_preferred_domain(source_url)
         ):
-            if args.allow_untrusted_domains:
-                source_page = page_for_source_url(source_url, pages)
-                if not journal_issn_matches_page(working_row, source_page):
-                    result["scope_summary"] = ""
-                    result["scope_keywords"] = []
-                    result["confidence"] = "low"
-                    result["reason"] = f"unverified_journal_source:{domain_of(source_url)}"
-                    result["evidence"] = "source page did not contain matching ISSN/eISSN"
-                    status = result["reason"]
-            else:
+            source_page = page_for_source_url(source_url, pages)
+            source_verified = journal_issn_matches_page(working_row, source_page)
+            if not source_verified and not args.allow_untrusted_domains:
                 result["scope_summary"] = ""
                 result["scope_keywords"] = []
                 result["confidence"] = "low"
                 result["reason"] = f"untrusted_source_domain:{domain_of(source_url)}"
                 result["evidence"] = result["reason"]
+                status = result["reason"]
+            elif not source_verified:
+                result["scope_summary"] = ""
+                result["scope_keywords"] = []
+                result["confidence"] = "low"
+                result["reason"] = f"unverified_journal_source:{domain_of(source_url)}"
+                result["evidence"] = "source page did not contain matching ISSN/eISSN"
                 status = result["reason"]
         return index, status, result, ""
     except Exception as exc:  # noqa: BLE001 - batch jobs should continue.
