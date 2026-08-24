@@ -1886,16 +1886,32 @@ class PrototypeRetrievalTests(unittest.TestCase):
                 qrels={"q1": {"v1": 1.0}},
                 source_rows={"q1": {}},
             )
+            dataset = root / "dataset.jsonl"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "paper_id": "q1",
+                        "title": "quantum graph",
+                        "abstract": "",
+                        "publication_date": "2026-06-01",
+                        "gold_journal_id": "v1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             output = root / "run.jsonl"
             manifest = build_prototype_vector_run(
                 provider=FakeEmbeddingProvider(),
                 bundle=bundle,
+                dataset_path=dataset,
                 profiles_path=profiles,
                 cache_path=root / "vectors.json.gz",
                 output_path=output,
                 top_k=2,
                 query_batch_size=1,
                 prototype_chunk_size=2,
+                generation_command=("python", "-m", "research", "test-vector"),
             )
             first = json.loads(output.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(first["venue_id"], "v1")

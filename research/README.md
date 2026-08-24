@@ -54,9 +54,10 @@ python -m research evaluate --config research/configs/recent_500_baselines.json
 
 输出位于 `research/outputs/static-jcr-2025/`：
 
-- `manifest.json`：输入 SHA-256、字节数、分割 ID 指纹、日期范围、候选覆盖率和完整配置；
-- `leakage_audit.json`：时间、DOI、标题、内容指纹和跨分割重复审计；
-- `runs/*.jsonl`：每个方法的可重用排名；
+- `manifest.json`：输入 SHA-256、有序 query/candidate 指纹、Git/环境/硬件、完整配置和单命令复现信息；
+- `leakage_audit.json`：时间、DOI、标题、内容指纹、摘要近重复、publication version 和跨分割重复审计；
+- `runs/*.jsonl`：每个方法的可重用排名（包括显式空排名记录）；
+- `runs/*.jsonl.manifest.json`：逐 run 的强制 sidecar，绑定 dataset/profile/config/method/runtime 与完整 query 覆盖；
 - `metrics.json`：总体及学科/分区指标、配对置信区间和显著性检验。
 
 `metrics.json` 始终把完整 test 作为主结果。同时它会额外报告 `identity_safe`敏感性指标：仅排除输入文本直接包含金标准期刊名的 query，并写明完整、安全和排除数量及全部排除 ID。这套子集只是保守对照，不会静默替换主分母。
@@ -104,7 +105,10 @@ python -m research build-cached-corpus \
   "name": "bge_m3",
   "type": "vector_scores",
   "path": "frozen_runs/bge_m3.jsonl",
-  "model": "BAAI/bge-m3@<exact-revision>",
+  "manifest_path": "frozen_runs/bge_m3.jsonl.manifest.json",
+  "manifest_sha256": "<sha256-of-sidecar>",
+  "generation_config_sha256": "<sidecar.binding.configuration.canonical_sha256>",
+  "provider_fingerprint": "<sidecar.method.provider_fingerprint>",
   "corpus_snapshot": "2025-12-31",
   "training_cutoff_disclosure": "see model card"
 }
@@ -117,7 +121,7 @@ python -m research build-cached-corpus \
 {"query_id":"doi:10.x/example","scores":{"jcr-abc":0.812,"jcr-def":0.701}}
 ```
 
-导入的候选 ID 必须属于同一个冻结 corpus，否则评测立即失败。BM25、TF-IDF、向量、图谱均转换为同一 `Run` 格式，因此 RRF 和学习融合不需要了解各通道的实现。
+导入不接受裸分数文件。sidecar 本身必须由配置中的 SHA-256 固定，并与当前 dataset SHA、有序 query 指纹、profile SHA、20,087 候选指纹、生成配置及 exact model revision/provider fingerprint 全部一致。缺/多 query、未知或重复候选、空缺 sidecar、错误指纹、NaN/Inf、run 文件被改写都会立即失败。BM25、TF-IDF、向量、图谱均转换为同一 `Run` 格式，因此 RRF 和学习融合不需要了解各通道的实现。
 
 ## 4. 独立构建 20,087 刊历史画像
 

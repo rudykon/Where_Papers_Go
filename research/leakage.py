@@ -5,14 +5,19 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date
 import hashlib
+import math
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .data import DatasetBundle, TemporalSplit, normalize_doi, normalize_text, parse_iso_date
 from .types import Query, VenueDocument
 
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.I)
+ARXIV_RE = re.compile(r"(?:arxiv\s*:\s*)?(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
+
+AbstractSimilarityHook = Callable[[str, str], float]
+PublicationVersionHook = Callable[[Query, Mapping[str, Any]], Iterable[str]]
 
 
 def _content_hash(query: Query) -> str:
@@ -27,14 +32,116 @@ def _distinctive_title(value: str) -> bool:
     return len(normalized) >= 24 and (len(normalized.split()) >= 4 or cjk_count >= 8)
 
 
+def _abstract_shingles(value: str) -> frozenset[str]:
+    normalized = normalize_text(value)
+    tokens = normalized.split()
+    if len(tokens) >= 12:
+        return frozenset(
+            "w:" + " ".join(tokens[index : index + 5])
+            for index in range(len(tokens) - 4)
+        )
+    compact = "".join(tokens)
+    if len(compact) >= 80:
+        return frozenset(
+            "c:" + compact[index : index + 18]
+            for index in range(len(compact) - 17)
+        )
+    return frozenset()
+
+
+def _default_abstract_similarity(left: str, right: str) -> float:
+    left_shingles = _abstract_shingles(left)
+    right_shingles = _abstract_shingles(right)
+    if not left_shingles or not right_shingles:
+        return 0.0
+    overlap = len(left_shingles & right_shingles)
+    return max(
+        overlap / len(left_shingles | right_shingles),
+        overlap / min(len(left_shingles), len(right_shingles)),
+    )
+
+
+_VERSION_FIELDS = {
+    "arxiv_id",
+    "doi",
+    "is_preprint_of",
+    "is_version_of",
+    "journal_doi",
+    "preprint_doi",
+    "publication_version_ids",
+    "published_as",
+    "related_doi",
+    "related_dois",
+    "relation",
+    "relations",
+    "source_version_ids",
+    "version_of",
+}
+
+
+def _flatten_version_values(value: Any) -> Iterable[str]:
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _flatten_version_values(nested)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for nested in value:
+            yield from _flatten_version_values(nested)
+    elif value not in (None, ""):
+        yield str(value)
+
+
+def _version_token(value: str) -> tuple[str, bool] | None:
+    raw = str(value or "").strip()
+    doi_match = DOI_RE.search(raw)
+    doi = normalize_doi(doi_match.group(0) if doi_match else raw)
+    if doi.startswith("10.") and "/" in doi:
+        root = re.sub(r"(?:[._-](?:v|version)\d+)$", "", doi, flags=re.I)
+        return "doi-version:" + root, root != doi
+    arxiv_match = ARXIV_RE.search(raw)
+    if arxiv_match:
+        explicit = bool(re.search(r"v\d+", raw, re.I))
+        return "arxiv-version:" + arxiv_match.group(1).casefold(), explicit
+    return None
+
+
+def _publication_version_tokens(
+    query: Query,
+    row: Mapping[str, Any],
+    hook: PublicationVersionHook | None,
+) -> dict[str, bool]:
+    values: list[tuple[str, bool]] = []
+    if query.doi:
+        values.append((query.doi, False))
+    for key, value in row.items():
+        normalized_key = str(key).casefold()
+        if normalized_key in _VERSION_FIELDS and normalized_key != "doi":
+            values.extend((item, True) for item in _flatten_version_values(value))
+    if hook is not None:
+        values.extend((str(item), True) for item in hook(query, row))
+    tokens: dict[str, bool] = {}
+    for value, relation_explicit in values:
+        parsed = _version_token(value)
+        if parsed is None:
+            continue
+        token, marker_explicit = parsed
+        tokens[token] = tokens.get(token, False) or relation_explicit or marker_explicit
+    return tokens
+
+
 def audit_leakage(
     bundle: DatasetBundle,
     corpus: Sequence[VenueDocument],
     split: TemporalSplit,
     *,
     evaluation_splits: Sequence[str] = ("validation", "test"),
+    abstract_near_duplicate_threshold: float = 0.9,
+    abstract_similarity_hook: AbstractSimilarityHook | None = None,
+    publication_version_hook: PublicationVersionHook | None = None,
 ) -> dict[str, Any]:
-    """Audit direct identity, temporal, duplicate, and label-in-query leakage."""
+    """Audit identity, temporal, near-duplicate, and publication-version leakage."""
+
+    if not 0.0 < abstract_near_duplicate_threshold <= 1.0:
+        raise ValueError("abstract near-duplicate threshold must be in (0, 1]")
 
     query_by_id = {query.query_id: query for query in bundle.queries}
     split_map: dict[str, str] = {}
@@ -73,6 +180,131 @@ def audit_leakage(
                     splits=sorted(owner_splits),
                 )
 
+    audited_target_ids = {
+        query_id
+        for split_name in evaluation_splits
+        for query_id in getattr(split, split_name)
+    }
+
+    # Candidate generation is deliberately conservative and deterministic.
+    # A true high-overlap pair shares many rare shingles, so selecting the 20
+    # rarest shingles per abstract avoids a quadratic default audit.  A custom
+    # hook opts into exhaustive cross-split pairs for future sealed datasets.
+    abstract_queries = [
+        query
+        for query in bundle.queries
+        if (
+            bool(query.abstract.strip())
+            if abstract_similarity_hook is not None
+            else bool(_abstract_shingles(query.abstract))
+        )
+    ]
+    abstract_pairs: set[tuple[str, str]] = set()
+    if abstract_similarity_hook is not None:
+        for left_index, left in enumerate(abstract_queries):
+            for right in abstract_queries[left_index + 1 :]:
+                if split_map.get(left.query_id) == split_map.get(right.query_id):
+                    continue
+                if not ({left.query_id, right.query_id} & audited_target_ids):
+                    continue
+                abstract_pairs.add(tuple(sorted((left.query_id, right.query_id))))
+    else:
+        shingles = {
+            query.query_id: _abstract_shingles(query.abstract)
+            for query in abstract_queries
+        }
+        frequencies = Counter(
+            shingle for values in shingles.values() for shingle in values
+        )
+        owners: dict[str, list[str]] = defaultdict(list)
+        for query_id, values in shingles.items():
+            for shingle in sorted(values, key=lambda item: (frequencies[item], item))[
+                :20
+            ]:
+                if frequencies[shingle] <= 100:
+                    owners[shingle].append(query_id)
+        for query_ids in owners.values():
+            for left_index, left_id in enumerate(query_ids):
+                for right_id in query_ids[left_index + 1 :]:
+                    if split_map.get(left_id) == split_map.get(right_id):
+                        continue
+                    if not ({left_id, right_id} & audited_target_ids):
+                        continue
+                    abstract_pairs.add(tuple(sorted((left_id, right_id))))
+
+    near_duplicate_examples: list[dict[str, Any]] = []
+    near_duplicate_count = 0
+    similarity = abstract_similarity_hook or _default_abstract_similarity
+    for left_id, right_id in sorted(abstract_pairs):
+        score = float(
+            similarity(
+                query_by_id[left_id].abstract,
+                query_by_id[right_id].abstract,
+            )
+        )
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError("abstract similarity hook must return a finite value in [0, 1]")
+        if score < abstract_near_duplicate_threshold:
+            continue
+        near_duplicate_count += 1
+        if len(near_duplicate_examples) < 20:
+            near_duplicate_examples.append(
+                {
+                    "query_ids": [left_id, right_id],
+                    "splits": sorted(
+                        {split_map.get(left_id), split_map.get(right_id)}
+                    ),
+                    "similarity": score,
+                }
+            )
+    if near_duplicate_count:
+        add(
+            "cross_split_near_duplicate_abstract",
+            "critical",
+            pair_count=near_duplicate_count,
+            threshold=abstract_near_duplicate_threshold,
+            examples=near_duplicate_examples,
+        )
+
+    version_tokens_by_query = {
+        query.query_id: _publication_version_tokens(
+            query,
+            bundle.source_rows.get(query.query_id, {}),
+            publication_version_hook,
+        )
+        for query in bundle.queries
+    }
+    version_owners: dict[str, list[tuple[str, bool]]] = defaultdict(list)
+    for query_id, tokens in version_tokens_by_query.items():
+        for token, explicit in tokens.items():
+            version_owners[token].append((query_id, explicit))
+    version_examples: list[dict[str, Any]] = []
+    version_group_count = 0
+    for token, owners in sorted(version_owners.items()):
+        owner_ids = sorted({query_id for query_id, _explicit in owners})
+        owner_splits = {split_map.get(query_id, "excluded") for query_id in owner_ids}
+        if len(owner_splits) <= 1 or not (set(owner_ids) & audited_target_ids):
+            continue
+        distinct_dois = {query_by_id[query_id].doi for query_id in owner_ids}
+        if len(distinct_dois) <= 1 and not any(explicit for _query_id, explicit in owners):
+            continue
+        version_group_count += 1
+        if len(version_examples) < 20:
+            version_examples.append(
+                {
+                    "version_identity": token,
+                    "query_ids": owner_ids,
+                    "splits": sorted(owner_splits),
+                }
+            )
+    if version_group_count:
+        add(
+            "cross_split_publication_version",
+            "critical",
+            identity_count=version_group_count,
+            examples=version_examples,
+        )
+
     target_query_ids = [
         query_id
         for split_name in evaluation_splits
@@ -88,6 +320,7 @@ def audit_leakage(
         earliest_target = date.max
 
     corpus_dois: set[str] = set()
+    corpus_version_tokens: set[str] = set()
     corpus_titles: set[str] = set()
     corpus_hashes: set[str] = set()
     source_query_ids: set[str] = set()
@@ -118,7 +351,10 @@ def audit_leakage(
                 for source_id in prototype.get("source_ids") or ():
                     value = str(source_id or "")
                     if value.startswith("doi:") and normalize_doi(value[4:]):
-                        corpus_dois.add(normalize_doi(value[4:]))
+                        normalized_doi = normalize_doi(value[4:])
+                        corpus_dois.add(normalized_doi)
+                        if parsed := _version_token(normalized_doi):
+                            corpus_version_tokens.add(parsed[0])
         for source_max_date in source_max_dates:
             if not source_max_date:
                 continue
@@ -135,6 +371,8 @@ def audit_leakage(
         for value in doi_values if isinstance(doi_values, Sequence) else ():
             if normalized := normalize_doi(value):
                 corpus_dois.add(normalized)
+                if parsed := _version_token(normalized):
+                    corpus_version_tokens.add(parsed[0])
         title_values = metadata.get("source_titles") or [metadata.get("source_title")]
         if isinstance(title_values, str):
             title_values = [title_values]
@@ -150,7 +388,11 @@ def audit_leakage(
         for value in query_values if isinstance(query_values, Sequence) else ():
             if value:
                 source_query_ids.add(str(value))
-        corpus_dois.update(normalize_doi(value) for value in DOI_RE.findall(document.text))
+        for value in DOI_RE.findall(document.text):
+            normalized = normalize_doi(value)
+            corpus_dois.add(normalized)
+            if parsed := _version_token(normalized):
+                corpus_version_tokens.add(parsed[0])
 
     if missing_snapshot:
         add("missing_corpus_snapshot", "critical", document_count=missing_snapshot)
@@ -175,6 +417,11 @@ def audit_leakage(
     direct_counts: Counter[str] = Counter()
     examples: dict[str, list[str]] = defaultdict(list)
     for query in target_queries:
+        version_match = bool(
+            query.doi not in corpus_dois
+            and set(version_tokens_by_query.get(query.query_id, {}))
+            & corpus_version_tokens
+        )
         checks = {
             "doi": bool(query.doi and query.doi in corpus_dois),
             "title": bool(
@@ -183,6 +430,7 @@ def audit_leakage(
             ),
             "content_hash": _content_hash(query) in corpus_hashes,
             "source_query_id": query.query_id in source_query_ids,
+            "publication_version": version_match,
         }
         for kind, matched in checks.items():
             if matched:
@@ -208,7 +456,7 @@ def audit_leakage(
 
     severity_counts = Counter(finding["severity"] for finding in findings)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "audited_evaluation_splits": list(evaluation_splits),
         "audited_query_count": len(target_queries),
         "corpus_document_count": len(corpus),
@@ -217,6 +465,8 @@ def audit_leakage(
         "findings": findings,
         "notes": [
             "Candidate venue names and frozen scope/category text are permitted inputs, not label leakage.",
+            "Abstract near-duplicate detection uses deterministic rare-shingle candidate generation unless an explicit similarity hook is supplied.",
+            "Publication-version identities combine versioned DOI/arXiv roots with optional dataset-specific relation hooks.",
             "The audit cannot prove that a pretrained embedding model never saw a paper; imported runs must disclose model/version and training cutoff separately.",
         ],
     }

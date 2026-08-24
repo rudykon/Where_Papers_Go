@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,9 +11,14 @@ from research.baselines import BM25Baseline, TfidfBaseline, tokenize
 from research.cache_builder import build_cached_corpus, jats_to_text
 from research.cli import evaluate_config
 from research.data import (
+    ResearchDataError,
+    build_run_binding,
+    canonical_json_sha256,
     load_recent_journal_dataset,
     load_score_run,
+    sha256_file,
     temporal_split,
+    write_run,
 )
 from research.fusion import LearnedLinearFusion, rrf_fuse
 from research.leakage import audit_leakage, identity_unsafe_query_ids
@@ -53,20 +59,234 @@ class LexicalBaselineTests(unittest.TestCase):
             self.assertEqual(run["q1"][0].doc_id, "v-graph")
             self.assertEqual(run["q2"][0].doc_id, "v-chinese")
 
+    def test_prototype_tfidf_idf_uses_expanded_unit_population(self) -> None:
+        corpus = [
+            VenueDocument(
+                "v1",
+                "fallback",
+                metadata={
+                    "prototypes": [
+                        {"text": "common alpha"},
+                        {"text": "common beta"},
+                    ]
+                },
+            ),
+            VenueDocument(
+                "v2",
+                "fallback",
+                metadata={"prototypes": [{"text": "gamma"}]},
+            ),
+        ]
+        baseline = TfidfBaseline(use_prototypes=True).fit(corpus)
+        self.assertAlmostEqual(baseline._idf["common"], math.log(4 / 3) + 1)
+
     def test_imported_score_formats(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "scores.jsonl"
+            root = Path(temporary)
+            path = root / "scores.jsonl"
+            dataset = root / "dataset.jsonl"
+            profiles = root / "profiles.jsonl"
+            dataset.write_text("dataset\n", encoding="utf-8")
+            profiles.write_text("profiles\n", encoding="utf-8")
+            configuration = {"builder": "unit-test", "top_k": 2}
+            binding = build_run_binding(
+                dataset_path=dataset,
+                profiles_path=profiles,
+                query_ids=("q1", "q2"),
+                candidate_ids=("v1", "v2"),
+                configuration=configuration,
+            )
+            method = {
+                "name": "test",
+                "kind": "vector",
+                "provider_fingerprint": "provider-v1",
+            }
+            write_run(
+                path,
+                {
+                    "q1": [
+                        ScoredDocument("v2", 0.9),
+                        ScoredDocument("v1", 0.4),
+                    ],
+                    "q2": [ScoredDocument("v1", 0.8)],
+                },
+                binding=binding,
+                query_ids=("q1", "q2"),
+                candidate_ids=("v1", "v2"),
+                top_k=2,
+                method=method,
+                command=("python", "-m", "research", "test"),
+                working_directory=root,
+            )
+            # Exercise both supported on-disk row forms under one valid,
+            # content-addressed sidecar.
             _write_jsonl(
                 path,
                 [
-                    {"query_id": "q1", "venue_id": "v1", "score": 0.4},
-                    {"query_id": "q1", "venue_id": "v2", "score": 0.9},
+                    {"query_id": "q1", "venue_id": "v2", "rank": 1, "score": 0.9},
+                    {"query_id": "q1", "venue_id": "v1", "rank": 2, "score": 0.4},
                     {"query_id": "q2", "scores": {"v1": 0.8}},
                 ],
             )
-            run = load_score_run(path)
+            manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["output"]["sha256"] = sha256_file(path)
+            manifest["output"]["bytes"] = path.stat().st_size
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
+            run = load_score_run(
+                path,
+                expected_query_ids=("q1", "q2"),
+                candidate_ids=("v1", "v2"),
+                expected_binding=binding,
+                expected_manifest_sha256=sha256_file(manifest_path),
+                expected_configuration_sha256=canonical_json_sha256(configuration),
+                expected_method_identity={"provider_fingerprint": "provider-v1"},
+            )
         self.assertEqual([item.doc_id for item in run["q1"]], ["v2", "v1"])
         self.assertEqual(run["q2"][0].score, 0.8)
+
+
+class FrozenRunContractTests(unittest.TestCase):
+    def test_frozen_run_contract_rejects_incomplete_or_invalid_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "dataset.jsonl"
+            profiles = root / "profiles.jsonl"
+            path = root / "run.jsonl"
+            dataset.write_text("dataset\n", encoding="utf-8")
+            profiles.write_text("profiles\n", encoding="utf-8")
+            config = {"builder": "contract-test", "top_k": 2}
+            binding = build_run_binding(
+                dataset_path=dataset,
+                profiles_path=profiles,
+                query_ids=("q1", "q2"),
+                candidate_ids=("v1", "v2"),
+                configuration=config,
+            )
+            method = {
+                "name": "strict",
+                "kind": "model",
+                "model_revision": "model@0123456789abcdef",
+            }
+            valid = {
+                "q1": [ScoredDocument("v1", 1.0)],
+                "q2": [],
+            }
+
+            def freeze() -> Path:
+                write_run(
+                    path,
+                    valid,
+                    binding=binding,
+                    query_ids=("q1", "q2"),
+                    candidate_ids=("v1", "v2"),
+                    top_k=2,
+                    method=method,
+                    command=("python", "-m", "research", "contract-test"),
+                    working_directory=root,
+                )
+                return path.with_suffix(path.suffix + ".manifest.json")
+
+            for bad_run in (
+                {"q1": valid["q1"]},
+                {**valid, "q3": []},
+                {"q1": [ScoredDocument("unknown", 1.0)], "q2": []},
+                {"q1": [ScoredDocument("v1", float("inf"))], "q2": []},
+                {
+                    "q1": [
+                        ScoredDocument("v1", 1.0),
+                        ScoredDocument("v1", 0.5),
+                    ],
+                    "q2": [],
+                },
+            ):
+                with self.subTest(bad_run=bad_run), self.assertRaises(ResearchDataError):
+                    write_run(
+                        path,
+                        bad_run,
+                        binding=binding,
+                        query_ids=("q1", "q2"),
+                        candidate_ids=("v1", "v2"),
+                        top_k=2,
+                        method=method,
+                        command=("python", "-m", "research", "contract-test"),
+                        working_directory=root,
+                    )
+
+            manifest_path = freeze()
+            with self.assertRaises(ResearchDataError):
+                load_score_run(
+                    path,
+                    expected_query_ids=("q1", "q2"),
+                    candidate_ids=("v1", "v2"),
+                    expected_binding=binding,
+                    expected_manifest_sha256="0" * 64,
+                    expected_configuration_sha256=canonical_json_sha256(config),
+                    expected_method_identity={
+                        "model_revision": "model@0123456789abcdef"
+                    },
+                )
+
+            manifest_sha = sha256_file(manifest_path)
+            for wrong_config, wrong_identity in (
+                ("f" * 64, {"model_revision": "model@0123456789abcdef"}),
+                (
+                    canonical_json_sha256(config),
+                    {"model_revision": "model@wrong"},
+                ),
+            ):
+                with self.subTest(
+                    wrong_config=wrong_config, wrong_identity=wrong_identity
+                ), self.assertRaises(ResearchDataError):
+                    load_score_run(
+                        path,
+                        expected_query_ids=("q1", "q2"),
+                        candidate_ids=("v1", "v2"),
+                        expected_binding=binding,
+                        expected_manifest_sha256=manifest_sha,
+                        expected_configuration_sha256=wrong_config,
+                        expected_method_identity=wrong_identity,
+                    )
+
+            for malformed_rows in (
+                [
+                    {"query_id": "q1", "venue_id": "v1", "rank": 1, "score": "inf"},
+                    {"query_id": "q2", "scores": {}},
+                ],
+                [{"query_id": "q1", "venue_id": "v1", "rank": 1, "score": 1.0}],
+                [
+                    {"query_id": "q1", "venue_id": "v1", "rank": 1, "score": 1.0},
+                    {"query_id": "q1", "venue_id": "v1", "rank": 2, "score": 0.5},
+                    {"query_id": "q2", "scores": {}},
+                ],
+            ):
+                manifest_path = freeze()
+                _write_jsonl(path, malformed_rows)
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["output"]["sha256"] = sha256_file(path)
+                manifest["output"]["bytes"] = path.stat().st_size
+                manifest_path.write_text(
+                    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                with self.subTest(rows=malformed_rows), self.assertRaises(
+                    ResearchDataError
+                ):
+                    load_score_run(
+                        path,
+                        expected_query_ids=("q1", "q2"),
+                        candidate_ids=("v1", "v2"),
+                        expected_binding=binding,
+                        expected_manifest_sha256=sha256_file(manifest_path),
+                        expected_configuration_sha256=canonical_json_sha256(config),
+                        expected_method_identity={
+                            "model_revision": "model@0123456789abcdef"
+                        },
+                    )
 
 
 class FusionMetricAndStatisticsTests(unittest.TestCase):
@@ -281,6 +501,66 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             }
             self.assertEqual(identity_unsafe_query_ids(synthetic_audit), ("test",))
 
+    def test_abstract_near_duplicate_and_publication_version_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dataset = Path(temporary) / "dataset.jsonl"
+            shared = [f"token{index}" for index in range(50)]
+            near_train = " ".join(shared)
+            near_test = " ".join([*shared[:-1], "changed-final-token"])
+            _write_jsonl(
+                dataset,
+                [
+                    {
+                        "paper_id": "near-train",
+                        "doi": "10.1000/near-train",
+                        "title": "Training title for abstract comparison",
+                        "abstract": near_train,
+                        "publication_date": "2026-01-10",
+                        "gold_journal_id": "v1",
+                    },
+                    {
+                        "paper_id": "version-train",
+                        "doi": "10.1000/versioned-work.v1",
+                        "title": "Early preprint title",
+                        "abstract": "short early preprint summary",
+                        "publication_date": "2026-01-11",
+                        "gold_journal_id": "v1",
+                    },
+                    {
+                        "paper_id": "near-test",
+                        "doi": "10.1000/near-test",
+                        "title": "Different evaluation title",
+                        "abstract": near_test,
+                        "publication_date": "2026-03-10",
+                        "gold_journal_id": "v1",
+                    },
+                    {
+                        "paper_id": "version-test",
+                        "doi": "10.1000/versioned-work.v2",
+                        "title": "Substantially revised journal title",
+                        "abstract": "different final publication summary",
+                        "publication_date": "2026-03-11",
+                        "gold_journal_id": "v1",
+                    },
+                ],
+            )
+            bundle = load_recent_journal_dataset(dataset)
+            split = temporal_split(
+                bundle.queries,
+                train_end="2026-01-31",
+                validation_end="2026-02-28",
+                test_end="2026-03-31",
+            )
+            audit = audit_leakage(
+                bundle,
+                [VenueDocument("v1", "clean", snapshot_date="2025-12-31")],
+                split,
+            )
+            kinds = {finding["kind"] for finding in audit["findings"]}
+            self.assertIn("cross_split_near_duplicate_abstract", kinds)
+            self.assertIn("cross_split_publication_version", kinds)
+            self.assertFalse(audit["passed"])
+
     def test_end_to_end_config_writes_manifest_audit_runs_and_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -389,14 +669,35 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             )
             self.assertEqual(report["identity_safe_test"]["full_query_count"], 1)
             self.assertEqual(report["methods"]["bm25"]["identity_safe"]["query_count"], 1)
+            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(report["frozen_run_contract"]["query_count"], 3)
+            self.assertEqual(
+                report["frozen_run_contract"]["candidate_universe_count"], 2
+            )
+            self.assertIn("shell_command", report["reproduction"])
             for relative in (
                 "manifest.json",
                 "leakage_audit.json",
                 "metrics.json",
                 "runs/bm25.jsonl",
+                "runs/bm25.jsonl.manifest.json",
                 "runs/learned.jsonl",
+                "runs/learned.jsonl.manifest.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
+            manifest = json.loads(
+                (output / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(
+                manifest["frozen_runs"]["bm25"]["coverage"]["query_count"], 3
+            )
+            self.assertTrue(
+                manifest["frozen_runs"]["bm25"]["coverage"]
+                ["complete_query_coverage"]
+            )
+            self.assertIn("dependencies", manifest["runtime"])
+            self.assertIn("hardware", manifest["runtime"])
 
 
 class CachedCorpusBuilderTests(unittest.TestCase):

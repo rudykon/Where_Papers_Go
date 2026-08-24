@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict
 import json
 from pathlib import Path
+import shlex
 import sys
 import threading
 from typing import Any, Mapping, Sequence
@@ -16,10 +17,14 @@ from .clean_corpus import rebuild_clean_corpus
 from .data import (
     ResearchDataError,
     build_data_manifest,
+    build_run_binding,
+    canonical_json_sha256,
     load_jcr_corpus,
     load_jsonl_corpus,
     load_recent_journal_dataset,
     load_score_run,
+    runtime_provenance,
+    sha256_file,
     temporal_split,
     write_run,
 )
@@ -59,27 +64,33 @@ def _resolve(config_path: Path, value: Any) -> Path:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    temporary = path.with_name("." + path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
         encoding="utf-8",
+        newline="\n",
+    )
+    temporary.replace(path)
+
+
+def _implementation_revision(runtime: Mapping[str, Any]) -> str:
+    code = _mapping(runtime.get("code"), "runtime.code")
+    return ":".join(
+        str(code.get(field) or "")
+        for field in ("commit", "status_sha256", "tracked_diff_sha256")
     )
 
 
-def _validate_imported_candidates(run: Run, candidate_ids: set[str], name: str) -> None:
-    unknown = {
-        item.doc_id
-        for ranking in run.values()
-        for item in ranking
-        if item.doc_id not in candidate_ids
-    }
-    if unknown:
-        examples = ", ".join(sorted(unknown)[:5])
-        raise ResearchDataError(
-            f"imported run {name!r} contains {len(unknown)} IDs outside the frozen corpus: {examples}"
-        )
-
-
-def evaluate_config(config_path: Path) -> dict[str, Any]:
+def evaluate_config(
+    config_path: Path, *, command: Sequence[str] | None = None
+) -> dict[str, Any]:
     config_path = config_path.resolve()
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -88,6 +99,25 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
     config = _mapping(config, "root")
     if config.get("offline_only") is not True:
         raise ResearchDataError("research evaluation requires offline_only=true")
+    recorded_command = tuple(
+        str(value)
+        for value in (
+            command
+            or (
+                sys.executable,
+                "-m",
+                "research",
+                "evaluate",
+                "--config",
+                str(config_path),
+            )
+        )
+    )
+    reproduction = {
+        "command": list(recorded_command),
+        "shell_command": shlex.join(recorded_command),
+        "working_directory": str(Path.cwd().resolve()),
+    }
 
     dataset_config = _mapping(config.get("dataset"), "dataset")
     corpus_config = _mapping(config.get("corpus"), "corpus")
@@ -137,15 +167,31 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
             f"critical leakage found; inspect {output_dir / 'leakage_audit.json'}"
         )
 
-    query_ids = set((*split.train, *split.validation, *split.test))
-    queries = [query for query in bundle.queries if query.query_id in query_ids]
+    active_query_ids = set((*split.train, *split.validation, *split.test))
+    queries = [
+        query for query in bundle.queries if query.query_id in active_query_ids
+    ]
+    ordered_query_ids = tuple(query.query_id for query in queries)
+    candidate_ids = tuple(sorted(document.doc_id for document in corpus))
     retrieval_depth = int(evaluation_config.get("retrieval_depth") or 100)
     cutoffs = tuple(int(value) for value in evaluation_config.get("cutoffs", (1, 3, 5, 10, 20, 50)))
     if retrieval_depth < max(cutoffs):
         raise ResearchDataError("retrieval_depth must be at least the largest evaluation cutoff")
 
+    runtime = runtime_provenance()
+    binding = build_run_binding(
+        dataset_path=dataset_path,
+        profiles_path=corpus_path,
+        query_ids=ordered_query_ids,
+        candidate_ids=candidate_ids,
+        configuration=config,
+        configuration_path=config_path,
+    )
+    implementation_revision = _implementation_revision(runtime)
+
     runs: dict[str, Run] = {}
     method_metadata: dict[str, Any] = {}
+    method_identities: dict[str, dict[str, Any]] = {}
     for baseline_config in config.get("baselines", ()):
         baseline_config = _mapping(baseline_config, "baselines[]")
         kind = str(baseline_config.get("type") or "")
@@ -169,6 +215,13 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
             raise ResearchDataError(f"unsupported baseline type: {kind!r}")
         runs[name] = baseline.fit(corpus).run(queries, top_k=retrieval_depth)
         method_metadata[name] = dict(baseline_config)
+        method_identities[name] = {
+            "name": name,
+            "kind": kind,
+            "implementation": f"research.baselines.{type(baseline).__name__}",
+            "implementation_revision": implementation_revision,
+            "configuration_sha256": canonical_json_sha256(baseline_config),
+        }
 
     additional_inputs: list[Path] = []
     for imported_config in config.get("imported_runs", ()):
@@ -177,12 +230,52 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
         if not name or name in runs:
             raise ResearchDataError(f"duplicate or empty imported run name: {name!r}")
         path = _resolve(config_path, imported_config.get("path"))
-        imported = load_score_run(path, top_k=retrieval_depth)
-        _validate_imported_candidates(imported, {doc.doc_id for doc in corpus}, name)
+        manifest_path = (
+            _resolve(config_path, imported_config.get("manifest_path"))
+            if imported_config.get("manifest_path")
+            else path.with_suffix(path.suffix + ".manifest.json")
+        )
+        manifest_sha256 = str(imported_config.get("manifest_sha256") or "").strip()
+        generation_config_sha256 = str(
+            imported_config.get("generation_config_sha256") or ""
+        ).strip()
+        expected_identity = {
+            key: str(imported_config[key]).strip()
+            for key in (
+                "model_revision",
+                "provider_fingerprint",
+                "implementation_revision",
+            )
+            if str(imported_config.get(key) or "").strip()
+        }
+        if not manifest_sha256 or not generation_config_sha256 or not expected_identity:
+            raise ResearchDataError(
+                f"imported run {name!r} requires manifest_sha256, "
+                "generation_config_sha256, and an exact method identity"
+            )
+        imported = load_score_run(
+            path,
+            expected_query_ids=ordered_query_ids,
+            candidate_ids=candidate_ids,
+            expected_binding=binding,
+            expected_manifest_sha256=manifest_sha256,
+            expected_configuration_sha256=generation_config_sha256,
+            expected_method_identity=expected_identity,
+            manifest_path=manifest_path,
+            top_k=retrieval_depth,
+        )
         adapter = ImportedRunBaseline(imported, name=name)
         runs[name] = adapter.fit(corpus).run(queries, top_k=retrieval_depth)
-        additional_inputs.append(path)
+        additional_inputs.extend((path, manifest_path))
         method_metadata[name] = dict(imported_config)
+        method_identities[name] = {
+            "name": name,
+            "kind": str(imported_config.get("type") or "imported"),
+            **expected_identity,
+            "source_run_sha256": sha256_file(path),
+            "source_manifest_sha256": manifest_sha256,
+            "configuration_sha256": canonical_json_sha256(imported_config),
+        }
 
     for fusion_config in config.get("fusions", ()):
         fusion_config = _mapping(fusion_config, "fusions[]")
@@ -221,6 +314,20 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
             }
         else:
             raise ResearchDataError(f"unsupported fusion type: {kind!r}")
+        method_identities[name] = {
+            "name": name,
+            "kind": kind,
+            "implementation": (
+                "research.fusion.rrf_fuse"
+                if kind == "rrf"
+                else "research.fusion.LearnedLinearFusion"
+            ),
+            "implementation_revision": implementation_revision,
+            "configuration_sha256": canonical_json_sha256(fusion_config),
+            "source_methods_sha256": canonical_json_sha256(
+                {source: method_identities[source] for source in source_names}
+            ),
+        }
 
     if not runs:
         raise ResearchDataError("configuration defines no baselines or imported runs")
@@ -238,9 +345,36 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
     identity_safe_test_ids = tuple(
         query_id for query_id in split.test if query_id not in identity_unsafe_ids
     )
+    frozen_runs: dict[str, Any] = {}
     for name, run in runs.items():
         run_path = output_dir / "runs" / f"{name}.jsonl"
-        write_run(run_path, run)
+        run_manifest = write_run(
+            run_path,
+            run,
+            binding=binding,
+            query_ids=ordered_query_ids,
+            candidate_ids=candidate_ids,
+            top_k=retrieval_depth,
+            method=method_identities[name],
+            command=recorded_command,
+            working_directory=Path.cwd(),
+            runtime=runtime,
+        )
+        run_manifest_path = run_path.with_suffix(run_path.suffix + ".manifest.json")
+        frozen_runs[name] = {
+            "run": {
+                "path": str(run_path.resolve()),
+                "sha256": run_manifest["output"]["sha256"],
+                "bytes": run_manifest["output"]["bytes"],
+            },
+            "manifest": {
+                "path": str(run_manifest_path.resolve()),
+                "sha256": sha256_file(run_manifest_path),
+                "bytes": run_manifest_path.stat().st_size,
+            },
+            "coverage": run_manifest["coverage"],
+            "method": run_manifest["method"],
+        }
         result = evaluate_run(run, bundle.qrels, query_ids=split.test, ks=cutoffs)
         result["by_history_status"] = stratified_metrics(
             result, test_strata["history_status"]
@@ -255,6 +389,20 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
         # Backward-compatible aliases retained for existing analysis scripts.
         result["by_field"] = result["by_subject"]
         result["by_quartile"] = result["by_jcr_quartile"]
+        for dimension in (
+            "by_history_status",
+            "by_profile_level",
+            "by_subject",
+            "by_jcr_quartile",
+        ):
+            assigned = sum(
+                int(group["query_count"]) for group in result[dimension].values()
+            )
+            if assigned != len(split.test):
+                raise ResearchDataError(
+                    f"method {name!r} stratum {dimension!r} covers "
+                    f"{assigned} queries; expected {len(split.test)}"
+                )
         result["identity_safe"] = (
             evaluate_run(
                 run,
@@ -315,25 +463,22 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
             )
         comparisons.append(comparison_result)
 
-    manifest = build_data_manifest(
-        dataset_path=dataset_path,
-        corpus_path=corpus_path,
-        bundle=bundle,
-        corpus=corpus,
-        split=split,
-        config=config,
-        additional_inputs=additional_inputs,
-    )
-    manifest["methods"] = method_metadata
-    manifest["leakage_audit"] = {
-        "passed": leakage["passed"],
-        "severity_counts": leakage["severity_counts"],
-    }
-    _write_json(output_dir / "manifest.json", manifest)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "manifest": "manifest.json",
         "leakage_audit": "leakage_audit.json",
+        "reproduction": reproduction,
+        "frozen_run_contract": {
+            "query_count": len(ordered_query_ids),
+            "ordered_query_ids_sha256": binding["queries"][
+                "ordered_ids_sha256"
+            ],
+            "candidate_universe_count": len(candidate_ids),
+            "candidate_ids_sha256": binding["candidates"][
+                "ordered_ids_sha256"
+            ],
+            "all_methods_share_binding": True,
+        },
         "evaluation_split": "test",
         "primary_evaluation": {
             "split": "test",
@@ -357,7 +502,42 @@ def evaluate_config(config_path: Path) -> dict[str, Any]:
         "methods": evaluations,
         "paired_comparisons": comparisons,
     }
-    _write_json(output_dir / "metrics.json", report)
+    metrics_path = output_dir / "metrics.json"
+    leakage_path = output_dir / "leakage_audit.json"
+    _write_json(metrics_path, report)
+    outputs = {
+        "metrics": {
+            "path": str(metrics_path.resolve()),
+            "sha256": sha256_file(metrics_path),
+            "bytes": metrics_path.stat().st_size,
+        },
+        "leakage_audit": {
+            "path": str(leakage_path.resolve()),
+            "sha256": sha256_file(leakage_path),
+            "bytes": leakage_path.stat().st_size,
+        },
+    }
+    manifest = build_data_manifest(
+        config_path=config_path,
+        dataset_path=dataset_path,
+        corpus_path=corpus_path,
+        bundle=bundle,
+        corpus=corpus,
+        split=split,
+        config=config,
+        binding=binding,
+        runtime=runtime,
+        reproduction=reproduction,
+        frozen_runs=frozen_runs,
+        outputs=outputs,
+        additional_inputs=additional_inputs,
+    )
+    manifest["methods"] = method_metadata
+    manifest["leakage_audit"] = {
+        "passed": leakage["passed"],
+        "severity_counts": leakage["severity_counts"],
+    }
+    _write_json(output_dir / "manifest.json", manifest)
     return report
 
 
@@ -531,10 +711,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    raw_argv = tuple(sys.argv[1:] if argv is None else argv)
+    args = _parser().parse_args(raw_argv)
+    recorded_command = (sys.executable, "-m", "research", *raw_argv)
     try:
         if args.command == "evaluate":
-            report = evaluate_config(args.config)
+            report = evaluate_config(args.config, command=recorded_command)
             print(json.dumps(
                 {
                     name: result["aggregate"]
@@ -711,6 +893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest = build_prototype_vector_run(
                 provider=provider,
                 bundle=bundle,
+                dataset_path=args.dataset,
                 profiles_path=args.profiles,
                 cache_path=args.cache,
                 output_path=args.output,
@@ -718,6 +901,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 query_batch_size=args.query_batch_size,
                 prototype_chunk_size=args.prototype_chunk_size,
                 apply_prototype_weights=not args.ignore_prototype_weights,
+                query_fields=tuple(args.query_fields),
+                generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
     except (OSError, ResearchDataError, HistoricalCollectionError, ValueError) as exc:
