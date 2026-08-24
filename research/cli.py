@@ -523,6 +523,7 @@ def _parser() -> argparse.ArgumentParser:
     clean.add_argument("--pcl-max-tokens", type=int, default=8192)
     clean.add_argument("--pcl-models", nargs="+", default=None)
     clean.add_argument("--pcl-model-fallbacks", type=int, default=None)
+    clean.add_argument("--pcl-prototypes-per-venue", type=int, default=None)
     clean.add_argument("--pcl-retries", type=int, default=2)
     clean.add_argument("--pcl-backoff-base", type=float, default=2.0)
     clean.add_argument("--pcl-backoff-max", type=float, default=30.0)
@@ -672,6 +673,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     request_semaphore=threading.BoundedSemaphore(args.workers),
                     models=args.pcl_models,
                     model_fallbacks=args.pcl_model_fallbacks,
+                    prototypes_per_venue=args.pcl_prototypes_per_venue,
                 )
             manifest = rebuild_clean_corpus(
                 venues=venues,
