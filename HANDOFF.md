@@ -2,8 +2,125 @@
 
 > Updated: 2026-08-24 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
-> This is the authoritative bridge from the completed acquisition session to
-> the next P0 implementation session.
+> Section 0 is the authoritative post-P0 state. Sections 1 onward retain the
+> original pre-P0 acquisition handoff as historical context; do not reinterpret
+> their old branch, HEAD, dirty-tree, or "not started" statements as current.
+
+## 0. P0 completion addendum
+
+P0-A through P0-C were completed in order on 2026-08-24. No credentials,
+ignored benchmark data, paper files, API caches, or historical source artifacts
+were committed or removed. Nothing was pushed.
+
+Repository and commits:
+
+- branch: `agent/p0-causal-evaluation`;
+- acceptance-bound code HEAD: `7014a36e3e2e69c195c1971e97a01671f8323afc`;
+- the worktree was clean when the formal run started, and the run manifest
+  records `dirty=false` plus empty status/tracked-diff SHA-256 values;
+- P0-A: `69fb79d`, `0045c94`, `994d3d7`, `c94bee1`, `3678e26`;
+- P0-B: `283dd1a`, `2366566`, `f559111`;
+- P0-C contract: `655c970`; active-corpus-view audit fix: `7014a36`.
+
+P0-A result:
+
+- the inherited dirty work was separated into reviewable retrieval,
+  research, collection/retry, test/CI, and documentation commits;
+- line-ending-only CSV noise and unrelated artifacts were not swept into the
+  commits;
+- the offline evaluation scaffold remains explicitly unvalidated where
+  appropriate, SQLite resources are closed, and wheel/retrieval CI coverage is
+  present;
+- final verification: `217/217` unit tests passed in `54.102s`,
+  `git diff --check` passed, and the deterministic retrieval benchmark passed
+  `7/7` cases with micro Recall@K `1.0`.
+
+P0-B clean corpus result:
+
+- published artifact:
+  `benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/`;
+- retained source cache:
+  `benchmark_artifacts/historical_venues_20260331/raw_clean_temporal_pcl_v5/`;
+- manifest SHA-256:
+  `882f5aec66ed8958d806e526f9e00ef2f722eb164cfc3158418d3f46229f7fd0`;
+- source-manifest SHA-256:
+  `d0eaaa26208a3921877a90ba7ac635fb111754b47696ce83a18ba221ded79cb2`;
+- JCR SHA-256:
+  `11b54473d2d52190d0fe0dd010a52d38e81b14a62c03fb66cd14ba3916aaf47e`;
+- profile SHA-256:
+  `854c44f73a1b9113f9c0fe86f39cee394be84342fb3a6828e3991412c160e694`;
+- 20,087 unique profiles/candidates; warm/few/cold =
+  `19,438 / 155 / 494`;
+- 980,196 research evidence rows, 960,109 paper rows, 40,198 prototypes,
+  and a LightRAG KG with 60,285 entities / 40,198 relationships;
+- all 20,087 PCL generations used `DeepSeek-V4-Pro` with
+  `grounded-prototypes-v4-temporal-only`; every prompt used at most four
+  temporal evidence rows;
+- independently streamed validation found zero duplicate/non-temporal/post-
+  cutoff evidence, zero missing/ambiguous prototype sources, zero post-cutoff
+  prototypes, and zero warm/few profiles lacking paper-backed prototypes;
+- all ten manifest-listed output hashes were independently recomputed and
+  matched. Historical v2-v6, canary, failed, `.building`, raw, paper, and 48 GB
+  source artifacts remain in place.
+
+P0-C formal acceptance result:
+
+- command from the repository root:
+  `/home/wangrj/miniconda3/bin/python -m research evaluate --config research/configs/p0c_clean_pcl_acceptance.json`;
+- successful artifact:
+  `benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/`;
+- acceptance manifest SHA-256:
+  `6f3c6e4f1ca1220cff45d206edf9db5ecb936724ac3c8b171c462abd55dd84e6`;
+- config source/canonical SHA-256:
+  `e6001aa347fb6029705340ad4bba42626a442a5dd13f7b022768007f4bc87a79`
+  / `6812dc9cf2d4194f9dac3620056951a373279714e7c8f57f0c18fd90ab932a06`;
+- dataset SHA-256:
+  `f1a4607ad2705176b349527e59e9cb07a1e9a73c30f1eadd373adf7441077321`;
+- all 4,791 queries (`1,086 / 1,544 / 2,161`) are present in both frozen
+  runs, in the same order; query fingerprint:
+  `f17f02d8a04cc506b63794b12b467556eb3c93aa7541251f51207147bc45155c`;
+- both methods share the lexicographically frozen 20,087-candidate universe;
+  candidate fingerprint:
+  `3edfc9bff161c6dc67c7c88092266e48e05a3359caa9c5812eeb1335ad48e1d4`;
+- independently streamed run validation found continuous ranks, known unique
+  candidate IDs, finite scores, valid deterministic ordering, and complete
+  ordered query coverage in both 479,009-entry runs;
+- BM25 run SHA-256:
+  `4b2d7978f6942af4b795e3b63c0be7f051bcdd60a59fea38f645814136d70fdc`;
+  sidecar SHA-256:
+  `92c53ffe1e0955ee887611aadc10fb584b08542130a30aeca03e70ffec057d50`;
+- TF-IDF run SHA-256:
+  `eb11acdf7fe81b9287f0712ea782128e502602802c7d0aea516e226943f88bc6`;
+  sidecar SHA-256:
+  `cfbd2d75a15134dc16db109fe6061538db3c2f4b45976cf1eed57295f50dbe2b`;
+- leakage audit schema 3 passed with zero critical findings. Its SHA-256 is
+  `7b0450dff725643e52cca84339d272648939d0ce464bbb22c4ca412ce1963196`;
+- 86 warnings are retained rather than hidden: 81 gold-venue mentions, three
+  cross-split title findings, one six-query DOI overlap finding and one
+  nine-query title overlap finding in unindexed provenance metadata. The
+  primary test denominator remains all 2,161 queries; the separate
+  identity-safe diagnostic contains 2,115;
+- history/profile/subject/quartile strata each sum exactly to the full 2,161
+  primary-test denominator for both methods;
+- metrics SHA-256:
+  `54aad35c95a84f62d9ac900c15eea278da54a3f58234def7153d6a74043a97aa`;
+- June-test metrics: BM25 Hit@10 `0.0777417862`, nDCG@10 `0.0443966293`;
+  TF-IDF Hit@10 `0.0920869968`, nDCG@10 `0.0525464592`.
+
+The first fail-closed P0-C attempt is intentionally preserved at
+`benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical/`; its leakage
+audit SHA-256 is
+`940052683cfa919b925687f443fd5224265fe1eb190cad89f07f3e3fcbd314ef`.
+It exposed that retained 50-paper provenance catalogs were being treated as
+indexed text. The schema-3 audit now matches each method's actual corpus view:
+active prototype text/labels/source IDs/dates remain critical, while retained
+but unindexed catalog overlaps remain visible warnings. A regression test also
+proves that a DOI embedded in an active `paper:...:doi:...` source ID still
+fails closed.
+
+All P0 exit gates are satisfied. Section 10 now describes eligible follow-on
+work; do not start those larger experiments or publish artifacts without a new
+explicit request.
 
 ## 1. Current objective
 
