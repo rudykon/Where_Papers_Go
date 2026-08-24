@@ -360,6 +360,8 @@ def _config_status() -> dict[str, Any]:
         "embedding_model": None,
         "search_provider": None,
         "search_key_configured": False,
+        "search_key_count": 0,
+        "search_total_quota": 0,
     }
     if not DEFAULT_CONFIG.exists():
         return result
@@ -377,9 +379,38 @@ def _config_status() -> dict[str, Any]:
         result["embedding_model"] = embedding.get("model")
     if isinstance(search, dict):
         result["search_provider"] = search.get("provider")
-        result["search_key_configured"] = _configured_secret(
-            search.get("api_key") or search.get("key")
-        )
+        configured_keys: list[Any] = []
+        api_keys = search.get("api_keys")
+        if isinstance(api_keys, (list, tuple)):
+            configured_keys.extend(api_keys)
+        elif api_keys:
+            configured_keys.append(api_keys)
+        if not configured_keys:
+            for name in (
+                "api_key",
+                "key",
+                "api_key2",
+                "api_key_2",
+                "backup_api_key",
+                "fallback_api_key",
+            ):
+                value = search.get(name)
+                if isinstance(value, (list, tuple)):
+                    configured_keys.extend(value)
+                elif value:
+                    configured_keys.append(value)
+        unique_keys = {
+            str(value).strip()
+            for value in configured_keys
+            if _configured_secret(value)
+        }
+        result["search_key_configured"] = bool(unique_keys)
+        result["search_key_count"] = len(unique_keys)
+        try:
+            quota_per_key = max(0, int(search.get("quota_per_key", 0)))
+        except (TypeError, ValueError):
+            quota_per_key = 0
+        result["search_total_quota"] = len(unique_keys) * quota_per_key
     return result
 
 

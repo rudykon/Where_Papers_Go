@@ -30,6 +30,11 @@ import sys
 import tempfile
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+try:
+    import numpy as _numpy
+except ImportError:  # pragma: no cover - the scalar path remains supported.
+    _numpy = None
+
 
 GRAPH_SCHEMA_VERSION = "2"
 GRAPH_VECTOR_SCHEMA_VERSION = "1"
@@ -495,6 +500,9 @@ class VenueGraphIndex:
         self.vector_path = (vector_path or vector_path_for_graph(self.path)).resolve()
         self._vector_payload: dict[str, Any] | None = None
         self._decoded_vectors: dict[int, tuple[str, list[float], bytes]] | None = None
+        self._vector_matrix: Any | None = None
+        self._vector_entity_order: list[int] | None = None
+        self._vector_row_by_entity: dict[int, int] | None = None
         try:
             with gzip.open(self.path, "rt", encoding="utf-8") as handle:
                 payload = json.load(handle)
@@ -794,7 +802,9 @@ class VenueGraphIndex:
 
         payload = self._load_vector_payload(required=True)
         assert payload is not None
-        self._decode_vectors(payload)
+        decoded = self._decode_vectors(payload)
+        if _numpy is not None:
+            self._numpy_vector_matrix(decoded)
 
     def vector_recall(
         self,
@@ -836,15 +846,39 @@ class VenueGraphIndex:
                 ),
             )
         scores: list[tuple[float, int]] = []
-        for entity_id in entity_ids:
-            _text_hash, vector, _sign_bits_blob = decoded[entity_id]
-            similarity = sum(
-                query_value * stored_value
-                for query_value, stored_value in zip(normalized_query, vector)
-            )
-            similarity = max(-1.0, min(1.0, similarity))
-            if similarity >= min_similarity:
-                scores.append((similarity, entity_id))
+        if _numpy is not None and not approximate:
+            matrix, row_by_entity = self._numpy_vector_matrix(decoded)
+            row_ids = [row_by_entity[entity_id] for entity_id in entity_ids]
+            query_array = _numpy.asarray(normalized_query, dtype=_numpy.float32)
+            if len(row_ids) == matrix.shape[0] and all(
+                row_id == index for index, row_id in enumerate(row_ids)
+            ):
+                # The normal all-catalog path can use the immutable matrix
+                # directly.  NumPy advanced indexing would otherwise allocate
+                # and copy roughly 80 MiB for every query at the current scale.
+                similarities = matrix @ query_array
+            elif len(row_ids) * 4 >= matrix.shape[0]:
+                # Large filtered catalogs (notably JCR Q1--Q4) are cheaper to
+                # score as one full matrix-vector product and then select a
+                # tiny score vector.  Indexing matrix[row_ids] would copy most
+                # of the 80 MiB matrix for every request.
+                similarities = (matrix @ query_array)[row_ids]
+            else:
+                similarities = matrix[row_ids] @ query_array
+            for entity_id, raw_similarity in zip(entity_ids, similarities.tolist()):
+                similarity = max(-1.0, min(1.0, float(raw_similarity)))
+                if similarity >= min_similarity:
+                    scores.append((similarity, entity_id))
+        else:
+            for entity_id in entity_ids:
+                _text_hash, vector, _sign_bits_blob = decoded[entity_id]
+                similarity = sum(
+                    query_value * stored_value
+                    for query_value, stored_value in zip(normalized_query, vector)
+                )
+                similarity = max(-1.0, min(1.0, similarity))
+                if similarity >= min_similarity:
+                    scores.append((similarity, entity_id))
         scores.sort(key=lambda item: (-item[0], item[1]))
         scores = scores[:limit]
         return GraphVectorRecallResult(
@@ -927,6 +961,39 @@ class VenueGraphIndex:
             decoded[entity_id] = (text_hash, vector, sign_bits)
         self._decoded_vectors = decoded
         return decoded
+
+    def _numpy_vector_matrix(
+        self,
+        decoded: Mapping[int, tuple[str, list[float], bytes]],
+    ) -> tuple[Any, Mapping[int, int]]:
+        """Return one immutable float32 matrix for fast exact cosine scans.
+
+        The persisted representation and scalar fallback remain unchanged.
+        Building the matrix once turns every later full-catalog query into a
+        single BLAS matrix-vector product without changing the candidate set.
+        """
+
+        if _numpy is None:  # pragma: no cover - guarded by the caller.
+            raise GraphIndexError("NumPy vector acceleration is unavailable")
+        if (
+            self._vector_matrix is None
+            or self._vector_entity_order is None
+            or self._vector_row_by_entity is None
+        ):
+            entity_order = list(decoded)
+            matrix = _numpy.asarray(
+                [decoded[entity_id][1] for entity_id in entity_order],
+                dtype=_numpy.float32,
+            )
+            if matrix.ndim != 2 or matrix.shape[0] != len(entity_order):
+                raise GraphIndexError("graph vector matrix is invalid")
+            matrix.setflags(write=False)
+            self._vector_matrix = matrix
+            self._vector_entity_order = entity_order
+            self._vector_row_by_entity = {
+                entity_id: row for row, entity_id in enumerate(entity_order)
+            }
+        return self._vector_matrix, self._vector_row_by_entity
 
     def neighbors(
         self,

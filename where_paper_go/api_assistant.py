@@ -57,6 +57,8 @@ class QueryPlan:
     search_queries: tuple[str, ...]
     venue_hints: tuple[str, ...]
     matched_areas: tuple[str, ...] = ()
+    ambiguity: float | None = None
+    cross_disciplinary: float | None = None
 
     def retrieval_query(self, original_query: str) -> str:
         """Return a bounded recall query without adding negative constraints."""
@@ -93,6 +95,8 @@ class QueryPlan:
             "search_queries": list(self.search_queries),
             "venue_hints": list(self.venue_hints),
             "matched_areas": list(self.matched_areas),
+            "ambiguity": self.ambiguity,
+            "cross_disciplinary": self.cross_disciplinary,
         }
 
 
@@ -208,7 +212,7 @@ class OpenAICompatibleQueryAssistant:
             self.endpoint = base_url.rstrip("/") + "/chat/completions"
         self.cache_dir = cache_dir
         self.timeout = int(self.config.get("timeout", 60))
-        self.max_retries = int(self.config.get("max_retries", 1))
+        self.max_retries = int(self.config.get("max_retries", 2))
         if self.timeout < 1 or self.max_retries < 0:
             raise ApiAssistantError("LLM timeout/max_retries 配置无效")
 
@@ -259,16 +263,21 @@ class OpenAICompatibleQueryAssistant:
                     "- topic_tags: 0-8 tags copied exactly from the vocabulary\n"
                     "- search_queries: 1-3 concise English web queries for official CFP or aims-and-scope pages\n"
                     "- venue_hints: 0-10 likely venue names or abbreviations, used only as recall hints\n"
+                    "- ambiguity: number from 0 to 1; 1 means the research intent is highly underspecified\n"
+                    "- cross_disciplinary: number from 0 to 1; 1 means several materially distinct fields are required\n"
                     "- matched_areas: 0-80 labels copied EXACTLY from the available source-taxonomy "
-                    "area labels. When area filters are supplied, map broad, translated, or cross-list "
-                    "filters to every area label materially compatible with both the filter and the "
-                    "research description. Prefer high recall, but do not include unrelated labels. "
-                    "Include an exact selected label when it is available. Return [] only when no area "
-                    "filter was supplied or no compatible available label exists."
+                    "area labels. Infer materially compatible labels from the research description even "
+                    "when no area filter was supplied; these labels are soft recall routes, never claims "
+                    "that a venue accepts the work. When area filters are supplied, map broad, translated, "
+                    "or cross-list filters to every label compatible with both the filter and the research "
+                    "description. Prefer high recall, but do not include unrelated labels. Include an exact "
+                    "selected label when it is available. Return [] only when no compatible label exists."
                 ),
             },
         ]
-        payload = self._complete_json("query_plan", messages)
+        # v3 adds bounded ambiguity/cross-discipline signals for adaptive
+        # routing.  Keep it separate from older cached plans that lack them.
+        payload = self._complete_json("query_plan_v3", messages)
         return query_plan_from_payload(
             payload,
             set(topic_labels),
@@ -472,6 +481,7 @@ class OpenAICompatibleQueryAssistant:
         headers["User-Agent"] = "venue-recommender-query-assistant/1.0"
         last_error: BaseException | None = None
         for attempt in range(self.max_retries + 1):
+            retry_delay = min(8.0, 2.0**attempt)
             try:
                 _status, _headers, content = http_request(
                     self.endpoint,
@@ -492,6 +502,14 @@ class OpenAICompatibleQueryAssistant:
                 last_error = exc
                 if exc.code < 500 and exc.code != 429:
                     break
+                if exc.code == 429 and exc.headers:
+                    try:
+                        retry_delay = min(
+                            60.0,
+                            max(retry_delay, float(exc.headers.get("Retry-After", 0))),
+                        )
+                    except (TypeError, ValueError):
+                        pass
             except (
                 urllib.error.URLError,
                 TimeoutError,
@@ -505,7 +523,7 @@ class OpenAICompatibleQueryAssistant:
             ) as exc:
                 last_error = exc
             if attempt < self.max_retries:
-                time.sleep(min(2**attempt, 4))
+                time.sleep(retry_delay)
         if isinstance(last_error, urllib.error.HTTPError):
             raise ApiAssistantError(
                 f"LLM API 请求失败（HTTP {last_error.code}）"
@@ -531,6 +549,17 @@ def query_plan_from_payload(
         for value in _clean_list(payload.get("matched_areas"), 80, 300)
         if value in allowed_areas
     )
+
+    def optional_unit_score(field_name: str) -> float | None:
+        raw = payload.get(field_name)
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
     return QueryPlan(
         intent_summary_zh=_trim(str(payload.get("intent_summary_zh") or ""), 500),
         keywords_zh=_clean_list(payload.get("keywords_zh"), 12, 80),
@@ -541,6 +570,8 @@ def query_plan_from_payload(
         search_queries=_clean_list(payload.get("search_queries"), 3, 240),
         venue_hints=_clean_list(payload.get("venue_hints"), 10, 160),
         matched_areas=matched_areas,
+        ambiguity=optional_unit_score("ambiguity"),
+        cross_disciplinary=optional_unit_score("cross_disciplinary"),
     )
 
 
