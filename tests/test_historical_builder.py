@@ -500,6 +500,7 @@ class HistoricalCollectionTests(unittest.TestCase):
                 config,
                 Path(temporary),
                 max_output_tokens=321,
+                prototypes_per_venue=1,
             )
             prototypes, status = client.synthesize(
                 _venue(),
@@ -512,6 +513,20 @@ class HistoricalCollectionTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         payload = json.loads(bytes(request.call_args.kwargs["body"]).decode("utf-8"))
         self.assertEqual(payload["max_tokens"], 321)
+        prompt = json.dumps(payload["messages"], ensure_ascii=False)
+        self.assertIn("exactly 1 diverse prototype", prompt)
+        self.assertEqual(
+            client.provider_identity["generation_parameters"][
+                "prototypes_per_venue"
+            ],
+            1,
+        )
+        self.assertEqual(
+            prototypes[0]["generation"]["parameters"][
+                "requested_prototypes_per_venue"
+            ],
+            1,
+        )
 
     def test_pcl_prompt_excludes_every_non_temporal_evidence_row(self) -> None:
         config = {
@@ -1454,7 +1469,7 @@ class HistoricalCollectionTests(unittest.TestCase):
             cutoff=self.policy.cutoff,
             pcl_status="ok",
             pcl_model="fake",
-            max_prototypes=2,
+            max_prototypes=3,
             collection_status="complete",
         )
         paper_ids = {str(row["evidence_id"]) for row in papers}
@@ -1467,6 +1482,12 @@ class HistoricalCollectionTests(unittest.TestCase):
         )
         self.assertGreater(
             profile["metadata"]["paper_backed_temporal_prototype_count"], 0
+        )
+        self.assertTrue(
+            any(
+                prototype.get("derived_by") == "pcl_llm"
+                for prototype in profile["research_prototypes"]
+            )
         )
 
     def test_clean_rebuild_separates_production_from_paper_research(self) -> None:

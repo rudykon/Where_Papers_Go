@@ -967,6 +967,7 @@ class PCLPrototypeClient:
         model_context_windows: Mapping[str, int] | None = None,
         model_max_output_tokens: Mapping[str, int] | None = None,
         model_fallbacks: int | None = None,
+        prototypes_per_venue: int | None = None,
     ) -> None:
         llm = enrichment.llm_config(dict(api_config))
         base_url = str(
@@ -1035,6 +1036,11 @@ class PCLPrototypeClient:
         if self.model_fallbacks < 0:
             raise HistoricalCollectionError("PCL model_fallbacks must be non-negative")
         self.model_fallbacks = min(self.model_fallbacks, len(self.models) - 1)
+        if prototypes_per_venue is not None and prototypes_per_venue < 1:
+            raise HistoricalCollectionError(
+                "PCL prototypes_per_venue must be positive when configured"
+            )
+        self.prototypes_per_venue = prototypes_per_venue
 
         output_overrides: dict[str, int] = {}
         for source in (llm.get("model_max_output_tokens"), model_max_output_tokens):
@@ -1142,6 +1148,7 @@ class PCLPrototypeClient:
             "generation_parameters": {
                 "temperature": self.llm_config.get("temperature", 0),
                 "json_mode": bool(self.llm_config.get("json_mode")),
+                "prototypes_per_venue": self.prototypes_per_venue,
             },
             "code_state": self.code_state,
         }
@@ -1220,6 +1227,11 @@ class PCLPrototypeClient:
         policy: CollectionPolicy,
         output_tokens: int,
     ) -> tuple[list[dict[str, str]], dict[str, Mapping[str, Any]], int]:
+        requested_prototypes = min(
+            self.prototypes_per_venue or policy.max_prototypes,
+            policy.max_prototypes,
+        )
+
         def build(selected: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
             ids = [str(row.get("evidence_id") or "") for row in selected]
             blocks = [self._evidence_block(row) for row in selected]
@@ -1236,9 +1248,14 @@ class PCLPrototypeClient:
                         + "\n\n".join(blocks)
                         + "\n\nAllowed evidence_ids (copy these strings exactly): "
                         + ", ".join(ids)
-                        + "\n\nReturn {\"prototypes\":[...]} with 2-"
-                        + str(policy.max_prototypes)
-                        + " diverse prototypes. "
+                        + "\n\nReturn {\"prototypes\":[...]} with "
+                        + (
+                            f"exactly {requested_prototypes} diverse prototype"
+                            + ("s" if requested_prototypes != 1 else "")
+                            if self.prototypes_per_venue is not None
+                            else f"2-{policy.max_prototypes} diverse prototypes"
+                        )
+                        + ". "
                         + self.OUTPUT_CONTRACT
                     ),
                 },
@@ -1388,6 +1405,10 @@ class PCLPrototypeClient:
             "temperature": self.llm_config.get("temperature", 0),
             "max_output_tokens": output_tokens,
             "json_mode": bool(self.llm_config.get("json_mode")),
+            "requested_prototypes_per_venue": (
+                self.prototypes_per_venue or len(prototypes)
+            ),
+            "returned_prototypes_per_venue": len(prototypes),
         }
         generation = {
             "provider": "pcl_openai_compatible_model_pool",
@@ -1486,6 +1507,8 @@ class PCLPrototypeClient:
                 model=model,
                 evidence_by_id=evidence_by_id,
             )
+            if self.prototypes_per_venue is not None:
+                cached_prototypes = cached_prototypes[: self.prototypes_per_venue]
             if cached_prototypes:
                 cached_prototypes = self._with_generation_provenance(
                     cached_prototypes,
@@ -1594,6 +1617,8 @@ class PCLPrototypeClient:
                 model=model,
                 evidence_by_id=evidence_by_id,
             )
+            if self.prototypes_per_venue is not None:
+                prototypes = prototypes[: self.prototypes_per_venue]
             terminal_reason = finish_reason.casefold()
             if prototypes and terminal_reason not in {"length", "content_filter"}:
                 prototypes = self._with_generation_provenance(
@@ -1862,14 +1887,16 @@ def build_venue_profile(
         *scope_prototypes,
         *grounded,
     ][:max_prototypes]
+    # Keep model-grounded units ahead of optional scope units so a deliberately
+    # small clean-PCL budget cannot be consumed before any PCL result appears.
     research_candidates = [dict(static_prototype)]
+    research_candidates.extend(
+        row for row in grounded if row.get("temporal_eligible") is True
+    )
     if research_scope_enabled:
         research_candidates.extend(
             row for row in scope_prototypes if row.get("temporal_eligible") is True
         )
-    research_candidates.extend(
-        row for row in grounded if row.get("temporal_eligible") is True
-    )
     research_prototypes = research_candidates[:max_prototypes]
     if temporal_papers and not any(paper_backed(row) for row in research_prototypes):
         fallback = _fallback_prototypes(venue, temporal_papers, limit=1)

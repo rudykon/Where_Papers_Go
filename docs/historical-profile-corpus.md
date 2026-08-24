@@ -91,12 +91,13 @@ python -m research rebuild-clean-corpus \
   --jcr-csv data/jcr_partition_2025.csv --data-dir data \
   --history-start 2021-01-01 --cutoff 2026-03-31 \
   --mode pcl --api-config llmapi.json --workers 3 \
+  --pcl-prototypes-per-venue 1 \
   --pcl-retries 2 --pcl-backoff-base 2 --pcl-backoff-max 30
 ```
 
 无 DOI 论文使用 Unicode-preserving title + 完整发表日期 + venue ID 构造身份；`evidence_identity_crosswalk.jsonl` 保留旧新 ID 映射。每个 warm/few-shot 画像必须至少有一个 paper-backed temporal prototype；如 PCL 只引用 catalog/scope，会为确定性 paper fallback 保留一个席位。
 
-clean PCL 逐期刊退避重试，并且只保持与 worker 数相同的有界 inflight 队列。共享网关/配置失败会快速停止，已原子写入的期刊 checkpoint 可原位续跑，但代码、策略、源 manifest 或 provider 指纹不匹配时拒绝混用旧 building 目录。
+clean PCL 逐期刊退避重试，并且只保持与 worker 数相同的有界 inflight 队列。共享网关/配置失败会快速停止，已原子写入的期刊 checkpoint 可原位续跑，但代码、策略、源 manifest 或 provider 指纹不匹配时拒绝混用旧 building 目录。`--pcl-prototypes-per-venue 1` 只约束模型生成的高层 grounded 单元；最终研究画像仍保留 static、PCL 与必要的 temporal paper fallback 多原型结构，该参数进入 provider fingerprint 和逐期刊 provenance。
 
 ## 输出
 
