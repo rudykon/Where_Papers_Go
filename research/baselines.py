@@ -177,7 +177,11 @@ class TfidfBaseline(Baseline):
         frequencies: Counter[str] = Counter()
         for counts in document_counts:
             frequencies.update(counts.keys())
-        count = len(self._documents)
+        # Document frequency is measured over independently scored prototype
+        # units, so the IDF population must use that same unit definition.
+        # Using the venue count here makes df > N whenever one term appears in
+        # prototypes from the same venue and distorts every cosine weight.
+        count = len(units)
         self._idf = {
             term: math.log((1.0 + count) / (1.0 + frequency)) + 1.0
             for term, frequency in frequencies.items()

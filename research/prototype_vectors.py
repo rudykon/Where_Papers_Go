@@ -20,8 +20,14 @@ from where_paper_go.embeddings import (
     unpack_float32,
 )
 
-from .data import DatasetBundle, ResearchDataError, sha256_file, write_run
-from .historical_builder import now_iso
+from .data import (
+    DatasetBundle,
+    ResearchDataError,
+    build_run_binding,
+    canonical_json_sha256,
+    runtime_provenance,
+    write_run,
+)
 from .types import Run, ScoredDocument
 
 
@@ -133,6 +139,7 @@ def build_prototype_vector_run(
     *,
     provider: EmbeddingProvider,
     bundle: DatasetBundle,
+    dataset_path: Path,
     profiles_path: Path,
     cache_path: Path,
     output_path: Path,
@@ -140,6 +147,8 @@ def build_prototype_vector_run(
     query_batch_size: int = 16,
     prototype_chunk_size: int = 4096,
     apply_prototype_weights: bool = True,
+    query_fields: Sequence[str] = ("title", "abstract"),
+    generation_command: Sequence[str],
 ) -> dict[str, Any]:
     """Embed profiles/queries, max-pool prototypes, and freeze a reusable run."""
 
@@ -194,31 +203,57 @@ def build_prototype_vector_run(
                 ScoredDocument(doc_id=venue_id, score=score)
                 for venue_id, score in ranked
             ]
-    write_run(output_path, run)
-    manifest = {
-        "schema_version": 1,
-        "created_at": now_iso(),
-        "method": "cosine prototype max pooling",
+    generation_config = {
+        "builder": "prototype-vector-max-pooling-v2",
+        "query_fields": list(query_fields),
+        "top_k": top_k,
+        "query_batch_size": query_batch_size,
+        "prototype_chunk_size": prototype_chunk_size,
+        "apply_prototype_weights": apply_prototype_weights,
         "model": provider.model,
         "provider_fingerprint": provider.fingerprint,
-        "dimensions": dimensions,
-        "venue_count": len(venue_ids),
-        "prototype_count": len(units),
-        "query_count": len(bundle.queries),
-        "top_k": top_k,
-        "apply_prototype_weights": apply_prototype_weights,
-        "embedding_cache": str(cache_path),
-        "embedded_text_count": embedded_count,
-        "cached_text_count": cached_count,
-        "inputs": {
-            "profiles": {"path": str(profiles_path), "sha256": sha256_file(profiles_path)},
-        },
-        "output": {"path": str(output_path), "sha256": sha256_file(output_path)},
     }
-    manifest_path = output_path.with_suffix(output_path.suffix + ".manifest.json")
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    binding = build_run_binding(
+        dataset_path=dataset_path,
+        profiles_path=profiles_path,
+        query_ids=tuple(query.query_id for query in bundle.queries),
+        candidate_ids=venue_ids,
+        configuration=generation_config,
+    )
+    runtime = runtime_provenance()
+    method = {
+        "name": "prototype_vector_max_pool",
+        "kind": "vector",
+        "implementation": "research.prototype_vectors.build_prototype_vector_run",
+        "provider_fingerprint": provider.fingerprint,
+        "model": provider.model,
+        "configuration_sha256": canonical_json_sha256(generation_config),
+    }
+    manifest = write_run(
+        output_path,
+        run,
+        binding=binding,
+        query_ids=tuple(query.query_id for query in bundle.queries),
+        candidate_ids=venue_ids,
+        top_k=top_k,
+        method=method,
+        command=generation_command,
+        working_directory=Path.cwd(),
+        runtime=runtime,
+        additional_manifest_fields={
+            "retrieval_method": "cosine prototype max pooling",
+            "model": provider.model,
+            "provider_fingerprint": provider.fingerprint,
+            "dimensions": dimensions,
+            "venue_count": len(venue_ids),
+            "prototype_count": len(units),
+            "query_count": len(bundle.queries),
+            "top_k": top_k,
+            "apply_prototype_weights": apply_prototype_weights,
+            "embedding_cache": str(cache_path),
+            "embedded_text_count": embedded_count,
+            "cached_text_count": cached_count,
+        },
     )
     return manifest
 
