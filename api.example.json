@@ -3,9 +3,44 @@
     "provider": "openai_compatible",
     "base_url": "https://api.example.com/v1",
     "api_key": "YOUR_LLM_API_KEY",
-    "model": "your-model-name",
+    "model": "DeepSeek-V4-Pro",
+    "models": [
+      "Qwen3.6-35B",
+      "GLM-5.2",
+      "DeepSeek-V4-Pro",
+      "DeepSeek-V4-Flash-0731",
+      "MiniMax-M3"
+    ],
+    "pcl_models": [
+      "Qwen3.6-35B",
+      "DeepSeek-V4-Pro"
+    ],
+    "model_context_windows": {
+      "GLM-5.2": 1048576,
+      "DeepSeek-V4-Pro": 409600,
+      "DeepSeek-V4-Flash-0731": 524288,
+      "Qwen3.6-35B": 262144
+    },
+    "model_input_token_cap": 49152,
+    "unknown_model_input_token_cap": 32768,
+    "model_max_output_tokens": {
+      "Qwen3.6-35B": 8192
+    },
+    "model_fallbacks": 1,
+    "max_response_bytes": 262144,
+    "stream": true,
+    "stream_idle_timeout": 60,
+    "stream_total_timeout": 180,
+    "model_stream_total_timeouts": {
+      "Qwen3.6-35B": 90,
+      "DeepSeek-V4-Pro": 120
+    },
+    "stream_require_done": true,
+    "max_stream_response_bytes": 4000000,
     "temperature": 0,
+    "max_output_tokens": 2048,
     "timeout": 60,
+    "max_retries": 0,
     "json_mode": false
   },
   "embedding": {
@@ -22,7 +57,16 @@
   "search": {
     "provider": "tavily",
     "endpoint": "https://api.tavily.com/search",
-    "api_key": "YOUR_TAVILY_API_KEY",
+    "api_keys": [
+      "YOUR_TAVILY_API_KEY_1",
+      "YOUR_TAVILY_API_KEY_2"
+    ],
+    "quota_per_key": 1000,
+    "key_pool_state_file": "data/.tavily_key_pool_state.json",
+    "max_key_attempts": 3,
+    "rate_limit_cooldown_seconds": 3600,
+    "transient_cooldown_seconds": 60,
+    "retry_empty_results": false,
     "search_depth": "advanced",
     "topic": "general",
     "include_answer": false,
