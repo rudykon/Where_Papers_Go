@@ -1983,6 +1983,324 @@ def rank_candidates_indexed(
     return ranked
 
 
+MULTICHANNEL_RECALL_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("combined", 12),
+    ("semantic_vector", 8),
+    ("lightrag_mix", 6),
+    ("property_graph", 6),
+    ("llm_area_route", 4),
+    ("search_hint", 4),
+)
+
+
+def _allocate_multichannel_quotas(limit: int) -> dict[str, int]:
+    """Scale the default 12/8/6/6/4/4 recall mix to an arbitrary pool size."""
+
+    if limit < 1:
+        return {name: 0 for name, _weight in MULTICHANNEL_RECALL_WEIGHTS}
+    total_weight = sum(weight for _name, weight in MULTICHANNEL_RECALL_WEIGHTS)
+    raw = [
+        (name, limit * weight / total_weight)
+        for name, weight in MULTICHANNEL_RECALL_WEIGHTS
+    ]
+    quotas = {name: int(value) for name, value in raw}
+    remaining = limit - sum(quotas.values())
+    for name, _value in sorted(
+        raw,
+        key=lambda item: (
+            -(item[1] - int(item[1])),
+            next(
+                index
+                for index, (channel, _weight) in enumerate(MULTICHANNEL_RECALL_WEIGHTS)
+                if channel == item[0]
+            ),
+        ),
+    )[:remaining]:
+        quotas[name] += 1
+    return quotas
+
+
+def _allocate_adaptive_multichannel_quotas(
+    query: str,
+    channel_ids: Mapping[str, Sequence[int]],
+    *,
+    limit: int,
+    matched_areas: Sequence[str] = (),
+    ambiguity: float | None = None,
+    cross_disciplinary: float | None = None,
+) -> tuple[dict[str, int], dict[str, object]]:
+    """Route recall seats from query demand and live channel availability.
+
+    The router never consumes labels or result identities.  Channel health is
+    measured against the fixed-budget baseline: a channel is fully healthy
+    when it can supply its old reserved quota, while short or unavailable
+    channels automatically release seats.  This makes the former
+    ``12/8/6/6/4/4`` mix a reproducible ablation rather than a hidden fallback.
+    """
+
+    from .scope_rank import (
+        AdaptiveBudgetAllocator,
+        ChannelObservation,
+        QueryProfile,
+    )
+
+    profile = QueryProfile.from_text(
+        query,
+        ambiguity=ambiguity,
+        cross_disciplinary=cross_disciplinary,
+    )
+    distinct_areas = {
+        normalize_search_text(value)
+        for value in matched_areas
+        if normalize_search_text(value)
+    }
+    if len(distinct_areas) > 1:
+        # LLM-selected controlled taxonomy labels are a useful cross-domain
+        # signal, but remain a soft route and can never become a hard filter.
+        profile = QueryProfile.from_text(
+            query,
+            ambiguity=profile.ambiguity,
+            cross_disciplinary=max(
+                profile.cross_disciplinary,
+                min(1.0, 0.20 * len(distinct_areas)),
+            ),
+            language=profile.language,
+        )
+
+    fixed_quotas = _allocate_multichannel_quotas(limit)
+    observations = []
+    for channel, _weight in MULTICHANNEL_RECALL_WEIGHTS:
+        available_count = len(channel_ids.get(channel, ()))
+        reference_quota = max(1, fixed_quotas[channel])
+        observations.append(
+            ChannelObservation(
+                name=channel,
+                confidence=min(1.0, available_count / reference_quota),
+                coverage=min(1.0, available_count / max(1, limit)),
+                # All inputs in this stage come from the same request/snapshot;
+                # provenance age belongs in the learned fusion feature set.
+                freshness=1.0,
+                available=available_count > 0,
+                capacity=available_count,
+            )
+        )
+    allocation = AdaptiveBudgetAllocator(minimum_per_available=1).allocate(
+        profile,
+        observations,
+        total_budget=limit,
+    )
+    return dict(allocation.quotas), {
+        "mode": "scope_rank_adaptive",
+        "profile": {
+            "ambiguity": round(profile.ambiguity, 6),
+            "cross_disciplinary": round(profile.cross_disciplinary, 6),
+            "language": profile.language,
+            "token_count": profile.token_count,
+        },
+        "channel_scores": {
+            name: round(float(score), 8)
+            for name, score in allocation.channel_scores.items()
+        },
+        "allocated": allocation.allocated,
+        "unallocated": allocation.unallocated,
+        "fixed_ablation_quotas": fixed_quotas,
+    }
+
+
+def build_multichannel_recall_pool(
+    ranked_candidates: Sequence[VenueCandidate],
+    candidate_catalog: Sequence[VenueCandidate],
+    *,
+    query: str = "",
+    matched_areas: Sequence[str] = (),
+    hinted_entity_ids: Sequence[int] = (),
+    limit: int = 40,
+    adaptive: bool = True,
+    query_ambiguity: float | None = None,
+    query_cross_disciplinary: float | None = None,
+) -> tuple[list[int], dict[str, object]]:
+    """Reserve candidates from independent recall channels before LLM reranking.
+
+    A single fused score can otherwise crowd a whole channel out of a small
+    Top-K.  This helper preserves the strong fused head while reserving seats
+    for exact-vector, LightRAG, property-graph, LLM taxonomy-route and Search
+    hint candidates.  Duplicate entities consume only one seat; unused seats
+    are deterministically backfilled from every channel.
+    """
+
+    if limit < 1:
+        return [], {"limit": limit, "quotas": {}, "channels": {}}
+
+    def entity_id(candidate: VenueCandidate) -> int:
+        return min(record.row_id for record in candidate.records)
+
+    catalog_by_id = {entity_id(candidate): candidate for candidate in candidate_catalog}
+    ranked_by_id = {entity_id(candidate): candidate for candidate in ranked_candidates}
+    combined_ids = [entity_id(candidate) for candidate in ranked_candidates]
+
+    semantic_ids = [
+        entity_id(candidate)
+        for candidate in sorted(
+            (
+                candidate
+                for candidate in ranked_candidates
+                if candidate.semantic_similarity is not None
+            ),
+            key=lambda candidate: (
+                -(candidate.semantic_similarity or -1.0),
+                -candidate.score,
+                normalize_name(candidate.name),
+            ),
+        )
+    ]
+    lightrag_ids = [
+        entity_id(candidate)
+        for candidate in sorted(
+            (
+                candidate
+                for candidate in ranked_candidates
+                if candidate.lightrag_relevance is not None
+            ),
+            key=lambda candidate: (
+                -(candidate.lightrag_relevance or -1.0),
+                -candidate.score,
+                normalize_name(candidate.name),
+            ),
+        )
+    ]
+    graph_ids = [
+        entity_id(candidate)
+        for candidate in ranked_candidates
+        if any(
+            marker in candidate.matched_fields
+            for marker in (
+                "property_graph_lexical_recall",
+                "fts5_bm25_recall",
+                "knowledge_graph_path",
+            )
+        )
+    ]
+
+    normalized_areas = {
+        normalize_search_text(value) for value in matched_areas if normalize_search_text(value)
+    }
+    area_ids = [
+        entity_id(candidate)
+        for candidate in sorted(
+            candidate_catalog,
+            key=lambda candidate: (
+                -ranked_by_id.get(entity_id(candidate), candidate).score,
+                normalize_name(candidate.name),
+            ),
+        )
+        if normalized_areas
+        and any(
+            normalize_search_text(value) in normalized_areas
+            for record in candidate.records
+            for value in (record.area, record.area_en)
+            if normalize_search_text(value)
+        )
+    ]
+    hint_ids = [
+        int(value) for value in hinted_entity_ids if int(value) in catalog_by_id
+    ]
+    channel_ids: dict[str, list[int]] = {
+        "combined": list(dict.fromkeys(combined_ids)),
+        "semantic_vector": list(dict.fromkeys(semantic_ids)),
+        "lightrag_mix": list(dict.fromkeys(lightrag_ids)),
+        "property_graph": list(dict.fromkeys(graph_ids)),
+        "llm_area_route": list(dict.fromkeys(area_ids)),
+        "search_hint": list(dict.fromkeys(hint_ids)),
+    }
+    routing: dict[str, object]
+    if adaptive and normalize_space(query):
+        quotas, routing = _allocate_adaptive_multichannel_quotas(
+            query,
+            channel_ids,
+            limit=limit,
+            matched_areas=matched_areas,
+            ambiguity=query_ambiguity,
+            cross_disciplinary=query_cross_disciplinary,
+        )
+    else:
+        quotas = _allocate_multichannel_quotas(limit)
+        routing = {
+            "mode": "fixed_ablation",
+            "fixed_ablation_quotas": dict(quotas),
+        }
+    selected: list[int] = []
+    selected_set: set[int] = set()
+    selected_by_channel: dict[str, int] = {}
+
+    def take(channel: str, count: int) -> None:
+        added = 0
+        for current_id in channel_ids[channel]:
+            if current_id in selected_set:
+                continue
+            selected.append(current_id)
+            selected_set.add(current_id)
+            added += 1
+            if len(selected) >= limit or added >= count:
+                break
+        selected_by_channel[channel] = selected_by_channel.get(channel, 0) + added
+
+    for channel, _weight in MULTICHANNEL_RECALL_WEIGHTS:
+        take(channel, quotas[channel])
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        # Round-robin backfill stops a long combined list from swallowing every
+        # unused quota while still remaining deterministic.
+        offsets = {name: 0 for name in channel_ids}
+        while len(selected) < limit:
+            progressed = False
+            for channel, _weight in MULTICHANNEL_RECALL_WEIGHTS:
+                values = channel_ids[channel]
+                while offsets[channel] < len(values):
+                    current_id = values[offsets[channel]]
+                    offsets[channel] += 1
+                    if current_id in selected_set:
+                        continue
+                    selected.append(current_id)
+                    selected_set.add(current_id)
+                    selected_by_channel[channel] = selected_by_channel.get(channel, 0) + 1
+                    progressed = True
+                    break
+                if len(selected) >= limit:
+                    break
+            if not progressed:
+                break
+
+    channel_markers = {
+        "llm_area_route": "llm_area_route_recall",
+        "search_hint": "search_venue_hint_recall",
+    }
+    for current_id in selected:
+        candidate = catalog_by_id.get(current_id)
+        if candidate is None:
+            continue
+        if "multichannel_recall_pool" not in candidate.matched_fields:
+            candidate.matched_fields.append("multichannel_recall_pool")
+        for channel, marker in channel_markers.items():
+            if current_id in channel_ids[channel] and marker not in candidate.matched_fields:
+                candidate.matched_fields.append(marker)
+
+    return selected, {
+        "limit": limit,
+        "selected": len(selected),
+        "quotas": quotas,
+        "routing": routing,
+        "channels": {
+            channel: {
+                "available": len(values),
+                "selected_from_channel": selected_by_channel.get(channel, 0),
+                "represented_in_pool": sum(value in selected_set for value in values),
+            }
+            for channel, values in channel_ids.items()
+        },
+    }
+
+
 def open_persistent_index(
     data_dir: Path,
     index_path: Path,
@@ -2134,6 +2452,7 @@ def sort_unranked_candidates(
 
 def candidate_to_dict(candidate: VenueCandidate) -> dict[str, object]:
     return {
+        "entity_id": min(record.row_id for record in candidate.records),
         "name": candidate.name,
         "abbreviation": candidate.abbreviation,
         "record_type": candidate.record_type,
@@ -2442,6 +2761,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="交给 LLM 证据重排的候选数，默认 40。",
     )
     parser.add_argument(
+        "--fixed-recall-budget",
+        action="store_true",
+        help="论文消融选项：使用旧的 12/8/6/6/4/4 固定通道配额。",
+    )
+    parser.add_argument(
         "--api-search-query-limit",
         type=int,
         default=3,
@@ -2464,6 +2788,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="LLM 重排在倒数排名融合中的权重，默认 1.0。",
+    )
+    parser.add_argument(
+        "--no-api-explanations",
+        action="store_true",
+        help="跳过最终前十解释调用；不改变候选评分、融合排序或命中指标。",
     )
     parser.add_argument("--format", choices=["text", "json", "csv"], default="text")
     parser.add_argument("--max-scope-chars", type=int, default=240, help="文本输出中每段范围的最大字符数。")
@@ -2795,7 +3124,7 @@ def main(
             and normalize_space(record.area)
         },
         key=lambda value: (value.casefold(), value),
-    ) if args.area and query else []
+    ) if query else []
     retrieval_query = query
     semantic_query = query
     additional_query_concepts: list[tuple[str, str]] = []
@@ -3265,27 +3594,45 @@ def main(
                 hinted_ids = hinted_entity_ids(
                     all_contexts, api_plan.venue_hints, evidence
                 )
-                reserved_hint_count = min(
-                    len(hinted_ids), max(1, args.api_candidate_limit // 3)
+                rerank_ids, recall_pool_info = build_multichannel_recall_pool(
+                    candidates,
+                    candidate_catalog,
+                    query=query,
+                    matched_areas=api_plan.matched_areas,
+                    hinted_entity_ids=hinted_ids,
+                    limit=args.api_candidate_limit,
+                    adaptive=not args.fixed_recall_budget,
+                    query_ambiguity=api_plan.ambiguity,
+                    query_cross_disciplinary=api_plan.cross_disciplinary,
                 )
-                local_count = max(5, args.api_candidate_limit - reserved_hint_count)
-                rerank_ids = list(ranked_ids[:local_count])
-                rerank_ids.extend(
-                    entity_id
-                    for entity_id in hinted_ids
-                    if entity_id not in rerank_ids
-                )
-                rerank_ids.extend(
-                    entity_id
-                    for entity_id in ranked_ids
-                    if entity_id not in rerank_ids
-                )
-                rerank_ids = rerank_ids[: args.api_candidate_limit]
                 rerank_contexts = [
                     context_by_id[entity_id]
                     for entity_id in rerank_ids
                     if entity_id in context_by_id
                 ]
+                recall_candidate_by_id = {
+                    min(record.row_id for record in candidate.records): candidate
+                    for candidate in candidate_catalog
+                }
+                _emit_retrieval_event(
+                    event_callback,
+                    "results",
+                    phase="recall_pool",
+                    payload={
+                        "targets": [target.label for target in targets],
+                        "query": query,
+                        "search_backend": "multichannel_recall_pool",
+                        "streaming_phase": "recall_pool",
+                        "total": len(rerank_ids),
+                        "displayed": len(rerank_ids),
+                        "multichannel_recall": recall_pool_info,
+                        "results": [
+                            candidate_to_dict(recall_candidate_by_id[entity_id])
+                            for entity_id in rerank_ids
+                            if entity_id in recall_candidate_by_id
+                        ],
+                    },
+                )
                 api_scores = api_assistant.rerank_candidates(
                     query, api_plan, rerank_contexts, evidence
                 )
@@ -3294,7 +3641,11 @@ def main(
                     api_scores,
                     api_weight=args.api_rerank_weight,
                 )
-                explain_method = getattr(api_assistant, "explain_candidates", None)
+                explain_method = (
+                    None
+                    if args.no_api_explanations
+                    else getattr(api_assistant, "explain_candidates", None)
+                )
                 explained_candidate_count = 0
                 if callable(explain_method):
                     explain_ids = [
@@ -3345,12 +3696,17 @@ def main(
                         "status": "ok",
                         "search_queries": attempted_queries,
                         "search_result_count": len(evidence),
-                        "search_results": [item.to_dict() for item in evidence[:20]],
+                        # Keep the complete evidence set in machine-readable
+                        # output. Benchmark leakage audits must inspect every
+                        # item the reranker saw, not an arbitrary display cap.
+                        "search_results": [item.to_dict() for item in evidence],
                         "reranked_candidate_count": len(api_scores),
                         "rerank_concurrency": 2,
                         "rerank_mode": "compact_score_then_top10_explain",
+                        "explanations_skipped": bool(args.no_api_explanations),
                         "explained_candidate_count": explained_candidate_count,
                         "hinted_candidate_count": len(hinted_ids),
+                        "multichannel_recall": recall_pool_info,
                     }
                 )
                 _emit_retrieval_event(

@@ -18,6 +18,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,7 +118,10 @@ def inspect_index(
     if not index_path.exists():
         return IndexFreshness(False, "index_missing", digest)
     try:
-        with _read_only_connection(index_path) as connection:
+        # sqlite3.Connection's context manager commits or rolls back but does
+        # not close the handle.  Wrap it in closing so repeated freshness
+        # checks cannot leave read-only descriptors for the GC to collect.
+        with closing(_read_only_connection(index_path)) as connection:
             metadata = dict(connection.execute("SELECT key, value FROM index_meta"))
     except (OSError, sqlite3.Error):
         return IndexFreshness(False, "index_unreadable", digest)
