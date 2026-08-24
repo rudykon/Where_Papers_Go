@@ -42,7 +42,7 @@ Where Papers Go turns a paper title, abstract, keyword set, or early research id
 | Goal | Approach | Output |
 | --- | --- | --- |
 | Respect submission constraints | Hard-filter by ranking system, tier, venue type, and research area | Only eligible venues enter retrieval |
-| Recall diverse topic expressions | LLM intent parsing + multilingual embeddings + LightRAG graph paths | Broad candidates for clear or fuzzy queries |
+| Recall diverse topic expressions | LLM intent parsing + multilingual embeddings + LightRAG graph paths + query-adaptive channel budgets | Broad candidates for clear or fuzzy queries |
 | Keep recommendations grounded | Search API evidence + reviewed scope records + known venue facts | Evidence-linked results instead of invented venues |
 | Make ranking understandable | Multi-signal fusion, LLM reranking, and explanations for the top 10 | Scores, matched concepts, graph paths, and reasons |
 
@@ -51,6 +51,7 @@ Key product behavior:
 - CCF, TH-CPL, CAS, and JCR targets can be combined; multiple target tiers use **OR** semantics.
 - Topic retrieval strictly uses **LightRAG + exact vector retrieval + LLM + Search API**. It does not silently downgrade when one layer fails.
 - Search, vector, and LightRAG work are parallelized; LLM reranking uses two concurrent batches.
+- An **unvalidated SCOPE-Rank research scaffold** adapts recall-channel budgets from LLM ambiguity/cross-domain signals and live channel coverage; it is not yet an experimentally supported ranking method. The former fixed budget remains available as an explicit ablation.
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
 
@@ -99,15 +100,18 @@ flowchart LR
     I --> V[Exact vector recall]
     I --> G[LightRAG mix recall]
     I --> S[Search API evidence]
-    V --> M[Candidate fusion]
-    G --> M
-    S --> M
+    V --> A[Unvalidated SCOPE-Rank scaffold]
+    G --> A
+    S --> A
+    A --> M[Candidate fusion]
     M --> R[Concurrent LLM reranking]
     R --> O[Streaming ranked results]
     O --> E[Top-10 explanations]
 ```
 
 The file-based property graph stores venues, tiers, topics, reviewed scopes, exclusions, and evidence as nodes and edges. Source CSV/TSV files remain the auditable facts; graph, vector, LightRAG, and cache files are rebuildable artifacts and are excluded from Git.
+
+Exact cosine recall uses a preloaded NumPy matrix while retaining the scalar implementation as a quality-regression reference. The web worker pays the matrix-build cost during startup, not on the first user query.
 
 See [retrieval architecture](docs/retrieval-architecture.md) for scoring, failure boundaries, caching, and storage details.
 
@@ -141,6 +145,9 @@ Edit `llmapi.json` and complete all three sections:
 | `search` | Current scope/CFP evidence | Tavily, Brave, Bing, or SerpAPI |
 
 `llmapi.json` is ignored by Git. Never put real credentials in `api.example.json`.
+For Tavily key rotation, put keys in `search.api_keys`; the persistent pool tracks
+the per-key quota, round-robin cursor, cooldowns, and exhausted keys without storing
+plaintext credentials in its state file.
 
 ### 3. Build the retrieval artifacts
 
@@ -204,6 +211,8 @@ Machine-readable output is available through `--format json` and `--format csv`.
 
 The reviewed fine-grained scope catalog covers all 58 CCF-A conferences, all 117 TH-CPL-A venues, and all 53 CAS Zone 1 computer-science journals. Overlapping venues reuse one reviewed scope record, so these counts should not be added as unique entities.
 
+The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). Those ignored research artifacts are distinct from the reviewed product scope overlay above; their PCL-derived profiles must pass the causal rebuild and frozen-run contract before they can support paper claims.
+
 Source details and validation rules are documented in [`data/README.md`](data/README.md). Ranking names, third-party data, and source descriptions remain subject to their respective terms.
 
 <a id="validation"></a>
@@ -216,12 +225,31 @@ python3 -m scripts.benchmark_retrieval
 
 The test suite covers target expressions, source counts, entity merging, graph integrity, fuzzy graph paths, exact semantic recall, LightRAG references, API constraints, streaming behavior, caching, and representative topic rankings.
 
+### Leakage-audited research benchmark
+
+The `research` package isolates paper experiments from the live product path: it never imports or calls the LLM/Search clients, keeps every failed retrieval in the denominator, freezes venue profiles at the training cutoff, and audits DOI/title/time leakage before scoring.
+
+```bash
+python3 -m research build-cached-corpus \
+  --cache-dir benchmark_artifacts/recent_journals/crossref_cache \
+  --jcr-csv data/jcr_partition_2025.csv \
+  --output-dir benchmark_artifacts/research_20260814/cached_crossref \
+  --start 2026-01-01 --train-end 2026-03-31 \
+  --dev-end 2026-05-31 --test-end 2026-06-30
+
+python3 -m research evaluate \
+  --config research/configs/cached_crossref_baselines.json
+```
+
+The checked-in configuration includes BM25, TF-IDF, RRF, and train-only learned linear fusion. Frozen vector, graph, or LightRAG runs can be imported through the same interface. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, required baselines, ablations, statistics, and claims boundary.
+
 <a id="repository-map"></a>
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
 | `where_paper_go/` | Retrieval, graph, LLM/search integration, web server, and frontend |
+| `research/` | Offline temporal benchmark, leakage audits, baselines, fusion, metrics, and reproducible configs |
 | `scripts/` | Graph/LightRAG builds, enrichment, migration, and benchmarks |
 | `tests/` | Unit, integration, and retrieval-quality tests |
 | `data/` | Auditable ranking and reviewed-scope source data |
@@ -234,6 +262,8 @@ Useful documentation:
 - [Retrieval architecture](docs/retrieval-architecture.md)
 - [Web frontend and deployment](docs/web-frontend.md)
 - [Scope enrichment workflow](docs/enrichment.md)
+- [CCF-A research roadmap](docs/ccf-a-research-roadmap.md)
+- [Performance and offline evaluation](docs/performance-evaluation-2026-08-14.md)
 - [Legacy SQLite migration notes](docs/legacy-sqlite-index.md)
 
 <a id="security"></a>
