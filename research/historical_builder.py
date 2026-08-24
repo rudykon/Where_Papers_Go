@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import threading
 import time
 from typing import Any, Iterable, Mapping, Protocol, Sequence
@@ -57,7 +58,7 @@ from .data import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_SEED = "where-papers-go-historical-venues-v1"
 DEFAULT_USER_AGENT = "WherePapersGo-HistoricalCorpus/1.0"
 TRANSIENT_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -136,11 +137,12 @@ class CollectionPolicy:
             )
         if (
             self.max_pages_per_source < 1
-            or self.max_prototypes < 1
+            or self.max_prototypes < 2
             or self.max_pcl_evidence < 1
         ):
             raise ResearchDataError(
-                "source pages, prototype, and PCL evidence limits must be positive"
+                "source pages and PCL evidence limits must be positive; "
+                "max_prototypes must be at least two"
             )
         if self.openalex_mode not in {"always", "fallback", "off"}:
             raise ResearchDataError("openalex_mode must be always, fallback, or off")
@@ -175,6 +177,32 @@ def now_iso() -> str:
 def stable_digest(*values: object) -> str:
     payload = "\x1f".join(str(value) for value in values).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def git_code_state() -> dict[str, Any]:
+    """Capture a credential-free fingerprint of the code used for generation."""
+
+    repository = Path(__file__).resolve().parents[1]
+
+    def run(*arguments: str) -> bytes:
+        try:
+            return subprocess.check_output(
+                ("git", *arguments),
+                cwd=repository,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return b""
+
+    commit = run("rev-parse", "HEAD").decode("utf-8", "replace").strip()
+    status = run("status", "--porcelain=v1", "--untracked-files=all")
+    diff = run("diff", "--binary", "HEAD")
+    return {
+        "commit": commit,
+        "dirty": bool(status.strip()),
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+    }
 
 
 def _atomic_json(path: Path, payload: Any) -> None:
@@ -419,9 +447,54 @@ class CachedJsonClient:
         ) from last_error
 
 
-def _evidence_id(source: str, identifier: str, title: str, published: str) -> str:
-    identity = identifier or stable_digest(normalize_text(title), published)[:24]
-    return f"{source}:{identity}"
+def paper_evidence_id(
+    venue_id: str,
+    *,
+    doi: object = "",
+    title: object = "",
+    published: object = "",
+) -> str:
+    """Return a globally unambiguous, venue-aware paper identity.
+
+    DOI identities remain readable.  The no-DOI path hashes an NFKC/casefolded
+    title that preserves every Unicode script, plus the full publication date.
+    The venue prefix prevents a bad upstream association from colliding with an
+    otherwise unrelated venue's evidence record.
+    """
+
+    canonical_venue = str(venue_id or "").strip()
+    if not canonical_venue:
+        raise ResearchDataError("paper evidence identity requires venue_id")
+    normalized_doi = normalize_doi(doi)
+    if normalized_doi:
+        return f"paper:{canonical_venue}:doi:{normalized_doi}"
+    normalized_title = normalize_text(title)
+    publication_date = str(published or "").strip()[:10]
+    if not normalized_title or not publication_date:
+        raise ResearchDataError(
+            "title-derived paper evidence identity requires a Unicode title and date"
+        )
+    digest = stable_digest(canonical_venue, normalized_title, publication_date)[:32]
+    return f"paper:{canonical_venue}:title:{digest}"
+
+
+def _evidence_id(
+    source: str,
+    venue_id: str,
+    identifier: str,
+    doi: str,
+    title: str,
+    published: str,
+) -> str:
+    canonical = paper_evidence_id(
+        venue_id,
+        doi=doi,
+        title=title,
+        published=published,
+    )
+    source_identity = str(identifier or "").strip()
+    suffix = stable_digest(source, source_identity, canonical)[:16]
+    return f"source-{canonical}:{source}:{suffix}"
 
 
 def _paper_record(
@@ -439,7 +512,14 @@ def _paper_record(
     source_record_id: str = "",
 ) -> dict[str, Any]:
     return {
-        "evidence_id": _evidence_id(source, identifier or doi, title, published),
+        "evidence_id": _evidence_id(
+            source,
+            venue.venue_id,
+            identifier,
+            doi,
+            title,
+            published,
+        ),
         "venue_id": venue.venue_id,
         "kind": "paper",
         "source": source,
@@ -864,7 +944,17 @@ class OfficialScopeSearchSource:
 class PCLPrototypeClient:
     """Grounded prototype synthesis with model-aware PCL failover."""
 
-    PROMPT_VERSION = "grounded-prototypes-v3-model-pool"
+    PROMPT_VERSION = "grounded-prototypes-v4-temporal-only"
+    SYSTEM_PROMPT = (
+        "You build grounded journal topic prototypes. Return strict JSON only. "
+        "Use only the supplied evidence; never invent papers, scope, dates, IDs, "
+        "or venue facts. Every prototype must cite one or more exact evidence_ids."
+    )
+    OUTPUT_CONTRACT = (
+        "Each item must contain label, summary, keywords (array), evidence_ids "
+        "(array of exact IDs), and confidence (high|medium|low). Keep summary "
+        "concise and retrieval-oriented."
+    )
 
     def __init__(
         self,
@@ -1025,6 +1115,12 @@ class PCLPrototypeClient:
         self._thread_state = threading.local()
         self._audit_lock = threading.Lock()
         self._audit_path = cache_dir / "pcl_model_attempts.jsonl"
+        self.code_state = git_code_state()
+        prompt_template_sha256 = stable_digest(
+            self.PROMPT_VERSION,
+            self.SYSTEM_PROMPT,
+            self.OUTPUT_CONTRACT,
+        )
         self.provider_identity = {
             "provider": "pcl_openai_compatible_model_pool",
             "endpoint_host": urllib.parse.urlparse(self.endpoint).hostname or "",
@@ -1041,6 +1137,13 @@ class PCLPrototypeClient:
             "selection": "round_robin_with_failure_cooldown",
             "model_fallbacks": self.model_fallbacks,
             "hard_max_output_tokens": self.hard_max_output_tokens,
+            "prompt_version": self.PROMPT_VERSION,
+            "prompt_template_sha256": prompt_template_sha256,
+            "generation_parameters": {
+                "temperature": self.llm_config.get("temperature", 0),
+                "json_mode": bool(self.llm_config.get("json_mode")),
+            },
+            "code_state": self.code_state,
         }
 
     @property
@@ -1123,11 +1226,7 @@ class PCLPrototypeClient:
             return [
                 {
                     "role": "system",
-                    "content": (
-                        "You build grounded journal topic prototypes. Return strict JSON only. "
-                        "Use only the supplied evidence; never invent papers, scope, dates, IDs, "
-                        "or venue facts. Every prototype must cite one or more exact evidence_ids."
-                    ),
+                    "content": self.SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
@@ -1139,9 +1238,8 @@ class PCLPrototypeClient:
                         + ", ".join(ids)
                         + "\n\nReturn {\"prototypes\":[...]} with 2-"
                         + str(policy.max_prototypes)
-                        + " diverse prototypes. Each item must contain label, summary, keywords "
-                        "(array), evidence_ids (array of exact IDs), and confidence "
-                        "(high|medium|low). Keep summary concise and retrieval-oriented."
+                        + " diverse prototypes. "
+                        + self.OUTPUT_CONTRACT
                     ),
                 },
             ]
@@ -1263,14 +1361,77 @@ class PCLPrototypeClient:
         with self._audit_lock:
             _append_jsonl(self._audit_path, [row])
 
+    def _with_generation_provenance(
+        self,
+        prototypes: Sequence[Mapping[str, Any]],
+        *,
+        model: str,
+        messages: Sequence[Mapping[str, Any]],
+        evidence_by_id: Mapping[str, Mapping[str, Any]],
+        output_tokens: int,
+    ) -> list[dict[str, Any]]:
+        prompt_sha256 = hashlib.sha256(
+            json.dumps(
+                messages,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        evidence_fingerprint = stable_digest(
+            *(
+                f"{evidence_id}:{row.get('content_sha256') or stable_digest(row.get('title'), row.get('abstract'), row.get('text'))}"
+                for evidence_id, row in sorted(evidence_by_id.items())
+            )
+        )
+        parameters = {
+            "temperature": self.llm_config.get("temperature", 0),
+            "max_output_tokens": output_tokens,
+            "json_mode": bool(self.llm_config.get("json_mode")),
+        }
+        generation = {
+            "provider": "pcl_openai_compatible_model_pool",
+            "model": model,
+            "prompt_version": self.PROMPT_VERSION,
+            "prompt_sha256": prompt_sha256,
+            "parameters": parameters,
+            "parameters_sha256": stable_digest(
+                json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+            ),
+            "input_evidence_sha256": evidence_fingerprint,
+            "input_evidence_count": len(evidence_by_id),
+            "code_state": self.code_state,
+        }
+        return [
+            {**dict(prototype), "generation": generation}
+            for prototype in prototypes
+        ]
+
     def synthesize(
         self,
         venue: VenueSeed,
         evidence: Sequence[Mapping[str, Any]],
         policy: CollectionPolicy,
     ) -> tuple[list[dict[str, Any]], str]:
+        cutoff = parse_iso_date(policy.cutoff, field_name="cutoff")
+        temporal_evidence: list[Mapping[str, Any]] = []
+        for row in evidence:
+            if row.get("temporal_eligible") is not True:
+                continue
+            raw_date = str(
+                row.get("publication_date") or row.get("valid_at") or ""
+            ).strip()[:10]
+            if not raw_date:
+                continue
+            if parse_iso_date(raw_date, field_name="PCL evidence date") > cutoff:
+                continue
+            temporal_evidence.append(row)
+        if not temporal_evidence:
+            raise HistoricalCollectionError(
+                "PCL research synthesis requires temporal_eligible evidence"
+            )
         ranked = sorted(
-            evidence,
+            temporal_evidence,
             key=lambda row: (
                 {"official_scope": 3, "catalog": 2, "paper": 1}.get(
                     str(row.get("kind") or ""), 0
@@ -1326,6 +1487,13 @@ class PCLPrototypeClient:
                 evidence_by_id=evidence_by_id,
             )
             if cached_prototypes:
+                cached_prototypes = self._with_generation_provenance(
+                    cached_prototypes,
+                    model=model,
+                    messages=messages,
+                    evidence_by_id=evidence_by_id,
+                    output_tokens=output_tokens,
+                )
                 self._mark_model_success(model)
                 self._audit_model_attempt(
                     venue_id=venue.venue_id,
@@ -1428,6 +1596,13 @@ class PCLPrototypeClient:
             )
             terminal_reason = finish_reason.casefold()
             if prototypes and terminal_reason not in {"length", "content_filter"}:
+                prototypes = self._with_generation_provenance(
+                    prototypes,
+                    model=model,
+                    messages=messages,
+                    evidence_by_id=evidence_by_id,
+                    output_tokens=output_tokens,
+                )
                 self._mark_model_success(model)
                 _atomic_json(
                     path,
@@ -1514,16 +1689,18 @@ class PCLPrototypeClient:
 
 
 def merge_paper_evidence(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Merge source records by DOI, otherwise by normalized title and year."""
+    """Merge source records by a Unicode-safe, venue-aware identity."""
 
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in records:
         if row.get("kind") != "paper":
             continue
-        doi = normalize_doi(row.get("doi"))
-        title = normalize_text(row.get("title"))
-        year = str(row.get("publication_date") or "")[:4]
-        key = "doi:" + doi if doi else "title:" + stable_digest(title, year)
+        key = paper_evidence_id(
+            str(row.get("venue_id") or ""),
+            doi=row.get("doi"),
+            title=row.get("title"),
+            published=row.get("publication_date"),
+        )
         grouped[key].append(row)
     merged: list[dict[str, Any]] = []
     for key, values in grouped.items():
@@ -1615,6 +1792,7 @@ def build_venue_profile(
     max_prototypes: int,
     collection_status: str,
     source_errors: Mapping[str, str] | None = None,
+    research_scope_enabled: bool = True,
 ) -> dict[str, Any]:
     papers = [dict(row) for row in evidence if row.get("kind") == "paper"]
     temporal_papers = [row for row in papers if row.get("temporal_eligible")]
@@ -1628,26 +1806,25 @@ def build_venue_profile(
         for value in (venue.name, venue.subject, venue.subject_en)
         if value
     )
-    prototypes: list[dict[str, Any]] = [
-        {
-            "prototype_id": f"{venue.venue_id}:static",
-            "kind": "static",
-            "label": "Catalog identity and subject",
-            "text": catalog_text,
-            "keywords": [value for value in (venue.subject, venue.subject_en) if value],
-            "weight": 0.35,
-            "confidence": "catalog",
-            "source_ids": [f"catalog:{venue.venue_id}"],
-            "source_max_date": cutoff,
-            "temporal_eligible": True,
-            "derived_by": "deterministic",
-            "model": "",
-        }
-    ]
+    static_prototype = {
+        "prototype_id": f"{venue.venue_id}:static",
+        "kind": "static",
+        "label": "Catalog identity and subject",
+        "text": catalog_text,
+        "keywords": [value for value in (venue.subject, venue.subject_en) if value],
+        "weight": 0.35,
+        "confidence": "catalog",
+        "source_ids": [f"catalog:{venue.venue_id}"],
+        "source_max_date": cutoff,
+        "temporal_eligible": True,
+        "derived_by": "deterministic",
+        "model": "",
+    }
+    scope_prototypes: list[dict[str, Any]] = []
     for index, row in enumerate(scope_rows):
         scope_text = str(row.get("text") or "").strip()
         if scope_text:
-            prototypes.append(
+            scope_prototypes.append(
                 {
                     "prototype_id": f"{venue.venue_id}:scope:{index}",
                     "kind": "official_scope",
@@ -1663,19 +1840,55 @@ def build_venue_profile(
                     "model": "",
                 }
             )
-    grounded = [dict(row) for row in llm_prototypes if row.get("source_ids")]
+    grounded = [
+        dict(row)
+        for row in llm_prototypes
+        if row.get("source_ids") and row.get("temporal_eligible") is not False
+    ]
     if not grounded:
         grounded = _fallback_prototypes(
             venue,
             temporal_papers,
-            limit=max(1, max_prototypes - len(prototypes)),
+            limit=max(1, max_prototypes - 1),
         )
-    prototypes.extend(grounded)
-    # Static is mandatory. Prefer diverse topical/scope prototypes within cap.
-    prototypes = prototypes[:max_prototypes]
-    temporal_prototypes = [row for row in prototypes if row.get("temporal_eligible")]
-    profile_text = "\n\n".join(str(row.get("text") or "") for row in temporal_prototypes)
-    production_profile_text = "\n\n".join(str(row.get("text") or "") for row in prototypes)
+
+    paper_ids = {str(row.get("evidence_id") or "") for row in temporal_papers}
+
+    def paper_backed(prototype: Mapping[str, Any]) -> bool:
+        return bool(paper_ids.intersection(str(value) for value in prototype.get("source_ids") or ()))
+
+    production_prototypes = [
+        dict(static_prototype),
+        *scope_prototypes,
+        *grounded,
+    ][:max_prototypes]
+    research_candidates = [dict(static_prototype)]
+    if research_scope_enabled:
+        research_candidates.extend(
+            row for row in scope_prototypes if row.get("temporal_eligible") is True
+        )
+    research_candidates.extend(
+        row for row in grounded if row.get("temporal_eligible") is True
+    )
+    research_prototypes = research_candidates[:max_prototypes]
+    if temporal_papers and not any(paper_backed(row) for row in research_prototypes):
+        fallback = _fallback_prototypes(venue, temporal_papers, limit=1)
+        if fallback:
+            # Static identity is mandatory.  Reserve the final slot for a
+            # deterministic paper-backed unit when PCL cited scope/catalog
+            # only or when earlier scope units filled the cap.
+            research_prototypes = research_prototypes[: max(1, max_prototypes - 1)]
+            research_prototypes.append(fallback[0])
+    research_prototypes = research_prototypes[:max_prototypes]
+    temporal_prototypes = [
+        row for row in research_prototypes if row.get("temporal_eligible") is True
+    ]
+    profile_text = "\n\n".join(
+        str(row.get("text") or "") for row in temporal_prototypes
+    )
+    production_profile_text = "\n\n".join(
+        str(row.get("text") or "") for row in production_prototypes
+    )
 
     paper_count = len(temporal_papers)
     if abstract_count >= 10:
@@ -1711,7 +1924,11 @@ def build_venue_profile(
         "profile_text": profile_text,
         "production_profile_text": production_profile_text,
         "snapshot_date": cutoff,
-        "prototypes": prototypes,
+        # ``prototypes`` remains the evaluator-facing compatibility alias.  It
+        # is intentionally identical to the clean research collection.
+        "prototypes": research_prototypes,
+        "research_prototypes": research_prototypes,
+        "production_prototypes": production_prototypes,
         "metadata": {
             "content_origin": "multi_source_frozen_historical_profiles",
             "collection_status": collection_status,
@@ -1721,8 +1938,13 @@ def build_venue_profile(
             "title_only_paper_count": title_only_count,
             "official_scope_count": len(scope_rows),
             "temporal_official_scope_count": len(temporal_scope),
-            "prototype_count": len(prototypes),
+            "prototype_count": len(research_prototypes),
+            "research_prototype_count": len(research_prototypes),
+            "production_prototype_count": len(production_prototypes),
             "temporal_prototype_count": len(temporal_prototypes),
+            "paper_backed_temporal_prototype_count": sum(
+                paper_backed(row) for row in temporal_prototypes
+            ),
             "profile_tier": profile_tier,
             "evidence_grade": evidence_grade,
             "profile_level": evidence_grade,
@@ -1740,6 +1962,14 @@ def build_venue_profile(
             "identity_status": venue.identity_status,
             "pcl_status": pcl_status,
             "pcl_model": pcl_model,
+            "pcl_generation": next(
+                (
+                    dict(row["generation"])
+                    for row in grounded
+                    if isinstance(row.get("generation"), Mapping)
+                ),
+                {},
+            ),
             "source_errors": dict(source_errors or {}),
         },
     }
@@ -1940,8 +2170,10 @@ def assemble_historical_corpus(
 
     shard_dir = output_dir / "venues"
     profiles: list[dict[str, Any]] = []
-    evidence_rows: list[dict[str, Any]] = []
-    prototype_rows: list[dict[str, Any]] = []
+    production_evidence_rows: list[dict[str, Any]] = []
+    research_evidence_rows: list[dict[str, Any]] = []
+    research_prototype_rows: list[dict[str, Any]] = []
+    production_prototype_rows: list[dict[str, Any]] = []
     identity_rows: list[dict[str, Any]] = []
     statuses: Counter[str] = Counter()
     tiers: Counter[str] = Counter()
@@ -1963,7 +2195,9 @@ def assemble_historical_corpus(
             for row in evidence:
                 if isinstance(row, Mapping):
                     evidence_row = dict(row)
-                    evidence_rows.append(evidence_row)
+                    production_evidence_rows.append(evidence_row)
+                    if evidence_row.get("temporal_eligible") is True:
+                        research_evidence_rows.append(evidence_row)
                     sources = evidence_row.get("sources")
                     source_values = sources if isinstance(sources, list) else [evidence_row.get("source")]
                     for source in source_values:
@@ -1973,15 +2207,32 @@ def assemble_historical_corpus(
             profile_row = _static_pending_profile(venue, policy)
             statuses["pending"] += 1
             pcl_statuses["pending"] += 1
-            evidence_rows.extend(catalog_evidence(venue, policy.cutoff))
+            pending_evidence = catalog_evidence(venue, policy.cutoff)
+            production_evidence_rows.extend(pending_evidence)
+            research_evidence_rows.extend(pending_evidence)
             source_venues["jcr_2025"].add(venue.venue_id)
         profiles.append(profile_row)
         metadata = profile_row.get("metadata") if isinstance(profile_row.get("metadata"), Mapping) else {}
         tiers[str(metadata.get("profile_tier") or "unknown")] += 1
         grades[str(metadata.get("evidence_grade") or "unknown")] += 1
-        for prototype in profile_row.get("prototypes") or ():
+        for prototype in (
+            profile_row.get("research_prototypes")
+            or profile_row.get("prototypes")
+            or ()
+        ):
             if isinstance(prototype, Mapping):
-                prototype_rows.append({"venue_id": venue.venue_id, **dict(prototype)})
+                research_prototype_rows.append(
+                    {"venue_id": venue.venue_id, **dict(prototype)}
+                )
+        for prototype in (
+            profile_row.get("production_prototypes")
+            or profile_row.get("prototypes")
+            or ()
+        ):
+            if isinstance(prototype, Mapping):
+                production_prototype_rows.append(
+                    {"venue_id": venue.venue_id, **dict(prototype)}
+                )
         identity_rows.append(
             {
                 "venue_id": venue.venue_id,
@@ -1992,21 +2243,31 @@ def assemble_historical_corpus(
         )
 
     profiles.sort(key=lambda row: str(row.get("venue_id") or ""))
-    evidence_rows.sort(
+    production_evidence_rows.sort(
         key=lambda row: (str(row.get("venue_id") or ""), str(row.get("evidence_id") or ""))
     )
-    prototype_rows.sort(
+    research_evidence_rows.sort(
+        key=lambda row: (str(row.get("venue_id") or ""), str(row.get("evidence_id") or ""))
+    )
+    research_prototype_rows.sort(
+        key=lambda row: (str(row.get("venue_id") or ""), str(row.get("prototype_id") or ""))
+    )
+    production_prototype_rows.sort(
         key=lambda row: (str(row.get("venue_id") or ""), str(row.get("prototype_id") or ""))
     )
     identity_rows.sort(key=lambda row: str(row.get("venue_id") or ""))
     profiles_path = output_dir / "venue_profiles.train.jsonl"
     evidence_path = output_dir / "evidence.jsonl"
+    research_evidence_path = output_dir / "research_evidence.jsonl"
     prototypes_path = output_dir / "prototypes.jsonl"
+    production_prototypes_path = output_dir / "production_prototypes.jsonl"
     identity_path = output_dir / "venue_identity_crosswalk.jsonl"
     lightrag_path = output_dir / "lightrag_custom_kg.json"
     _write_jsonl(profiles_path, profiles)
-    _write_jsonl(evidence_path, evidence_rows)
-    _write_jsonl(prototypes_path, prototype_rows)
+    _write_jsonl(evidence_path, production_evidence_rows)
+    _write_jsonl(research_evidence_path, research_evidence_rows)
+    _write_jsonl(prototypes_path, research_prototype_rows)
+    _write_jsonl(production_prototypes_path, production_prototype_rows)
     _write_jsonl(identity_path, identity_rows)
 
     venue_by_id = {venue.venue_id: venue for venue in venues}
@@ -2105,12 +2366,17 @@ def assemble_historical_corpus(
             source: len(venue_ids) for source, venue_ids in sorted(source_venues.items())
         },
         "pcl_status": dict(sorted(pcl_statuses.items())),
-        "paper_evidence_records": sum(row.get("kind") == "paper" for row in evidence_rows),
+        "paper_evidence_records": sum(
+            row.get("kind") == "paper" for row in research_evidence_rows
+        ),
+        "production_evidence_records": len(production_evidence_rows),
+        "research_evidence_records": len(research_evidence_rows),
         "title_only_paper_records": sum(
             row.get("kind") == "paper" and not str(row.get("abstract") or "").strip()
-            for row in evidence_rows
+            for row in research_evidence_rows
         ),
-        "prototype_records": len(prototype_rows),
+        "prototype_records": len(research_prototype_rows),
+        "production_prototype_records": len(production_prototype_rows),
         "lightrag_mapped_venues": sum(
             venue.online_entity_id is not None and venue.identity_status == "exact_issn"
             for venue in venues
@@ -2146,7 +2412,15 @@ def assemble_historical_corpus(
         "outputs": {
             "profiles": {"path": profiles_path.name, "sha256": sha256_file(profiles_path)},
             "evidence": {"path": evidence_path.name, "sha256": sha256_file(evidence_path)},
+            "research_evidence": {
+                "path": research_evidence_path.name,
+                "sha256": sha256_file(research_evidence_path),
+            },
             "prototypes": {"path": prototypes_path.name, "sha256": sha256_file(prototypes_path)},
+            "production_prototypes": {
+                "path": production_prototypes_path.name,
+                "sha256": sha256_file(production_prototypes_path),
+            },
             "identity_crosswalk": {"path": identity_path.name, "sha256": sha256_file(identity_path)},
             "lightrag_custom_kg": {
                 "path": lightrag_path.name,

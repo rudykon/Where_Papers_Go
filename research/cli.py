@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from .baselines import BM25Baseline, ImportedRunBaseline, TfidfBaseline
 from .cache_builder import build_cached_corpus
+from .clean_corpus import rebuild_clean_corpus
 from .data import (
     ResearchDataError,
     build_data_manifest,
@@ -502,6 +503,26 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--query-batch-size", type=int, default=16)
     prototype_run.add_argument("--prototype-chunk-size", type=int, default=4096)
     prototype_run.add_argument("--ignore-prototype-weights", action="store_true")
+
+    clean = subparsers.add_parser(
+        "rebuild-clean-corpus",
+        help="derive a causal research corpus from stored acquisition shards only",
+    )
+    clean.add_argument("--source-dir", type=Path, required=True)
+    clean.add_argument("--output-dir", type=Path, required=True)
+    clean.add_argument("--jcr-csv", type=Path, required=True)
+    clean.add_argument("--data-dir", type=Path, required=True)
+    clean.add_argument("--history-start", required=True)
+    clean.add_argument("--cutoff", required=True)
+    clean.add_argument("--mode", choices=("deterministic", "pcl"), required=True)
+    clean.add_argument("--api-config", type=Path)
+    clean.add_argument("--pcl-cache-dir", type=Path)
+    clean.add_argument("--workers", type=int, default=3)
+    clean.add_argument("--max-prototypes", type=int, default=8)
+    clean.add_argument("--max-pcl-evidence", type=int, default=32)
+    clean.add_argument("--pcl-max-tokens", type=int, default=8192)
+    clean.add_argument("--pcl-models", nargs="+", default=None)
+    clean.add_argument("--pcl-model-fallbacks", type=int, default=None)
     return parser
 
 
@@ -618,6 +639,56 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 json.dumps(
                     manifest.get("coverage", manifest),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "rebuild-clean-corpus":
+            policy = CollectionPolicy(
+                history_start=args.history_start,
+                cutoff=args.cutoff,
+                max_prototypes=args.max_prototypes,
+                max_pcl_evidence=args.max_pcl_evidence,
+            )
+            venues = load_venue_seeds(args.jcr_csv, data_dir=args.data_dir)
+            pcl = None
+            if args.mode == "pcl":
+                if args.api_config is None:
+                    raise ResearchDataError("clean PCL rebuild requires --api-config")
+                from where_paper_go import enrichment
+
+                api_config = enrichment.load_api_config(args.api_config)
+                cache_dir = args.pcl_cache_dir or (
+                    args.source_dir / "raw_clean_temporal_pcl"
+                )
+                pcl = PCLPrototypeClient(
+                    api_config,
+                    cache_dir,
+                    max_output_tokens=args.pcl_max_tokens,
+                    request_semaphore=threading.BoundedSemaphore(args.workers),
+                    models=args.pcl_models,
+                    model_fallbacks=args.pcl_model_fallbacks,
+                )
+            manifest = rebuild_clean_corpus(
+                venues=venues,
+                policy=policy,
+                source_dir=args.source_dir,
+                output_dir=args.output_dir,
+                jcr_csv=args.jcr_csv,
+                mode=args.mode,
+                pcl=pcl,
+                workers=args.workers,
+            )
+            print(
+                json.dumps(
+                    {
+                        "coverage": manifest["coverage"],
+                        "validation": manifest["validation"],
+                        "observed_pcl_model_distribution": manifest[
+                            "observed_pcl_model_distribution"
+                        ],
+                    },
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
