@@ -159,7 +159,32 @@ def evaluate_config(
     else:
         raise ResearchDataError(f"unsupported corpus type: {corpus_type!r}")
 
-    leakage = audit_leakage(bundle, corpus, split)
+    corpus_views: set[str] = set()
+    for baseline_config in config.get("baselines", ()):
+        baseline_config = _mapping(baseline_config, "baselines[]")
+        corpus_views.add(
+            "prototypes"
+            if bool(baseline_config.get("use_prototypes", False))
+            else "document"
+        )
+    for imported_config in config.get("imported_runs", ()):
+        imported_config = _mapping(imported_config, "imported_runs[]")
+        declared_view = str(imported_config.get("corpus_view") or "").strip()
+        if declared_view:
+            corpus_views.add(declared_view)
+        else:
+            # An undeclared external scorer is audited against every possible
+            # local input surface.  This is conservative and fail-closed.
+            corpus_views.update(("document", "metadata_sources", "prototypes"))
+    if not corpus_views:
+        corpus_views.update(("document", "metadata_sources", "prototypes"))
+
+    leakage = audit_leakage(
+        bundle,
+        corpus,
+        split,
+        corpus_views=tuple(sorted(corpus_views)),
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "leakage_audit.json", leakage)
     if config.get("fail_on_critical_leakage", True) and not leakage["passed"]:

@@ -1,7 +1,7 @@
 {
   "offline_only": true,
   "fail_on_critical_leakage": true,
-  "output_dir": "../../benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical",
+  "output_dir": "../../benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2",
   "dataset": {
     "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
     "query_fields": [

@@ -493,6 +493,74 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             self.assertTrue(
                 any(item["kind"].endswith("doi") for item in audit["findings"])
             )
+            prototype_scoped = [
+                VenueDocument(
+                    "v1",
+                    "catalog name only",
+                    snapshot_date="2025-12-31",
+                    metadata={
+                        "source_dois": ["10.1/test"],
+                        "source_titles": ["New cancer imaging paper"],
+                        "prototypes": [
+                            {
+                                "label": "Historical graph methods",
+                                "text": "historical graph retrieval methods",
+                                "source_ids": [
+                                    "paper:v1:doi:10.1/historical"
+                                ],
+                                "source_max_date": "2025-12-31",
+                                "temporal_eligible": True,
+                            }
+                        ],
+                    },
+                )
+            ]
+            scoped_audit = audit_leakage(
+                bundle,
+                prototype_scoped,
+                split,
+                corpus_views=("prototypes",),
+            )
+            self.assertTrue(scoped_audit["passed"])
+            self.assertEqual(scoped_audit["schema_version"], 3)
+            self.assertEqual(scoped_audit["audited_corpus_views"], ["prototypes"])
+            self.assertTrue(
+                any(
+                    item["kind"] == "evaluation_identity_in_unindexed_metadata_doi"
+                    for item in scoped_audit["findings"]
+                )
+            )
+            active_source = [
+                VenueDocument(
+                    "v1",
+                    "catalog name only",
+                    snapshot_date="2025-12-31",
+                    metadata={
+                        "prototypes": [
+                            {
+                                "label": "Leaked test-derived prototype",
+                                "text": "derived clinical retrieval topic",
+                                "source_ids": ["paper:v1:doi:10.1/test"],
+                                "source_max_date": "2025-12-31",
+                                "temporal_eligible": True,
+                            }
+                        ]
+                    },
+                )
+            ]
+            active_audit = audit_leakage(
+                bundle,
+                active_source,
+                split,
+                corpus_views=("prototypes",),
+            )
+            self.assertFalse(active_audit["passed"])
+            self.assertTrue(
+                any(
+                    item["kind"] == "evaluation_identity_in_corpus_doi"
+                    for item in active_audit["findings"]
+                )
+            )
             synthetic_audit = {
                 "findings": [
                     {"kind": "gold_venue_mentioned_in_query", "query_id": "test"},

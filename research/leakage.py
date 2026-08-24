@@ -13,15 +13,45 @@ from .data import DatasetBundle, TemporalSplit, normalize_doi, normalize_text, p
 from .types import Query, VenueDocument
 
 
-DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.I)
+DOI_RE = re.compile(r"10\.\d{1,9}/[-._;()/:a-z0-9]+", re.I)
 ARXIV_RE = re.compile(r"(?:arxiv\s*:\s*)?(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
 
 AbstractSimilarityHook = Callable[[str, str], float]
 PublicationVersionHook = Callable[[Query, Mapping[str, Any]], Iterable[str]]
 
+_CORPUS_VIEWS = frozenset({"document", "metadata_sources", "prototypes"})
+
 
 def _content_hash(query: Query) -> str:
     return hashlib.sha256(normalize_text(query.text).encode("utf-8")).hexdigest()
+
+
+def _record_dois(
+    value: object,
+    dois: set[str],
+    version_tokens: set[str],
+) -> None:
+    """Extract DOI identities even when embedded in typed evidence IDs."""
+
+    raw = str(value or "")
+    matches = DOI_RE.findall(raw)
+    direct = normalize_doi(raw)
+    # Preserve support for synthetic/local DOI-like fixtures while avoiding
+    # treating a typed evidence ID as one giant DOI.
+    if (
+        not matches
+        and direct.startswith("10.")
+        and "/" in direct
+        and ":doi:" not in direct
+    ):
+        matches = [direct]
+    for match in matches:
+        normalized = normalize_doi(match)
+        if not normalized:
+            continue
+        dois.add(normalized)
+        if parsed := _version_token(normalized):
+            version_tokens.add(parsed[0])
 
 
 def _distinctive_title(value: str) -> bool:
@@ -134,12 +164,24 @@ def audit_leakage(
     split: TemporalSplit,
     *,
     evaluation_splits: Sequence[str] = ("validation", "test"),
+    corpus_views: Sequence[str] = (
+        "document",
+        "metadata_sources",
+        "prototypes",
+    ),
     abstract_near_duplicate_threshold: float = 0.9,
     abstract_similarity_hook: AbstractSimilarityHook | None = None,
     publication_version_hook: PublicationVersionHook | None = None,
 ) -> dict[str, Any]:
     """Audit identity, temporal, near-duplicate, and publication-version leakage."""
 
+    normalized_corpus_views = tuple(dict.fromkeys(str(value) for value in corpus_views))
+    unknown_corpus_views = set(normalized_corpus_views) - _CORPUS_VIEWS
+    if not normalized_corpus_views or unknown_corpus_views:
+        raise ValueError(
+            "corpus_views must be a non-empty subset of "
+            f"{sorted(_CORPUS_VIEWS)}; unknown={sorted(unknown_corpus_views)}"
+        )
     if not 0.0 < abstract_near_duplicate_threshold <= 1.0:
         raise ValueError("abstract near-duplicate threshold must be in (0, 1]")
 
@@ -322,8 +364,11 @@ def audit_leakage(
     corpus_dois: set[str] = set()
     corpus_version_tokens: set[str] = set()
     corpus_titles: set[str] = set()
+    corpus_texts: set[str] = set()
     corpus_hashes: set[str] = set()
     source_query_ids: set[str] = set()
+    unindexed_metadata_dois: set[str] = set()
+    unindexed_metadata_titles: set[str] = set()
     missing_snapshot = 0
     postdated_documents: list[str] = []
     postdated_sources: list[str] = []
@@ -335,8 +380,19 @@ def audit_leakage(
             if snapshot >= earliest_target:
                 postdated_documents.append(document.doc_id)
         metadata = document.metadata
-        source_max_dates = [str(metadata.get("source_max_date") or "").strip()[:10]]
+        source_max_dates: list[str] = []
+        if "document" in normalized_corpus_views:
+            normalized_document_text = normalize_text(document.text)
+            if normalized_document_text:
+                corpus_texts.add(normalized_document_text)
+            for value in DOI_RE.findall(document.text):
+                _record_dois(value, corpus_dois, corpus_version_tokens)
+        if "metadata_sources" in normalized_corpus_views:
+            source_max_dates.append(
+                str(metadata.get("source_max_date") or "").strip()[:10]
+            )
         prototypes = metadata.get("prototypes")
+        active_prototype_text_found = False
         if isinstance(prototypes, Sequence) and not isinstance(prototypes, (str, bytes)):
             for prototype in prototypes:
                 if not isinstance(prototype, Mapping):
@@ -345,16 +401,31 @@ def audit_leakage(
                 # not part of the frozen evaluation text or prototype index.
                 if prototype.get("temporal_eligible", True) is False:
                     continue
+                if "prototypes" not in normalized_corpus_views:
+                    continue
+                prototype_text = normalize_text(prototype.get("text"))
+                if not prototype_text:
+                    continue
+                active_prototype_text_found = True
+                corpus_texts.add(prototype_text)
+                if label := normalize_text(prototype.get("label")):
+                    corpus_titles.add(label)
                 source_max_dates.append(
                     str(prototype.get("source_max_date") or "").strip()[:10]
                 )
                 for source_id in prototype.get("source_ids") or ():
-                    value = str(source_id or "")
-                    if value.startswith("doi:") and normalize_doi(value[4:]):
-                        normalized_doi = normalize_doi(value[4:])
-                        corpus_dois.add(normalized_doi)
-                        if parsed := _version_token(normalized_doi):
-                            corpus_version_tokens.add(parsed[0])
+                    _record_dois(source_id, corpus_dois, corpus_version_tokens)
+                    source_id_text = str(source_id or "").strip()
+                    if source_id_text:
+                        source_query_ids.add(source_id_text)
+        # Prototype-aware retrievers fall back to document.text when a venue
+        # has no eligible prototype; mirror that exact behavior in the audit.
+        if "prototypes" in normalized_corpus_views and not active_prototype_text_found:
+            normalized_document_text = normalize_text(document.text)
+            if normalized_document_text:
+                corpus_texts.add(normalized_document_text)
+            for value in DOI_RE.findall(document.text):
+                _record_dois(value, corpus_dois, corpus_version_tokens)
         for source_max_date in source_max_dates:
             if not source_max_date:
                 continue
@@ -370,29 +441,32 @@ def audit_leakage(
             doi_values = [doi_values]
         for value in doi_values if isinstance(doi_values, Sequence) else ():
             if normalized := normalize_doi(value):
-                corpus_dois.add(normalized)
-                if parsed := _version_token(normalized):
-                    corpus_version_tokens.add(parsed[0])
+                if "metadata_sources" in normalized_corpus_views:
+                    _record_dois(normalized, corpus_dois, corpus_version_tokens)
+                else:
+                    unindexed_metadata_dois.add(normalized)
         title_values = metadata.get("source_titles") or [metadata.get("source_title")]
         if isinstance(title_values, str):
             title_values = [title_values]
         for value in title_values if isinstance(title_values, Sequence) else ():
             if normalized := normalize_text(value):
-                corpus_titles.add(normalized)
+                if "metadata_sources" in normalized_corpus_views:
+                    corpus_titles.add(normalized)
+                else:
+                    unindexed_metadata_titles.add(normalized)
         hash_values = metadata.get("content_sha256") or metadata.get("source_content_sha256")
-        if isinstance(hash_values, str) and hash_values:
+        if (
+            "metadata_sources" in normalized_corpus_views
+            and isinstance(hash_values, str)
+            and hash_values
+        ):
             corpus_hashes.add(hash_values)
         query_values = metadata.get("source_query_ids") or [metadata.get("source_query_id")]
         if isinstance(query_values, str):
             query_values = [query_values]
         for value in query_values if isinstance(query_values, Sequence) else ():
-            if value:
+            if value and "metadata_sources" in normalized_corpus_views:
                 source_query_ids.add(str(value))
-        for value in DOI_RE.findall(document.text):
-            normalized = normalize_doi(value)
-            corpus_dois.add(normalized)
-            if parsed := _version_token(normalized):
-                corpus_version_tokens.add(parsed[0])
 
     if missing_snapshot:
         add("missing_corpus_snapshot", "critical", document_count=missing_snapshot)
@@ -416,7 +490,14 @@ def audit_leakage(
 
     direct_counts: Counter[str] = Counter()
     examples: dict[str, list[str]] = defaultdict(list)
+    unindexed_counts: Counter[str] = Counter()
+    unindexed_examples: dict[str, list[str]] = defaultdict(list)
     for query in target_queries:
+        normalized_title = normalize_text(query.title)
+        title_in_effective_text = bool(
+            _distinctive_title(query.title)
+            and any(normalized_title in text for text in corpus_texts)
+        )
         version_match = bool(
             query.doi not in corpus_dois
             and set(version_tokens_by_query.get(query.query_id, {}))
@@ -426,7 +507,7 @@ def audit_leakage(
             "doi": bool(query.doi and query.doi in corpus_dois),
             "title": bool(
                 _distinctive_title(query.title)
-                and normalize_text(query.title) in corpus_titles
+                and (normalized_title in corpus_titles or title_in_effective_text)
             ),
             "content_hash": _content_hash(query) in corpus_hashes,
             "source_query_id": query.query_id in source_query_ids,
@@ -437,6 +518,18 @@ def audit_leakage(
                 direct_counts[kind] += 1
                 if len(examples[kind]) < 20:
                     examples[kind].append(query.query_id)
+        inactive_checks = {
+            "doi": bool(query.doi and query.doi in unindexed_metadata_dois),
+            "title": bool(
+                _distinctive_title(query.title)
+                and normalized_title in unindexed_metadata_titles
+            ),
+        }
+        for kind, matched in inactive_checks.items():
+            if matched and not checks[kind]:
+                unindexed_counts[kind] += 1
+                if len(unindexed_examples[kind]) < 20:
+                    unindexed_examples[kind].append(query.query_id)
         gold = normalize_text(query.gold_venue_name)
         query_text = normalize_text(query.text)
         if len(gold) >= 8 and gold in query_text:
@@ -453,11 +546,19 @@ def audit_leakage(
             query_count=count,
             examples=examples[kind],
         )
+    for kind, count in unindexed_counts.items():
+        add(
+            "evaluation_identity_in_unindexed_metadata_" + kind,
+            "warning",
+            query_count=count,
+            examples=unindexed_examples[kind],
+        )
 
     severity_counts = Counter(finding["severity"] for finding in findings)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "audited_evaluation_splits": list(evaluation_splits),
+        "audited_corpus_views": list(normalized_corpus_views),
         "audited_query_count": len(target_queries),
         "corpus_document_count": len(corpus),
         "passed": severity_counts["critical"] == 0,
@@ -467,6 +568,7 @@ def audit_leakage(
             "Candidate venue names and frozen scope/category text are permitted inputs, not label leakage.",
             "Abstract near-duplicate detection uses deterministic rare-shingle candidate generation unless an explicit similarity hook is supplied.",
             "Publication-version identities combine versioned DOI/arXiv roots with optional dataset-specific relation hooks.",
+            "Only configured retrieval views are critical corpus inputs; identity overlap in retained but unindexed provenance metadata is reported separately as a warning.",
             "The audit cannot prove that a pretrained embedding model never saw a paper; imported runs must disclose model/version and training cutoff separately.",
         ],
     }
