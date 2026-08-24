@@ -51,6 +51,31 @@ class WebAppTests(TestCase):
         self.assertEqual(payload["lightrag"]["dimensions"], 1024)
         self.assertNotIn("api_key", json.dumps(payload, ensure_ascii=False))
 
+    def test_config_status_recognizes_tavily_key_pool_without_exposing_keys(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "llmapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "search": {
+                            "provider": "tavily",
+                            "api_keys": ["tvly-test-a", "tvly-test-b"],
+                            "quota_per_key": 1000,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(web_app, "DEFAULT_CONFIG", config_path):
+                payload = web_app._config_status()
+
+        self.assertTrue(payload["search_key_configured"])
+        self.assertEqual(payload["search_key_count"], 2)
+        self.assertEqual(payload["search_total_quota"], 2000)
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("tvly-test-a", serialized)
+        self.assertNotIn("tvly-test-b", serialized)
+
     def test_options_expose_targets_and_record_types(self) -> None:
         payload = web_app._options_payload()
         values = {item["value"] for item in payload["targets"]}

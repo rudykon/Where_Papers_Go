@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+import sqlite3
 from unittest.mock import patch
 
 from where_paper_go.recommender import (
@@ -188,6 +189,23 @@ class PersistentSearchIndexTests(unittest.TestCase):
         infocom = next(group for entity_id, group in groups if entity_id == 0)
         self.assertEqual(len(infocom), 2)
         self.assertEqual({row["dataset"] for row in infocom}, {"ccf", "th_cpl"})
+
+    def test_freshness_check_closes_read_only_connection(self) -> None:
+        uri = self.index_path.resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        with patch(
+            "where_paper_go.search_index._read_only_connection",
+            return_value=connection,
+        ):
+            freshness = inspect_index(
+                self.index_path,
+                self.data_dir,
+                expected_digest=self.digest,
+            )
+
+        self.assertTrue(freshness.fresh)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
 
     def test_fts_and_controlled_topics_recall_then_preserve_ranking(self) -> None:
         candidates = build_candidates_from_groups(
