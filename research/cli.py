@@ -523,6 +523,9 @@ def _parser() -> argparse.ArgumentParser:
     clean.add_argument("--pcl-max-tokens", type=int, default=8192)
     clean.add_argument("--pcl-models", nargs="+", default=None)
     clean.add_argument("--pcl-model-fallbacks", type=int, default=None)
+    clean.add_argument("--pcl-retries", type=int, default=2)
+    clean.add_argument("--pcl-backoff-base", type=float, default=2.0)
+    clean.add_argument("--pcl-backoff-max", type=float, default=30.0)
     return parser
 
 
@@ -679,6 +682,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 mode=args.mode,
                 pcl=pcl,
                 workers=args.workers,
+                pcl_attempts=args.pcl_retries + 1,
+                pcl_backoff_base=args.pcl_backoff_base,
+                pcl_backoff_max=args.pcl_backoff_max,
             )
             print(
                 json.dumps(

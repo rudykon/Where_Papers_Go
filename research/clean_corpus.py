@@ -10,11 +10,13 @@ publishes the derived directory with one atomic rename.
 from __future__ import annotations
 
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Iterable, Mapping, Sequence
+import urllib.error
 
 from .data import ResearchDataError, parse_iso_date, sha256_file
 from .historical_builder import (
@@ -229,6 +231,9 @@ def _process_venue(
     policy: CollectionPolicy,
     mode: str,
     pcl: PrototypeSynthesizer | None,
+    pcl_attempts: int,
+    pcl_backoff_base: float,
+    pcl_backoff_max: float,
 ) -> dict[str, Any]:
     shard_path = source_dir / "venues" / f"{venue.venue_id}.json"
     try:
@@ -259,12 +264,39 @@ def _process_venue(
     if mode == "pcl":
         if pcl is None:
             raise HistoricalCollectionError("clean PCL rebuild requires a synthesizer")
-        llm_prototypes, pcl_status = pcl.synthesize(venue, research_evidence, policy)
-        pcl_model = str(getattr(pcl, "last_model", pcl.model))
-        if pcl_status != "ok" or not llm_prototypes:
+        last_error: BaseException | None = None
+        for attempt in range(1, pcl_attempts + 1):
+            try:
+                llm_prototypes, pcl_status = pcl.synthesize(
+                    venue, research_evidence, policy
+                )
+                pcl_model = str(getattr(pcl, "last_model", pcl.model))
+                if pcl_status == "ok" and llm_prototypes:
+                    break
+                last_error = HistoricalCollectionError(
+                    f"clean PCL synthesis failed for {venue.venue_id}: {pcl_status}"
+                )
+            except urllib.error.HTTPError as exc:
+                # Authentication is a shared configuration failure, not a
+                # transient per-venue problem.  Stop the bounded queue now.
+                if int(exc.code) == 401:
+                    raise
+                last_error = exc
+            except Exception as exc:  # noqa: BLE001 - retry boundary is explicit.
+                last_error = exc
+            if attempt < pcl_attempts:
+                delay = min(
+                    pcl_backoff_max,
+                    pcl_backoff_base * (2 ** (attempt - 1)),
+                )
+                if delay:
+                    time.sleep(delay)
+        else:
+            assert last_error is not None
             raise HistoricalCollectionError(
-                f"clean PCL synthesis failed for {venue.venue_id}: {pcl_status}"
-            )
+                f"clean PCL synthesis exhausted {pcl_attempts} attempts for "
+                f"{venue.venue_id}: {type(last_error).__name__}"
+            ) from last_error
 
     source_metadata = source_profile.get("metadata")
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
@@ -507,6 +539,9 @@ def rebuild_clean_corpus(
     mode: str,
     pcl: PrototypeSynthesizer | None = None,
     workers: int = 1,
+    pcl_attempts: int = 1,
+    pcl_backoff_base: float = 1.0,
+    pcl_backoff_max: float = 30.0,
 ) -> dict[str, Any]:
     """Rebuild and atomically publish a deterministic or clean-PCL corpus."""
 
@@ -515,6 +550,10 @@ def rebuild_clean_corpus(
         raise ResearchDataError("clean rebuild mode must be deterministic or pcl")
     if workers < 1:
         raise ResearchDataError("clean rebuild workers must be positive")
+    if pcl_attempts < 1:
+        raise ResearchDataError("clean PCL attempts must be positive")
+    if pcl_backoff_base < 0 or pcl_backoff_max < 0:
+        raise ResearchDataError("clean PCL backoff values must be non-negative")
     source_manifest = source_dir / "manifest.json"
     if not source_manifest.is_file():
         raise HistoricalCollectionError(f"missing source manifest: {source_manifest}")
@@ -539,6 +578,19 @@ def rebuild_clean_corpus(
         "source_manifest_sha256": sha256_file(source_manifest),
         "jcr_csv_sha256": sha256_file(jcr_csv),
         "venue_count": len(venues),
+        "policy": {
+            "history_start": policy.history_start,
+            "cutoff": policy.cutoff,
+            "max_prototypes": policy.max_prototypes,
+            "max_pcl_evidence": policy.max_pcl_evidence,
+            "pcl_attempts": pcl_attempts,
+            "pcl_backoff_base": pcl_backoff_base,
+            "pcl_backoff_max": pcl_backoff_max,
+        },
+        "code_state": git_code_state(),
+        "pcl_provider": (
+            dict(pcl.provider_identity) if pcl is not None else {"enabled": False}
+        ),
     }
     state_path = building / "build_state.json"
     if state_path.is_file():
@@ -563,6 +615,9 @@ def rebuild_clean_corpus(
             policy=policy,
             mode=mode,
             pcl=pcl,
+            pcl_attempts=pcl_attempts,
+            pcl_backoff_base=pcl_backoff_base,
+            pcl_backoff_max=pcl_backoff_max,
         )
         _atomic_json(checkpoint, payload)
         return checkpoint
@@ -576,10 +631,33 @@ def rebuild_clean_corpus(
         for venue in pending:
             build_one(venue)
     else:
+        # Keep only one task per worker in flight.  If a shared provider or
+        # configuration error occurs, at most ``workers - 1`` other requests
+        # can finish before the executor exits; thousands of doomed requests
+        # are never pre-submitted.
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(build_one, venue): venue for venue in pending}
-            for future in as_completed(futures):
-                future.result()
+            iterator = iter(pending)
+            futures: dict[Future[Path], VenueSeed] = {}
+
+            def submit_next() -> bool:
+                try:
+                    venue = next(iterator)
+                except StopIteration:
+                    return False
+                futures[executor.submit(build_one, venue)] = venue
+                return True
+
+            for _ in range(workers):
+                if not submit_next():
+                    break
+            while futures:
+                completed, _unfinished = wait(
+                    futures, return_when=FIRST_COMPLETED
+                )
+                for future in completed:
+                    futures.pop(future)
+                    future.result()
+                    submit_next()
 
     checkpoints = [
         checkpoint_dir / f"{venue.venue_id}.json"

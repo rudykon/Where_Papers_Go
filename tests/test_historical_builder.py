@@ -168,6 +168,16 @@ class FakePCL:
                     "temporal_eligible": True,
                     "derived_by": "pcl_llm",
                     "model": self.model,
+                    "generation": {
+                        "model": self.model,
+                        "prompt_version": "offline-test-v1",
+                        "prompt_sha256": "a" * 64,
+                        "parameters": {"temperature": 0},
+                        "parameters_sha256": "b" * 64,
+                        "input_evidence_sha256": "c" * 64,
+                        "input_evidence_count": len(evidence),
+                        "code_state": {"commit": "offline-test", "dirty": False},
+                    },
                 }
             ],
             "ok",
@@ -1521,6 +1531,21 @@ class HistoricalCollectionTests(unittest.TestCase):
                 mode="deterministic",
                 workers=1,
             )
+            retry_pcl = SequencedPCL([TimeoutError("transient"), "ok"])
+            pcl_output = root / "clean-pcl"
+            pcl_manifest = rebuild_clean_corpus(
+                venues=[venue],
+                policy=self.policy,
+                source_dir=source,
+                output_dir=pcl_output,
+                jcr_csv=jcr,
+                mode="pcl",
+                pcl=retry_pcl,
+                workers=1,
+                pcl_attempts=2,
+                pcl_backoff_base=0,
+                pcl_backoff_max=0,
+            )
             production = (output / "production_evidence.jsonl").read_text(
                 encoding="utf-8"
             )
@@ -1531,6 +1556,11 @@ class HistoricalCollectionTests(unittest.TestCase):
                 (output / "venue_profiles.train.jsonl")
                 .read_text(encoding="utf-8")
                 .splitlines()[0]
+            )
+            pcl_generation_count = len(
+                (pcl_output / "pcl_generation.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             )
 
         self.assertIn("future-only", production)
@@ -1544,6 +1574,53 @@ class HistoricalCollectionTests(unittest.TestCase):
             0,
         )
         self.assertFalse(output.with_name(f".{output.name}.building").exists())
+        self.assertEqual(retry_pcl.calls, 2)
+        self.assertEqual(
+            pcl_manifest["validation"]["missing_prototype_source_id_count"], 0
+        )
+        self.assertEqual(pcl_generation_count, 1)
+
+    def test_clean_rebuild_bounds_inflight_work_after_shared_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "manifest.json").write_text("{}", encoding="utf-8")
+            jcr = root / "jcr.csv"
+            jcr.write_text("fixture\n", encoding="utf-8")
+            venues = [
+                _venue(f"jcr-{index}", f"Journal {index}") for index in range(20)
+            ]
+            calls: list[str] = []
+            call_lock = threading.Lock()
+
+            def fail_first(venue, **kwargs):
+                del kwargs
+                with call_lock:
+                    calls.append(venue.venue_id)
+                if venue.venue_id == "jcr-0":
+                    raise ConnectionError("shared provider unavailable")
+                time.sleep(0.05)
+                return {"venue_id": venue.venue_id}
+
+            with patch(
+                "research.clean_corpus._process_venue", side_effect=fail_first
+            ):
+                with self.assertRaisesRegex(
+                    ConnectionError, "shared provider unavailable"
+                ):
+                    rebuild_clean_corpus(
+                        venues=venues,
+                        policy=self.policy,
+                        source_dir=source,
+                        output_dir=root / "clean",
+                        jcr_csv=jcr,
+                        mode="pcl",
+                        pcl=FakePCL(),
+                        workers=3,
+                    )
+
+        self.assertLessEqual(len(calls), 3)
 
     def test_scope_source_falls_back_to_direct_official_page_when_search_is_blocked(self) -> None:
         config = {
