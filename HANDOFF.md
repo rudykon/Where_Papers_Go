@@ -1,16 +1,82 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-25 (Asia/Shanghai)
+> Updated: 2026-08-26 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
-> Section 0 is the authoritative post-P0 state. Sections 1 onward retain the
-> original pre-P0 acquisition handoff as historical context; do not reinterpret
-> their old branch, HEAD, dirty-tree, or "not started" statements as current.
+> Start with the next-session checkpoint in Section 0. The remainder of Section
+> 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
+> pre-P0 acquisition handoff as historical context; do not reinterpret their old
+> branch, HEAD, dirty-tree, or "not started" statements as current.
 
 ## 0. P0 completion addendum
 
+### Next-session checkpoint
+
+This checkpoint was prepared on 2026-08-26 for a fresh conversation. The
+project has moved from foundation work into formal experimental validation:
+
+- P0-A through P0-C are complete and all exit gates passed;
+- the product/MVP is approximately 85% complete, but the last recorded online
+  500-paper run was still limited by Search API availability;
+- the reproducible offline research platform is approximately 80% complete;
+- SIGIR Full Paper readiness is approximately 40--45% because only clean BM25
+  and TF-IDF have formal full-corpus runs; the overall product-plus-paper goal
+  is approximately 60% complete. These percentages are engineering judgments,
+  not mechanically counted tasks;
+- the source branch is published as `origin/agent/p0-causal-evaluation` for the
+  next session. It is not merged into `main`, tagged, released, or represented
+  by a pull request;
+- ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
+  papers, graph/vector files, and LightRAG stores remain local and were not
+  uploaded. Their immutable paths and hashes below are the cross-session
+  contract.
+
+The next milestone is M3 strong baselines. Work in this order unless the user
+changes the objective:
+
+1. update the stale post-P0 wording in `README.md`, `research/README.md`, and the
+   research roadmap without changing claims;
+2. run static, paper-concat, deterministic-prototype, and clean-PCL lexical
+   ablations on the exposed 4,791-query development set;
+3. build the bge-m3 prototype-max frozen run against the exact P0-C binding;
+4. implement offline property-graph and LightRAG score-run builders with real
+   prototype-to-evidence edges;
+5. add SPECTER2/SciNCL and a cross-encoder, then compare all methods with paired
+   statistics before training or claiming gains for SCOPE-Rank;
+6. only after methods and metrics are frozen, create a genuinely unseen future
+   test and organize the 200--300-query, three-expert blind evaluation;
+7. separately build a shadow production graph/vector/LightRAG workspace and
+   switch atomically only after exact/fuzzy regression passes.
+
+Do not redownload or regenerate the clean PCL corpus merely to begin M3. Do not
+overwrite any v2-v6, canary, failed, `.building`, raw, paper, PCL, or acceptance
+artifact. Offline paper experiments must stay Search-free. Imported runs must
+pass the strict sidecar/binding checks before comparison.
+
+Safe opening sequence:
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+git branch -vv
+python -m research --help
+PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_research_*.py' -v
+PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format json
+sha256sum benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/manifest.json
+sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json
+```
+
+Suggested next-session prompt:
+
+> Read root `HANDOFF.md` completely, verify the current Git branch/HEAD and the
+> two manifest hashes, preserve every ignored/historical artifact, then begin
+> M3 in the recorded order. Start by reconciling stale documentation and
+> producing the four bound lexical ablations; do not launch live Search or
+> create a sealed test yet.
+
 P0-A through P0-C were completed in order across 2026-08-24–25. No credentials,
 ignored benchmark data, paper files, API caches, or historical source artifacts
-were committed or removed. Nothing was pushed.
+were committed or removed. At P0 acceptance time nothing had been pushed; this
+handoff subsequently publishes only the tracked source branch named above.
 
 Repository and commits:
 
