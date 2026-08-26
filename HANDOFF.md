@@ -22,9 +22,12 @@ project has moved from foundation work into formal experimental validation:
   and TF-IDF have formal full-corpus runs; the overall product-plus-paper goal
   is approximately 60% complete. These percentages are engineering judgments,
   not mechanically counted tasks;
-- the source branch is published as `origin/agent/p0-causal-evaluation` for the
-  next session. It is not merged into `main`, tagged, released, or represented
-  by a pull request;
+- the source branch is prepared locally as `agent/p0-causal-evaluation` but is
+  not yet published. Four authorized non-force push attempts on 2026-08-26 all
+  failed before authentication because the GitHub HTTPS tunnel terminated
+  during TLS handshake. When connectivity recovers, retry only
+  `git push --set-upstream origin agent/p0-causal-evaluation`. It is not merged
+  into `main`, tagged, released, or represented by a pull request;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, and LightRAG stores remain local and were not
   uploaded. Their immutable paths and hashes below are the cross-session
@@ -75,8 +78,8 @@ Suggested next-session prompt:
 
 P0-A through P0-C were completed in order across 2026-08-24–25. No credentials,
 ignored benchmark data, paper files, API caches, or historical source artifacts
-were committed or removed. At P0 acceptance time nothing had been pushed; this
-handoff subsequently publishes only the tracked source branch named above.
+were committed or removed. At P0 acceptance time nothing had been pushed; the
+tracked source branch remains queued for the exact GitHub push recorded above.
 
 Repository and commits:
 
