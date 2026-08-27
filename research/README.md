@@ -177,6 +177,7 @@ python -m research build-prototype-vector-run \
   --api-config llmapi.json \
   --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
   --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
   --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_embeddings.json.gz \
   --output benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl
 ```

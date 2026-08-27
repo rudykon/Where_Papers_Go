@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import urllib.parse
 
 import numpy as np
@@ -26,6 +26,7 @@ from .data import (
     build_run_binding,
     canonical_json_sha256,
     runtime_provenance,
+    sha256_file,
     write_run,
 )
 from .types import Run, ScoredDocument
@@ -37,6 +38,61 @@ class PrototypeUnit:
     prototype_id: str
     text: str
     weight: float
+
+
+_REFERENCE_BINDING_FIELDS = (
+    ("dataset", "sha256"),
+    ("dataset", "bytes"),
+    ("queries", "count"),
+    ("queries", "ordered_ids_sha256"),
+    ("profiles", "sha256"),
+    ("profiles", "bytes"),
+    ("candidates", "count"),
+    ("candidates", "ordering"),
+    ("candidates", "ordered_ids_sha256"),
+)
+
+
+def validate_reference_binding(
+    reference_manifest_path: Path,
+    binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless a frozen run exactly matches a reference binding."""
+
+    try:
+        payload = json.loads(reference_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResearchDataError(
+            f"cannot read reference binding manifest: {reference_manifest_path}"
+        ) from exc
+    reference = payload.get("binding") if isinstance(payload, Mapping) else None
+    if not isinstance(reference, Mapping):
+        raise ResearchDataError("reference manifest is missing a binding object")
+
+    verified: dict[str, dict[str, Any]] = {}
+    for section, field in _REFERENCE_BINDING_FIELDS:
+        expected_section = reference.get(section)
+        actual_section = binding.get(section)
+        if not isinstance(expected_section, Mapping) or field not in expected_section:
+            raise ResearchDataError(
+                f"reference binding is missing {section}.{field}"
+            )
+        if not isinstance(actual_section, Mapping) or field not in actual_section:
+            raise ResearchDataError(f"run binding is missing {section}.{field}")
+        expected = expected_section[field]
+        actual = actual_section[field]
+        if actual != expected:
+            raise ResearchDataError(
+                f"reference binding mismatch for {section}.{field}"
+            )
+        verified.setdefault(section, {})[field] = actual
+
+    return {
+        "path": str(reference_manifest_path.resolve()),
+        "sha256": sha256_file(reference_manifest_path),
+        "bytes": reference_manifest_path.stat().st_size,
+        "verified_fields": verified,
+    }
 
 
 def load_prototype_units(path: Path) -> tuple[list[PrototypeUnit], list[str]]:
@@ -148,6 +204,8 @@ def build_prototype_vector_run(
     prototype_chunk_size: int = 4096,
     apply_prototype_weights: bool = True,
     query_fields: Sequence[str] = ("title", "abstract"),
+    reference_manifest_path: Path | None = None,
+    embedding_progress: Callable[[int, int], None] | None = None,
     generation_command: Sequence[str],
 ) -> dict[str, Any]:
     """Embed profiles/queries, max-pool prototypes, and freeze a reusable run."""
@@ -162,11 +220,33 @@ def build_prototype_vector_run(
     query_hashes, query_texts = _prepared_hashes(
         provider, [query.text for query in bundle.queries]
     )
+    generation_config = {
+        "builder": "prototype-vector-max-pooling-v2",
+        "query_fields": list(query_fields),
+        "top_k": top_k,
+        "query_batch_size": query_batch_size,
+        "prototype_chunk_size": prototype_chunk_size,
+        "apply_prototype_weights": apply_prototype_weights,
+        "model": provider.model,
+        "provider_fingerprint": provider.fingerprint,
+    }
+    binding = build_run_binding(
+        dataset_path=dataset_path,
+        profiles_path=profiles_path,
+        query_ids=tuple(query.query_id for query in bundle.queries),
+        candidate_ids=venue_ids,
+        configuration=generation_config,
+    )
+    reference_binding = (
+        validate_reference_binding(reference_manifest_path, binding)
+        if reference_manifest_path is not None
+        else None
+    )
     all_texts = dict(prototype_texts)
     all_texts.update(query_texts)
     with FileEmbeddingCache(cache_path) as cache:
         dimensions, embedded_count, cached_count = ensure_cached_embeddings(
-            provider, all_texts, cache
+            provider, all_texts, cache, progress=embedding_progress
         )
         prototype_vectors = _vectors_from_cache(cache, provider, prototype_hashes)
         query_vectors = _vectors_from_cache(cache, provider, query_hashes)
@@ -203,23 +283,6 @@ def build_prototype_vector_run(
                 ScoredDocument(doc_id=venue_id, score=score)
                 for venue_id, score in ranked
             ]
-    generation_config = {
-        "builder": "prototype-vector-max-pooling-v2",
-        "query_fields": list(query_fields),
-        "top_k": top_k,
-        "query_batch_size": query_batch_size,
-        "prototype_chunk_size": prototype_chunk_size,
-        "apply_prototype_weights": apply_prototype_weights,
-        "model": provider.model,
-        "provider_fingerprint": provider.fingerprint,
-    }
-    binding = build_run_binding(
-        dataset_path=dataset_path,
-        profiles_path=profiles_path,
-        query_ids=tuple(query.query_id for query in bundle.queries),
-        candidate_ids=venue_ids,
-        configuration=generation_config,
-    )
     runtime = runtime_provenance()
     method = {
         "name": "prototype_vector_max_pool",
@@ -253,6 +316,11 @@ def build_prototype_vector_run(
             "embedding_cache": str(cache_path),
             "embedded_text_count": embedded_count,
             "cached_text_count": cached_count,
+            **(
+                {"reference_binding_manifest": reference_binding}
+                if reference_binding is not None
+                else {}
+            ),
         },
     )
     return manifest
