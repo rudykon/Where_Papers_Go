@@ -3,9 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="where_paper_go/static/brand-mark.png" width="180" alt="Where Papers Go 项目标志">
+  <img src="docs/Where-Papers-Go.png" width="520" alt="Where Papers Go 品牌标识">
 </p>
-
 <h1 align="center">Where Papers Go</h1>
 
 <p align="center">
@@ -15,7 +14,7 @@
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-%E2%89%A53.10-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10 或更高版本"></a>
-  <a href="https://github.com/rudykon/where_papers_go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/where_papers_go/tests.yml?branch=main&style=flat-square&label=tests" alt="测试状态"></a>
+  <a href="https://github.com/rudykon/Where_Papers_Go/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/rudykon/Where_Papers_Go/tests.yml?branch=main&style=flat-square&label=tests" alt="测试状态"></a>
   <a href="#retrieval-pipeline"><img src="https://img.shields.io/badge/Retrieval-LightRAG%20%2B%20Vector-4C4E8A?style=flat-square" alt="LightRAG 与向量召回"></a>
   <a href="#data-coverage"><img src="https://img.shields.io/badge/Source%20records-45%2C207-918DAB?style=flat-square" alt="45,207 条源记录"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-FB7C1C?style=flat-square" alt="Apache License 2.0"></a>
@@ -121,8 +120,8 @@ flowchart LR
 ### 1. 安装
 
 ```bash
-git clone https://github.com/rudykon/where_papers_go.git
-cd where_papers_go
+git clone https://github.com/rudykon/Where_Papers_Go.git
+cd Where_Papers_Go
 
 python3 -m venv .venv
 source .venv/bin/activate
