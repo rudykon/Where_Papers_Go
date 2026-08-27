@@ -40,7 +40,10 @@ from research.historical_builder import (
     stable_collection_queue,
 )
 from research.pcl_retry import PCLRetryOutcome, PCLRetryQueue
-from research.prototype_vectors import build_prototype_vector_run
+from research.prototype_vectors import (
+    build_prototype_vector_run,
+    validate_reference_binding,
+)
 from research.types import Query, VenueDocument
 
 
@@ -1917,6 +1920,38 @@ class PrototypeRetrievalTests(unittest.TestCase):
             self.assertEqual(first["venue_id"], "v1")
             self.assertEqual(manifest["prototype_count"], 3)
             self.assertEqual(manifest["venue_count"], 2)
+
+    def test_vector_reference_binding_requires_exact_p0_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "p0-manifest.json"
+            binding = {
+                "dataset": {"sha256": "dataset", "bytes": 10},
+                "queries": {"count": 2, "ordered_ids_sha256": "queries"},
+                "profiles": {"sha256": "profiles", "bytes": 20},
+                "candidates": {
+                    "count": 3,
+                    "ordering": "lexicographic",
+                    "ordered_ids_sha256": "candidates",
+                },
+                "configuration": {"canonical_sha256": "config"},
+            }
+            manifest_path.write_text(
+                json.dumps({"binding": binding}) + "\n", encoding="utf-8"
+            )
+
+            record = validate_reference_binding(manifest_path, binding)
+            self.assertEqual(record["bytes"], manifest_path.stat().st_size)
+            self.assertEqual(
+                record["verified_fields"]["queries"]["ordered_ids_sha256"],
+                "queries",
+            )
+
+            mismatched = {**binding, "profiles": {"sha256": "wrong", "bytes": 20}}
+            with self.assertRaisesRegex(
+                ResearchDataError, "reference binding mismatch for profiles.sha256"
+            ):
+                validate_reference_binding(manifest_path, mismatched)
 
 
 if __name__ == "__main__":

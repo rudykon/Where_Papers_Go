@@ -754,6 +754,7 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--api-config", type=Path, required=True)
     prototype_run.add_argument("--dataset", type=Path, required=True)
     prototype_run.add_argument("--profiles", type=Path, required=True)
+    prototype_run.add_argument("--reference-manifest", type=Path, required=True)
     prototype_run.add_argument("--output", type=Path, required=True)
     prototype_run.add_argument("--cache", type=Path, required=True)
     prototype_run.add_argument("--query-fields", nargs="+", default=("title", "abstract"))
@@ -968,6 +969,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 query_fields=tuple(args.query_fields),
             )
             provider = pcl_embedding_provider(args.api_config)
+            last_progress_bucket = -1
+
+            def report_embedding_progress(processed: int, total: int) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed // 1024
+                if processed != total and bucket == last_progress_bucket:
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "embedding_progress": {
+                                "processed": processed,
+                                "total": total,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
             manifest = build_prototype_vector_run(
                 provider=provider,
                 bundle=bundle,
@@ -980,6 +1003,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prototype_chunk_size=args.prototype_chunk_size,
                 apply_prototype_weights=not args.ignore_prototype_weights,
                 query_fields=tuple(args.query_fields),
+                reference_manifest_path=args.reference_manifest,
+                embedding_progress=report_embedding_progress,
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
