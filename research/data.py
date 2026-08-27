@@ -583,19 +583,59 @@ _EMBEDDED_DOI_RE = re.compile(r"10\.\d{1,9}/[-._;()/:a-z0-9]+", re.I)
 
 def _identity_maps(
     queries: Sequence[Query],
-) -> tuple[dict[str, str], dict[str, str]]:
-    doi_queries: dict[str, str] = {}
-    title_queries: dict[str, str] = {}
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    doi_queries: dict[str, set[str]] = defaultdict(set)
+    title_queries: dict[str, set[str]] = defaultdict(set)
     for query in queries:
         if query.doi:
-            doi_queries[normalize_doi(query.doi)] = query.query_id
+            doi_queries[normalize_doi(query.doi)].add(query.query_id)
         normalized_title = normalize_text(query.title)
         cjk_count = len(re.findall(r"[\u3400-\u9fff]", normalized_title))
         if len(normalized_title) >= 24 and (
             len(normalized_title.split()) >= 4 or cjk_count >= 8
         ):
-            title_queries[normalized_title] = query.query_id
-    return doi_queries, title_queries
+            title_queries[normalized_title].add(query.query_id)
+    return dict(doi_queries), dict(title_queries)
+
+
+def _title_anchor_index(
+    title_queries: Mapping[str, set[str]],
+) -> tuple[
+    dict[str, list[tuple[str, set[str]]]],
+    dict[str, list[tuple[str, set[str]]]],
+]:
+    token_index: dict[str, list[tuple[str, set[str]]]] = defaultdict(list)
+    substring_index: dict[str, list[tuple[str, set[str]]]] = defaultdict(list)
+    for title, query_ids in title_queries.items():
+        tokens = title.split()
+        if len(tokens) == 1 and re.search(r"[\u3400-\u9fff]", title):
+            substring_index[title[:8]].append((title, query_ids))
+            continue
+        anchor = max(tokens, key=lambda value: (len(value), value)) if tokens else title
+        token_index[anchor].append((title, query_ids))
+    return dict(token_index), dict(substring_index)
+
+
+def _contained_title_query_ids(
+    normalized_text: str,
+    anchor_indexes: tuple[
+        Mapping[str, Sequence[tuple[str, set[str]]]],
+        Mapping[str, Sequence[tuple[str, set[str]]]],
+    ],
+) -> set[str]:
+    token_index, substring_index = anchor_indexes
+    matches: set[str] = set()
+    for token in set(normalized_text.split()):
+        for title, query_ids in token_index.get(token, ()):
+            if title in normalized_text:
+                matches.update(query_ids)
+    for anchor, candidates in substring_index.items():
+        if anchor not in normalized_text:
+            continue
+        for title, query_ids in candidates:
+            if title in normalized_text:
+                matches.update(query_ids)
+    return matches
 
 
 def _identity_exclusion_report(
@@ -669,6 +709,7 @@ def load_evidence_concat_corpus(
         raise ResearchDataError(f"profile corpus is empty: {profiles_path}")
 
     doi_queries, title_queries = _identity_maps(excluded_queries)
+    title_anchor_index = _title_anchor_index(title_queries)
     evidence_parts: dict[str, list[str]] = defaultdict(list)
     evidence_counts: Counter[str] = Counter()
     excluded_counts: Counter[str] = Counter()
@@ -698,16 +739,17 @@ def load_evidence_concat_corpus(
                     f"{evidence_path}:{line_number}: evidence postdates snapshot"
                 )
         doi = normalize_doi(row.get("doi"))
-        normalized_title = normalize_text(row.get("title"))
-        matched_query_id = doi_queries.get(doi) or title_queries.get(normalized_title)
-        if matched_query_id:
+        title = " ".join(str(row.get("title") or "").split())
+        abstract = " ".join(str(row.get("abstract") or "").split())
+        normalized_text = normalize_text("\n".join((title, abstract)))
+        matched = set(doi_queries.get(doi, ()))
+        matched.update(_contained_title_query_ids(normalized_text, title_anchor_index))
+        if matched:
             excluded_count += 1
             excluded_counts[venue_id] += 1
             affected_venues.add(venue_id)
-            matched_query_ids.add(matched_query_id)
+            matched_query_ids.update(matched)
             continue
-        title = " ".join(str(row.get("title") or "").split())
-        abstract = " ".join(str(row.get("abstract") or "").split())
         text = "\n".join(value for value in (title, abstract) if value)
         if not text:
             continue
@@ -754,6 +796,7 @@ def exclude_query_identities_from_prototypes(
     """Drop an entire prototype when it cites a validation/test identity."""
 
     doi_queries, title_queries = _identity_maps(excluded_queries)
+    title_anchor_index = _title_anchor_index(title_queries)
     output: list[VenueDocument] = []
     excluded_count = 0
     active_count = 0
@@ -780,11 +823,18 @@ def exclude_query_identities_from_prototypes(
             )
             for source_id in source_ids:
                 for value in _EMBEDDED_DOI_RE.findall(str(source_id or "")):
-                    if query_id := doi_queries.get(normalize_doi(value)):
-                        matched.add(query_id)
-            normalized_label = normalize_text(prototype.get("label"))
-            if query_id := title_queries.get(normalized_label):
-                matched.add(query_id)
+                    matched.update(doi_queries.get(normalize_doi(value), ()))
+            normalized_text = normalize_text(
+                "\n".join(
+                    (
+                        str(prototype.get("label") or ""),
+                        str(prototype.get("text") or ""),
+                    )
+                )
+            )
+            matched.update(
+                _contained_title_query_ids(normalized_text, title_anchor_index)
+            )
             if matched:
                 removed_here += 1
                 excluded_count += 1
