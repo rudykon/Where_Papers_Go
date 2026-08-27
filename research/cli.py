@@ -19,6 +19,8 @@ from .data import (
     build_data_manifest,
     build_run_binding,
     canonical_json_sha256,
+    exclude_query_identities_from_prototypes,
+    load_evidence_concat_corpus,
     load_jcr_corpus,
     load_jsonl_corpus,
     load_recent_journal_dataset,
@@ -140,7 +142,28 @@ def evaluate_config(
         start=str(split_config["start"]) if split_config.get("start") else None,
     )
 
+    query_by_id = {query.query_id: query for query in bundle.queries}
+
+    def exclusion_queries(field: str) -> tuple[Any, ...]:
+        raw_splits = corpus_config.get(field)
+        if not isinstance(raw_splits, list) or not raw_splits:
+            raise ResearchDataError(f"corpus.{field} must be a non-empty list")
+        allowed = {"validation", "test"}
+        names = tuple(str(value) for value in raw_splits)
+        unknown = set(names) - allowed
+        if unknown:
+            raise ResearchDataError(
+                f"corpus.{field} may contain only validation/test; "
+                f"unknown={sorted(unknown)}"
+            )
+        query_ids = tuple(
+            query_id for name in names for query_id in getattr(split, name)
+        )
+        return tuple(query_by_id[query_id] for query_id in query_ids)
+
     corpus_type = str(corpus_config.get("type") or "jsonl")
+    corpus_additional_inputs: list[Path] = []
+    corpus_exclusion: dict[str, Any] | None = None
     if corpus_type == "jcr_csv":
         corpus = load_jcr_corpus(
             corpus_path,
@@ -156,8 +179,31 @@ def evaluate_config(
             snapshot_field=str(corpus_config.get("snapshot_field") or "snapshot_date"),
             default_snapshot_date=str(corpus_config.get("snapshot_date") or ""),
         )
+        if corpus_config.get("prototype_identity_exclusion_splits") is not None:
+            corpus, corpus_exclusion = exclude_query_identities_from_prototypes(
+                corpus,
+                excluded_queries=exclusion_queries(
+                    "prototype_identity_exclusion_splits"
+                ),
+            )
+    elif corpus_type == "evidence_jsonl":
+        evidence_path = _resolve(config_path, corpus_config.get("evidence_path"))
+        corpus, corpus_exclusion = load_evidence_concat_corpus(
+            corpus_path,
+            evidence_path,
+            excluded_queries=exclusion_queries("identity_exclusion_splits"),
+            id_field=str(corpus_config.get("id_field") or "venue_id"),
+            snapshot_field=str(
+                corpus_config.get("snapshot_field") or "snapshot_date"
+            ),
+        )
+        corpus_additional_inputs.append(evidence_path)
     else:
         raise ResearchDataError(f"unsupported corpus type: {corpus_type!r}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if corpus_exclusion is not None:
+        _write_json(output_dir / "corpus_exclusion_audit.json", corpus_exclusion)
 
     corpus_views: set[str] = set()
     for baseline_config in config.get("baselines", ()):
@@ -185,7 +231,6 @@ def evaluate_config(
         split,
         corpus_views=tuple(sorted(corpus_views)),
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "leakage_audit.json", leakage)
     if config.get("fail_on_critical_leakage", True) and not leakage["passed"]:
         raise ResearchDataError(
@@ -211,6 +256,7 @@ def evaluate_config(
         candidate_ids=candidate_ids,
         configuration=config,
         configuration_path=config_path,
+        additional_input_paths=tuple(corpus_additional_inputs),
     )
     implementation_revision = _implementation_revision(runtime)
 
@@ -248,7 +294,7 @@ def evaluate_config(
             "configuration_sha256": canonical_json_sha256(baseline_config),
         }
 
-    additional_inputs: list[Path] = []
+    additional_inputs: list[Path] = list(corpus_additional_inputs)
     for imported_config in config.get("imported_runs", ()):
         imported_config = _mapping(imported_config, "imported_runs[]")
         name = str(imported_config.get("name") or "").strip()
@@ -542,6 +588,13 @@ def evaluate_config(
             "bytes": leakage_path.stat().st_size,
         },
     }
+    if corpus_exclusion is not None:
+        exclusion_path = output_dir / "corpus_exclusion_audit.json"
+        outputs["corpus_exclusion_audit"] = {
+            "path": str(exclusion_path.resolve()),
+            "sha256": sha256_file(exclusion_path),
+            "bytes": exclusion_path.stat().st_size,
+        }
     manifest = build_data_manifest(
         config_path=config_path,
         dataset_path=dataset_path,
