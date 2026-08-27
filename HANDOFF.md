@@ -27,8 +27,10 @@ experimental validation:
   local branch tracks it. Four authorized non-force attempts on 2026-08-26
   failed before authentication because the local HTTPS proxy selected a dead
   upstream node; dedicated GitHub routing restored transport on 2026-08-27 and
-  the subsequent non-force push succeeded. It is not merged into `main`,
-  tagged, released, or represented by a pull request;
+  the subsequent non-force push succeeded. After the source branch absorbed
+  the latest `origin/main` and passed 217 unit tests plus the 7/7 deterministic
+  retrieval benchmark, it was integrated into `main` by non-force fast-forward
+  on 2026-08-27. It is not tagged, released, or represented by a pull request;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, and LightRAG stores remain local and were not
   uploaded. Their immutable paths and hashes below are the cross-session
