@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/codex-pet-blue.png" width="520" alt="Where Papers Go 品牌标识">
+  <img src="docs/Where-Papers-Go.png" width="520" alt="Where Papers Go 品牌标识">
 </p>
 <h1 align="center">Where Papers Go</h1>
 
