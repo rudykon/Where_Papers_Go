@@ -210,7 +210,7 @@ Machine-readable output is available through `--format json` and `--format csv`.
 
 The reviewed fine-grained scope catalog covers all 58 CCF-A conferences, all 117 TH-CPL-A venues, and all 53 CAS Zone 1 computer-science journals. Overlapping venues reuse one reviewed scope record, so these counts should not be added as unique entities.
 
-The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). Those ignored research artifacts are distinct from the reviewed product scope overlay above; their PCL-derived profiles must pass the causal rebuild and frozen-run contract before they can support paper claims.
+The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). A separate causally clean research derivative now covers the same 20,087-candidate universe: every research record is bounded by the 2026-03-31 cutoff, all warm/few-shot venues have paper-backed prototypes, and the P0-C frozen-run/leakage gates passed on all 4,791 exposed development queries. The ignored acquisition and research artifacts remain distinct from the reviewed product scope overlay above; these results establish the offline experimental baseline, not a validated SCOPE-Rank gain.
 
 Source details and validation rules are documented in [`data/README.md`](data/README.md). Ranking names, third-party data, and source descriptions remain subject to their respective terms.
 
@@ -241,6 +241,13 @@ python3 -m research evaluate \
 ```
 
 The checked-in configuration includes BM25, TF-IDF, RRF, and train-only learned linear fusion. Frozen vector, graph, or LightRAG runs can be imported through the same interface. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, required baselines, ablations, statistics, and claims boundary.
+
+P0-A through P0-C are complete. The accepted clean-PCL lexical run binds the
+4,791-query development set, the ordered 20,087-candidate universe, exact input
+hashes, configuration, code state, environment, and per-run sidecars; its
+leakage audit has zero critical findings. M3 strong-baseline work builds on that
+exposed development set and remains Search-free. It does not create or inspect
+a future sealed test.
 
 <a id="repository-map"></a>
 ## Repository map

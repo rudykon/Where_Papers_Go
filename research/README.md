@@ -26,11 +26,29 @@ research/
 └── README.md
 ```
 
-新对话开始前先阅读根目录 [`HANDOFF.md`](../HANDOFF.md)。它记录当前 dirty
-基线、历史语料快照、P0-A～P0-C 的阻塞项与验收门槛。大型语料、embedding
-和逐查询 run 继续保存在忽略目录，不属于上述源码结构。
+新对话开始前先阅读根目录 [`HANDOFF.md`](../HANDOFF.md)，并以 Section 0
+作为当前权威状态。P0-A～P0-C 已全部通过；当前工作从同一 4,791-query
+development set 和 20,087-candidate universe 继续 M3 强基线。大型语料、
+embedding 和逐查询 run 继续保存在忽略目录，不属于上述源码结构，也不得为
+开始 M3 而重新生成。
 
 ## 1. 运行现有 500 篇基准
+
+P0-C 的正式开发集验收使用：
+
+```bash
+python -m research evaluate \
+  --config research/configs/p0c_clean_pcl_acceptance.json
+```
+
+该 Search-free 运行完整覆盖 train/validation/June-test =
+`1,086 / 1,544 / 2,161`，严格绑定全部 4,791 个 query 和按字典序冻结的
+20,087 个候选。泄漏审计的 critical finding 为 0；June-test 上 BM25/TF-IDF
+的 Hit@10 分别为 `0.0777417862 / 0.0920869968`，nDCG@10 分别为
+`0.0443966293 / 0.0525464592`。这些是已暴露 development set 的可复现基线，
+不是不可见测试结论。
+
+旧 500 篇基准继续作为产品链路诊断与回归参考：
 
 在项目根目录执行：
 
@@ -151,15 +169,16 @@ PCL 与 Scope LLM 默认使用 OpenAI-compatible SSE 流式传输。后端会完
 
 完成 acquisition 后不直接将旧 PCL 画像用于因果评测。先运行 `rebuild-clean-corpus --mode deterministic` 从已存证据生成无网络、论文+冻结 catalog 身份的 lower bound，再运行 `--mode pcl` 仅用截止日前证据重新合成。派生目录分开写入 production/research evidence 与 prototypes，并对证据 ID、paper-backed fallback、逐期刊 PCL provenance 和全部哈希失败关闭。具体命令见[全期刊历史画像语料](../docs/historical-profile-corpus.md)。
 
-PCL bge-m3 的多原型向量分数在评测前冻结：
+clean-PCL bge-m3 的多原型向量分数在评测前冻结；复用现有 v5 画像，不重建
+clean corpus：
 
 ```bash
 python -m research build-prototype-vector-run \
   --api-config llmapi.json \
   --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
-  --profiles benchmark_artifacts/historical_venues_20260331/venue_profiles.train.jsonl \
-  --cache benchmark_artifacts/historical_venues_20260331/prototype_embeddings.json.gz \
-  --output benchmark_artifacts/historical_venues_20260331/runs/pcl_bge_m3_prototype.jsonl
+  --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_embeddings.json.gz \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl
 ```
 
 正式 `evaluate` 不访问网络，只导入上述冻结 run。当前网页 scope 若采集时间晚于 cutoff，会保存在 production 画像中，但自动排除在论文主榜画像之外。
