@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/brand-mark.svg" width="520" alt="Where Papers Go 品牌标识">
+  <img src="docs/codex-pet-blue.png" width="520" alt="Where Papers Go 品牌标识">
 </p>
 <h1 align="center">Where Papers Go</h1>
 
@@ -247,4 +247,3 @@ python3 -m scripts.benchmark_retrieval
 ## 许可证
 
 本仓库自行编写的源代码采用 [Apache License 2.0](LICENSE)。数据文件、榜单名称、论文、生成产物和第三方依赖可能适用其他条款。
-
