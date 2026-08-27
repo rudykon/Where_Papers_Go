@@ -121,6 +121,16 @@ class LexicalBaselineTests(unittest.TestCase):
                         "title": "Distinctive validation paper identity title",
                         "abstract": "must not enter the active view",
                     },
+                    {
+                        "kind": "paper",
+                        "venue_id": "v2",
+                        "doi": "10.1/citing",
+                        "title": "A follow-up paper",
+                        "abstract": (
+                            "Prior work titled Distinctive validation paper "
+                            "identity title must also be excluded"
+                        ),
+                    },
                 ],
             )
             corpus, report = load_evidence_concat_corpus(
@@ -139,7 +149,8 @@ class LexicalBaselineTests(unittest.TestCase):
         self.assertEqual(len(corpus), 2)
         self.assertIn("Safe historical paper title", corpus[0].text)
         self.assertNotIn("Distinctive validation paper identity title", corpus[0].text)
-        self.assertEqual(report["excluded_count"], 1)
+        self.assertNotIn("Distinctive validation paper identity title", corpus[1].text)
+        self.assertEqual(report["excluded_count"], 2)
         self.assertEqual(report["matched_query_ids"], ["doi:10.1/leaked"])
 
     def test_prototype_identity_exclusion_drops_the_whole_citing_unit(self) -> None:
@@ -158,6 +169,13 @@ class LexicalBaselineTests(unittest.TestCase):
                                 "text": "contaminated prototype",
                                 "source_ids": ["paper:v1:doi:10.1/leaked"],
                             },
+                            {
+                                "text": (
+                                    "A cluster citing Distinctive validation paper "
+                                    "identity title in its evidence text"
+                                ),
+                                "source_ids": ["paper:v1:doi:10.1/citing"],
+                            },
                         ]
                     },
                 )
@@ -174,7 +192,7 @@ class LexicalBaselineTests(unittest.TestCase):
         )
         prototypes = corpus[0].metadata["prototypes"]
         self.assertEqual([item["text"] for item in prototypes], ["safe prototype"])
-        self.assertEqual(report["excluded_count"], 1)
+        self.assertEqual(report["excluded_count"], 2)
         self.assertEqual(report["affected_venue_count"], 1)
 
     def test_imported_score_formats(self) -> None:
