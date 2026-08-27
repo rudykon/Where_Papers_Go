@@ -1,13 +1,13 @@
 # Where Papers Go 研究化与 CCF-A 投稿路线
 
-> 文档状态：工作草案
-> 基线数据截止：2026-08-14（Asia/Shanghai）
+> 文档状态：工作草案；P0-A～P0-C 已完成，M3 强基线进行中
+> 状态更新：2026-08-27（Asia/Shanghai）
 > 主目标：SIGIR Full Paper
 > 原则：产品能力可继续增强，但论文主结论必须来自可复现、无泄漏的离线实验。
 
 ## 1. 投稿判断
 
-Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，但当前还不宜直接作为 CCF-A Full Paper 投稿。现阶段的主要贡献是 LightRAG、稠密向量、属性图、LLM 和 Search API 的系统集成；顶会 Full Paper 还需要一个可独立验证的方法贡献、公平的强基线和无泄漏证据。
+Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，但当前还不宜直接作为 CCF-A Full Paper 投稿。P0 已建立可复现、Search-free、零 critical leakage 的全库离线基线；现阶段仍缺公平的稠密/科学编码器/图/RAG 强基线、配对统计，以及可独立验证的方法贡献。LightRAG、稠密向量、属性图、LLM 和 Search API 的产品集成本身不能替代这些论文证据。
 
 推荐将研究问题定义为：
 
@@ -16,7 +16,24 @@ Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，�
 
 SIGIR 是当前最匹配的主目标，因为论文的核心应当是信息检索、排序、推荐和评测。可另行准备 Demo 用于展示系统，但根据 CCF 目录说明，Demo、Short、Workshop 等非 Full/Regular Paper 不按 CCF-A Full Paper 计入。投稿前应再核对当年的 [CCF 目录与说明](https://www.ccf.org.cn/Academic_Evaluation/By_category/) 以及 [SIGIR Full Papers Track](https://sigir2026.org/en-AU/pages/submissions/full-papers-track)。
 
-## 2. 当前证据：起点，不是论文结论
+## 2. 当前证据：P0 基线，不是论文结论
+
+当前正式离线证据来自 P0-C acceptance run，而不是下面的旧 500 篇在线诊断：
+
+| P0-C 冻结事实 | 结果 |
+| --- | ---: |
+| development queries | 4,791（train/validation/June-test = 1,086/1,544/2,161） |
+| 候选空间 | 20,087，按 ID 字典序冻结 |
+| clean-PCL research evidence / prototypes | 980,196 / 40,198 |
+| leakage critical findings | 0 |
+| June-test BM25 Hit@10 / nDCG@10 | 0.0777417862 / 0.0443966293 |
+| June-test TF-IDF Hit@10 / nDCG@10 | 0.0920869968 / 0.0525464592 |
+
+这些结果完整绑定 dataset、query/candidate 指纹、profile、配置、代码状态、
+运行环境和逐 run sidecar。June-test 已被开发者查看，因此仍属于 development
+set；在方法与指标冻结前不创建未来 sealed test。
+
+以下 500 篇结果保留为产品在线链路的历史诊断和回归参照：
 
 以当前本地最新的 500 篇分层基准和 Tavily 部分重试合并结果为准。数据构建、限制和历史实验见[基准协议](recent-journal-benchmark.md)与[现有结果汇总](recent-journal-benchmark-results.md)；最新原始汇总位于本地、默认不提交 Git 的 [`benchmark_artifacts/recent_journals/evaluation_20260814_tavily_partial/summary.md`](../benchmark_artifacts/recent_journals/evaluation_20260814_tavily_partial/summary.md)。
 
@@ -31,9 +48,9 @@ SIGIR 是当前最匹配的主目标，因为论文的核心应当是信息检�
 | 多通道池 Hit@40 | 11.6% | 11.0% | 相对初排提高 2.6/2.8 个百分点，但召回仍是主瓶颈 |
 | 成功请求中位延迟 | 25.1 s | 24.4 s | 来自当前部分合并运行，不是纯离线方法延迟 |
 
-候选空间包含 20,087 个 JCR Q1–Q4 期刊实体。当前只有 420 个实体具有审核或自动收稿范围，覆盖率为 2.091%；自动 scope 为 348/20,087，500 个金标期刊中有 272 个具有自动 scope。机器可读证据位于本地 [`benchmark_artifacts/scope_enrichment/status.json`](../benchmark_artifacts/scope_enrichment/status.json)。这种“金标优先补全”在产品迭代中有用，但在论文主评测中会造成测试感知偏差，必须重新按统一规则构建。
+旧产品 scope overlay 的候选空间包含 20,087 个 JCR Q1–Q4 期刊实体，其中 420 个具有审核或自动收稿范围，覆盖率为 2.091%；自动 scope 为 348/20,087，500 个金标期刊中有 272 个具有自动 scope。机器可读证据位于本地 [`benchmark_artifacts/scope_enrichment/status.json`](../benchmark_artifacts/scope_enrichment/status.json)。这份金标优先的产品 overlay 不进入离线主榜；P0-B 已另行按统一、无金标优先级的规则构建 20,087-candidate clean research corpus。
 
-上述数值只用于锁定问题和回归对照。在泄漏、外部 API 失败和 scope 覆盖偏差解决前，不将它们写成方法有效性结论。
+上述旧产品数值只用于锁定问题和回归对照。P0-C 数值也只建立受约束的开发集基线；在 M3 强基线、配对统计和未来不可见测试完成前，不将其写成方法有效性结论。
 
 ## 3. 任务定义
 
@@ -250,15 +267,15 @@ research/
 
 ## 14. 里程碑和准入条件
 
-| 阶段 | 交付物 | 退出条件 |
-| --- | --- | --- |
-| M0 锁定基线 | 现有 500 篇结果、配置和失败分类归档 | 任何人能从逐条记录重建汇总；成功样本条件指标不再当主分数 |
-| M1 无泄漏离线基准 | 时间分割、冻结期刊档案、Search-free 评测器 | 外部 API 错误率为 0；DOI/标题/期刊身份泄漏测试通过 |
-| M2 公平档案覆盖 | 按统一协议生成的全库档案 | 金标与非金标不再使用不同补全优先级；报告全库及分层覆盖 |
-| M3 强基线 | 词法、dense、科学编码器、混合、图、LLM 和现有系统基线 | 所有方法共享数据/候选；结果包含置信区间和成本 |
-| M4 SCOPE-Rank | 自适应路由、可学习融合、缺失感知和校准 | 在不可见测试上相对最强基线有统计可支持的改善；消融能定位增益来源 |
-| M5 专家评测 | 盲评数据、标注协议、一致性和 nDCG | 不只依赖单一历史期刊标签；分歧与局限完整报告 |
-| M6 投稿冻结 | 论文、附录、代码/配置、数据卡和可复现说明 | 内部模拟审稿通过；所有主表可脚本重建；不泄露 API key 或受限内容 |
+| 阶段 | 当前状态 | 交付物 | 退出条件 |
+| --- | --- | --- | --- |
+| M0 锁定基线 | 已完成 | 现有 500 篇结果、配置和失败分类归档 | 任何人能从逐条记录重建汇总；成功样本条件指标不再当主分数 |
+| M1 无泄漏离线基准 | 已完成（P0-C） | 时间分割、冻结期刊档案、Search-free 评测器 | 外部 API 错误率为 0；DOI/标题/期刊身份泄漏测试通过 |
+| M2 公平档案覆盖 | 已完成（P0-B） | 按统一协议生成的全库档案 | 金标与非金标不再使用不同补全优先级；报告全库及分层覆盖 |
+| M3 强基线 | 进行中 | 词法、dense、科学编码器、混合、图、LLM 和现有系统基线 | 所有方法共享数据/候选；结果包含置信区间和成本 |
+| M4 SCOPE-Rank | 未开始 | 自适应路由、可学习融合、缺失感知和校准 | 在不可见测试上相对最强基线有统计可支持的改善；消融能定位增益来源 |
+| M5 专家评测 | 未开始 | 盲评数据、标注协议、一致性和 nDCG | 不只依赖单一历史期刊标签；分歧与局限完整报告 |
+| M6 投稿冻结 | 未开始 | 论文、附录、代码/配置、数据卡和可复现说明 | 内部模拟审稿通过；所有主表可脚本重建；不泄露 API key 或受限内容 |
 
 没有通用的“Hit@10 达到某数即可中 SIGIR”门槛。本项目的准入条件应是：无泄漏、完全可复现、公平强基线、有统计支持的方法增益，以及专家多标签证据；不用一个未校准的百分比代替这些条件。
 
@@ -300,8 +317,8 @@ research/
 
 ## 17. 当前最优先的三件事
 
-1. **先做离线无泄漏基准**：把 Search API 从论文主榜中隔离，锁定数据/档案快照和完整分母。
-2. **再建强基线和可学习 SCOPE-Rank**：先证明当前多通道的互补性，再以自适应路由、覆盖感知和校准形成方法贡献。
-3. **最后开启不可见测试与专家盲评**：用显著性、多相关性和评审一致性支撑论文结论。
+1. **完成 M3 强基线**：先在已暴露 development set 上完成四类 bound lexical ablation 和 bge-m3 prototype-max，再补科学编码器、cross-encoder、图与 LightRAG 离线 run。
+2. **冻结比较协议后再研究 SCOPE-Rank**：用共享数据/候选、配对统计、成本和完整消融证明通道互补性与方法增益。
+3. **最后开启不可见测试与专家盲评**：方法和指标冻结后再创建未来 sealed test，并用显著性、多相关性和评审一致性支撑论文结论。
 
-这三项完成之前，产品可以继续优化串流、并发、缓存和界面，但不应用产品可用性替代方法新颖性和无泄漏实验。
+这三项完成之前，产品可以继续优化串流、并发、缓存和界面，但不应用产品可用性替代方法新颖性和无泄漏实验；论文离线运行继续禁止实时 Search。
