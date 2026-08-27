@@ -1,6 +1,6 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-26 (Asia/Shanghai)
+> Updated: 2026-08-27 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Start with the next-session checkpoint in Section 0. The remainder of Section
 > 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
@@ -11,8 +11,9 @@
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 for a fresh conversation. The
-project has moved from foundation work into formal experimental validation:
+This checkpoint was prepared on 2026-08-26 and refreshed on 2026-08-27 for a
+fresh conversation. The project has moved from foundation work into formal
+experimental validation:
 
 - P0-A through P0-C are complete and all exit gates passed;
 - the product/MVP is approximately 85% complete, but the last recorded online
@@ -22,12 +23,12 @@ project has moved from foundation work into formal experimental validation:
   and TF-IDF have formal full-corpus runs; the overall product-plus-paper goal
   is approximately 60% complete. These percentages are engineering judgments,
   not mechanically counted tasks;
-- the source branch is prepared locally as `agent/p0-causal-evaluation` but is
-  not yet published. Four authorized non-force push attempts on 2026-08-26 all
-  failed before authentication because the GitHub HTTPS tunnel terminated
-  during TLS handshake. When connectivity recovers, retry only
-  `git push --set-upstream origin agent/p0-causal-evaluation`. It is not merged
-  into `main`, tagged, released, or represented by a pull request;
+- the source branch is published as `origin/agent/p0-causal-evaluation` and the
+  local branch tracks it. Four authorized non-force attempts on 2026-08-26
+  failed before authentication because the local HTTPS proxy selected a dead
+  upstream node; dedicated GitHub routing restored transport on 2026-08-27 and
+  the subsequent non-force push succeeded. It is not merged into `main`,
+  tagged, released, or represented by a pull request;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, and LightRAG stores remain local and were not
   uploaded. Their immutable paths and hashes below are the cross-session
@@ -79,11 +80,13 @@ Suggested next-session prompt:
 P0-A through P0-C were completed in order across 2026-08-24–25. No credentials,
 ignored benchmark data, paper files, API caches, or historical source artifacts
 were committed or removed. At P0 acceptance time nothing had been pushed; the
-tracked source branch remains queued for the exact GitHub push recorded above.
+tracked source branch was subsequently published on 2026-08-27 as recorded
+above.
 
 Repository and commits:
 
 - branch: `agent/p0-causal-evaluation`;
+- remote branch: `origin/agent/p0-causal-evaluation`;
 - acceptance-bound code HEAD: `7014a36e3e2e69c195c1971e97a01671f8323afc`;
 - the worktree was clean when the formal run started, and the run manifest
   records `dirty=false` plus empty status/tracked-diff SHA-256 values;
