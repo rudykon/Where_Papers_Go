@@ -2,18 +2,19 @@
   "schema_version": 1,
   "offline_only": true,
   "fail_on_critical_leakage": true,
-  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_paper_concat",
+  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_paper_concat_v2",
   "dataset": {
     "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
     "query_fields": ["title", "abstract"],
     "relevance_field": "gold_journal_id"
   },
   "corpus": {
-    "type": "jsonl",
+    "type": "evidence_jsonl",
     "path": "../../benchmark_artifacts/historical_venues_20260331_clean_paper/venue_profiles.train.jsonl",
+    "evidence_path": "../../benchmark_artifacts/historical_venues_20260331_clean_paper/research_evidence.jsonl",
     "id_field": "venue_id",
-    "text_fields": ["name", "profile_text"],
-    "snapshot_field": "snapshot_date"
+    "snapshot_field": "snapshot_date",
+    "identity_exclusion_splits": ["validation", "test"]
   },
   "temporal_split": {
     "start": "2026-01-01",

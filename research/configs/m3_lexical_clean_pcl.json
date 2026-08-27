@@ -2,7 +2,7 @@
   "schema_version": 1,
   "offline_only": true,
   "fail_on_critical_leakage": true,
-  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_clean_pcl",
+  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_clean_pcl_v2",
   "dataset": {
     "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
     "query_fields": ["title", "abstract"],

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -225,6 +226,7 @@ def build_run_binding(
     candidate_ids: Sequence[str],
     configuration: Mapping[str, Any],
     configuration_path: Path | None = None,
+    additional_input_paths: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Build the immutable input/configuration binding for a frozen run."""
 
@@ -237,7 +239,7 @@ def build_run_binding(
     }
     if configuration_path is not None:
         config_record["source"] = _file_record(configuration_path)
-    return {
+    binding = {
         "dataset": _file_record(dataset_path),
         "queries": {
             "count": len(ordered_queries),
@@ -251,6 +253,17 @@ def build_run_binding(
         },
         "configuration": config_record,
     }
+    if additional_input_paths:
+        resolved: list[Path] = []
+        seen_paths: set[Path] = set()
+        for path in additional_input_paths:
+            item = path.resolve()
+            if item in seen_paths:
+                continue
+            seen_paths.add(item)
+            resolved.append(item)
+        binding["additional_inputs"] = [_file_record(path) for path in resolved]
+    return binding
 
 
 def normalize_text(value: object) -> str:
@@ -565,6 +578,248 @@ def load_jsonl_corpus(
     return documents
 
 
+_EMBEDDED_DOI_RE = re.compile(r"10\.\d{1,9}/[-._;()/:a-z0-9]+", re.I)
+
+
+def _identity_maps(
+    queries: Sequence[Query],
+) -> tuple[dict[str, str], dict[str, str]]:
+    doi_queries: dict[str, str] = {}
+    title_queries: dict[str, str] = {}
+    for query in queries:
+        if query.doi:
+            doi_queries[normalize_doi(query.doi)] = query.query_id
+        normalized_title = normalize_text(query.title)
+        cjk_count = len(re.findall(r"[\u3400-\u9fff]", normalized_title))
+        if len(normalized_title) >= 24 and (
+            len(normalized_title.split()) >= 4 or cjk_count >= 8
+        ):
+            title_queries[normalized_title] = query.query_id
+    return doi_queries, title_queries
+
+
+def _identity_exclusion_report(
+    *,
+    queries: Sequence[Query],
+    excluded_kind: str,
+    excluded_count: int,
+    affected_venues: set[str],
+    matched_query_ids: set[str],
+    active_count: int,
+) -> dict[str, Any]:
+    ordered_query_ids = tuple(query.query_id for query in queries)
+    return {
+        "schema_version": 1,
+        "policy": (
+            "remove validation/test paper identities from the active corpus "
+            "view before retrieval; the source corpus remains immutable"
+        ),
+        "target_query_count": len(ordered_query_ids),
+        "target_query_ids_sha256": ordered_ids_sha256(ordered_query_ids),
+        "excluded_kind": excluded_kind,
+        "excluded_count": excluded_count,
+        "active_count": active_count,
+        "affected_venue_count": len(affected_venues),
+        "matched_query_count": len(matched_query_ids),
+        "matched_query_ids": sorted(matched_query_ids),
+    }
+
+
+def load_evidence_concat_corpus(
+    profiles_path: Path,
+    evidence_path: Path,
+    *,
+    excluded_queries: Sequence[Query],
+    id_field: str = "venue_id",
+    snapshot_field: str = "snapshot_date",
+) -> tuple[list[VenueDocument], dict[str, Any]]:
+    """Build a paper-concat view without rewriting the frozen source corpus.
+
+    Validation/test identities are removed at evidence-row granularity before
+    concatenation.  This is the temporal protocol's explicit test-paper
+    exclusion, not a score- or label-dependent filter.
+    """
+
+    profile_rows: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    for line_number, row in _iter_jsonl(profiles_path):
+        venue_id = str(row.get(id_field) or "").strip()
+        if not venue_id or venue_id in profile_rows:
+            raise ResearchDataError(
+                f"{profiles_path}:{line_number}: missing or duplicate {id_field}"
+            )
+        snapshot_date = str(row.get(snapshot_field) or "").strip()[:10]
+        parse_iso_date(snapshot_date, field_name="corpus snapshot date")
+        name = " ".join(str(row.get("name") or "").split())
+        if not name:
+            raise ResearchDataError(f"{profiles_path}:{line_number}: empty venue name")
+        metadata = (
+            dict(row.get("metadata") or {})
+            if isinstance(row.get("metadata"), Mapping)
+            else {}
+        )
+        metadata.pop("prototypes", None)
+        metadata["text_fields"] = [
+            "name",
+            "metadata.subject",
+            "paper.title",
+            "paper.abstract",
+        ]
+        profile_rows[venue_id] = (name, snapshot_date, metadata)
+    if not profile_rows:
+        raise ResearchDataError(f"profile corpus is empty: {profiles_path}")
+
+    doi_queries, title_queries = _identity_maps(excluded_queries)
+    evidence_parts: dict[str, list[str]] = defaultdict(list)
+    evidence_counts: Counter[str] = Counter()
+    excluded_counts: Counter[str] = Counter()
+    excluded_count = 0
+    affected_venues: set[str] = set()
+    matched_query_ids: set[str] = set()
+    for line_number, row in _iter_jsonl(evidence_path):
+        if str(row.get("kind") or "") != "paper":
+            continue
+        venue_id = str(row.get("venue_id") or "").strip()
+        if venue_id not in profile_rows:
+            raise ResearchDataError(
+                f"{evidence_path}:{line_number}: unknown venue_id {venue_id!r}"
+            )
+        if row.get("temporal_eligible", True) is False:
+            continue
+        publication_date = str(row.get("publication_date") or "").strip()[:10]
+        if publication_date:
+            source_date = parse_iso_date(
+                publication_date, field_name="evidence publication date"
+            )
+            snapshot_date = parse_iso_date(
+                profile_rows[venue_id][1], field_name="corpus snapshot date"
+            )
+            if source_date > snapshot_date:
+                raise ResearchDataError(
+                    f"{evidence_path}:{line_number}: evidence postdates snapshot"
+                )
+        doi = normalize_doi(row.get("doi"))
+        normalized_title = normalize_text(row.get("title"))
+        matched_query_id = doi_queries.get(doi) or title_queries.get(normalized_title)
+        if matched_query_id:
+            excluded_count += 1
+            excluded_counts[venue_id] += 1
+            affected_venues.add(venue_id)
+            matched_query_ids.add(matched_query_id)
+            continue
+        title = " ".join(str(row.get("title") or "").split())
+        abstract = " ".join(str(row.get("abstract") or "").split())
+        text = "\n".join(value for value in (title, abstract) if value)
+        if not text:
+            continue
+        evidence_parts[venue_id].append(text)
+        evidence_counts[venue_id] += 1
+
+    documents: list[VenueDocument] = []
+    for venue_id in sorted(profile_rows):
+        name, snapshot_date, metadata = profile_rows[venue_id]
+        subject = " ".join(str(metadata.get("subject") or "").split())
+        parts = [name]
+        if subject and subject.casefold() != name.casefold():
+            parts.append(subject)
+        parts.extend(evidence_parts.get(venue_id, ()))
+        metadata["active_paper_count"] = evidence_counts[venue_id]
+        metadata["identity_excluded_paper_count"] = excluded_counts[venue_id]
+        documents.append(
+            VenueDocument(
+                doc_id=venue_id,
+                text="\n\n".join(parts),
+                name=name,
+                snapshot_date=snapshot_date,
+                metadata=metadata,
+            )
+        )
+    active_count = sum(evidence_counts.values())
+    report = _identity_exclusion_report(
+        queries=excluded_queries,
+        excluded_kind="paper_evidence_row",
+        excluded_count=excluded_count,
+        affected_venues=affected_venues,
+        matched_query_ids=matched_query_ids,
+        active_count=active_count,
+    )
+    report["candidate_count"] = len(documents)
+    return documents, report
+
+
+def exclude_query_identities_from_prototypes(
+    corpus: Sequence[VenueDocument],
+    *,
+    excluded_queries: Sequence[Query],
+) -> tuple[list[VenueDocument], dict[str, Any]]:
+    """Drop an entire prototype when it cites a validation/test identity."""
+
+    doi_queries, title_queries = _identity_maps(excluded_queries)
+    output: list[VenueDocument] = []
+    excluded_count = 0
+    active_count = 0
+    affected_venues: set[str] = set()
+    matched_query_ids: set[str] = set()
+    for document in corpus:
+        metadata = dict(document.metadata)
+        raw = metadata.get("prototypes")
+        prototypes = raw if isinstance(raw, list) else []
+        kept: list[dict[str, Any]] = []
+        removed_here = 0
+        for prototype in prototypes:
+            if not isinstance(prototype, Mapping):
+                continue
+            if prototype.get("temporal_eligible", True) is False:
+                kept.append(dict(prototype))
+                continue
+            matched: set[str] = set()
+            raw_source_ids = prototype.get("source_ids") or ()
+            source_ids = (
+                (raw_source_ids,)
+                if isinstance(raw_source_ids, str)
+                else raw_source_ids
+            )
+            for source_id in source_ids:
+                for value in _EMBEDDED_DOI_RE.findall(str(source_id or "")):
+                    if query_id := doi_queries.get(normalize_doi(value)):
+                        matched.add(query_id)
+            normalized_label = normalize_text(prototype.get("label"))
+            if query_id := title_queries.get(normalized_label):
+                matched.add(query_id)
+            if matched:
+                removed_here += 1
+                excluded_count += 1
+                matched_query_ids.update(matched)
+                continue
+            kept.append(dict(prototype))
+        if removed_here:
+            affected_venues.add(document.doc_id)
+        active_count += sum(
+            prototype.get("temporal_eligible", True) is not False
+            for prototype in kept
+        )
+        metadata["prototypes"] = kept
+        metadata["identity_excluded_prototype_count"] = removed_here
+        output.append(
+            VenueDocument(
+                doc_id=document.doc_id,
+                text=document.text,
+                name=document.name,
+                snapshot_date=document.snapshot_date,
+                metadata=metadata,
+            )
+        )
+    report = _identity_exclusion_report(
+        queries=excluded_queries,
+        excluded_kind="prototype_unit",
+        excluded_count=excluded_count,
+        affected_venues=affected_venues,
+        matched_query_ids=matched_query_ids,
+        active_count=active_count,
+    )
+    report["candidate_count"] = len(output)
+    return output, report
+
+
 def load_score_run(
     path: Path,
     *,
@@ -755,6 +1010,18 @@ def _validate_binding_matches(
             raise ResearchDataError(
                 "frozen run binding mismatch for " + ".".join(keys)
             )
+    def additional_records(binding: Mapping[str, Any]) -> list[tuple[Any, Any]]:
+        value = binding.get("additional_inputs", [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, Mapping) for item in value
+        ):
+            raise ResearchDataError(
+                "frozen run binding has invalid additional_inputs"
+            )
+        return [(item.get("sha256"), item.get("bytes")) for item in value]
+
+    if additional_records(actual) != additional_records(expected):
+        raise ResearchDataError("frozen run binding mismatch for additional_inputs")
 
 
 def _validate_method_identity(method: Mapping[str, Any]) -> None:

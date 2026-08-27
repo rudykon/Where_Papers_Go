@@ -2,7 +2,7 @@
   "schema_version": 1,
   "offline_only": true,
   "fail_on_critical_leakage": true,
-  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_deterministic_prototype",
+  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/lexical_deterministic_prototype_v2",
   "dataset": {
     "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
     "query_fields": ["title", "abstract"],
@@ -13,7 +13,8 @@
     "path": "../../benchmark_artifacts/historical_venues_20260331_clean_paper/venue_profiles.train.jsonl",
     "id_field": "venue_id",
     "text_fields": ["name"],
-    "snapshot_field": "snapshot_date"
+    "snapshot_field": "snapshot_date",
+    "prototype_identity_exclusion_splits": ["validation", "test"]
   },
   "temporal_split": {
     "start": "2026-01-01",
