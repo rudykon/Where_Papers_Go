@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/brand-mark.svg" width="520" alt="Where Papers Go brand mark">
+  <img src="docs/codex-pet-blue.png" width="520" alt="Where Papers Go brand mark">
 </p>
 <h1 align="center">Where Shoud Your Papers Go ?</h1>
 
@@ -247,4 +247,3 @@ Useful documentation:
 ## License
 
 Repository-authored source code is licensed under the [Apache License 2.0](LICENSE). Data files, ranking names, papers, generated artifacts, and third-party dependencies may have separate terms.
-
