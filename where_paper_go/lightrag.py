@@ -46,6 +46,7 @@ MANIFEST_FILE = "venue_import_manifest.json"
 # workspace so all supported LightRAG versions use the same on-disk paths.
 LIGHTRAG_WORKSPACE = ""
 VENUE_ID_RE = re.compile(r"(?i)VENUE::(\d+)::")
+IMPORT_EVENT_LOOP_HEARTBEAT_SECONDS = 0.25
 
 
 class LightRAGRuntimeError(RuntimeError):
@@ -391,6 +392,18 @@ def _finalize_lightrag_shared_state() -> None:
     finalize_share_data()
 
 
+async def _import_event_loop_heartbeat() -> None:
+    """Keep Python 3.14 responsive to LightRAG executor completions.
+
+    LightRAG 1.5.6's chunking executor can finish its concurrent future
+    without waking an otherwise idle Python 3.14 event loop.  A short timer
+    keeps the loop polling until the one-shot custom-KG import completes.
+    """
+
+    while True:
+        await asyncio.sleep(IMPORT_EVENT_LOOP_HEARTBEAT_SECONDS)
+
+
 async def _import_async(
     custom_kg: dict[str, list[dict[str, Any]]],
     working_dir: Path,
@@ -401,9 +414,17 @@ async def _import_async(
         working_dir, config_path, embedding_cache
     )
     await rag.initialize_storages()
+    heartbeat = asyncio.create_task(
+        _import_event_loop_heartbeat(), name="lightrag-import-heartbeat"
+    )
     try:
         await rag.ainsert_custom_kg(custom_kg)
     finally:
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
         try:
             await rag.finalize_storages()
         finally:

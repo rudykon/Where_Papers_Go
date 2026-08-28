@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from types import SimpleNamespace
@@ -16,6 +17,52 @@ from where_paper_go.lightrag import (
 
 
 class LightRAGRecallTests(unittest.TestCase):
+    def test_custom_kg_import_keeps_event_loop_awake_and_finalizes(self) -> None:
+        heartbeat_seen = []
+
+        class FakeRag:
+            async def initialize_storages(self):
+                return None
+
+            async def ainsert_custom_kg(self, _custom_kg):
+                heartbeat_seen.extend(
+                    task.get_name() == "lightrag-import-heartbeat"
+                    for task in asyncio.all_tasks()
+                )
+
+            async def finalize_storages(self):
+                return None
+
+        class FakeAdapter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        adapter = FakeAdapter()
+        components = (
+            FakeRag(),
+            SimpleNamespace(fingerprint="provider"),
+            SimpleNamespace(model="llm"),
+            adapter,
+        )
+        with patch.object(
+            venue_lightrag, "_runtime_components", return_value=components
+        ):
+            result = asyncio.run(
+                venue_lightrag._import_async(
+                    {"chunks": [], "entities": [], "relationships": []},
+                    Path("workspace"),
+                    None,
+                    None,
+                )
+            )
+
+        self.assertEqual(result, ("provider", "llm"))
+        self.assertIn(True, heartbeat_seen)
+        self.assertTrue(adapter.closed)
+
     def test_structured_mix_result_maps_only_allowed_venue_ids(self) -> None:
         recall = recall_from_lightrag_data(
             {

@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"graph_is_fresh={graph_path}")
 
     if args.with_vectors:
-        from venue_embeddings import (
+        from where_paper_go.embeddings import (
             EmbeddingError,
             OpenAICompatibleEmbeddingProvider,
             build_graph_vector_index,
