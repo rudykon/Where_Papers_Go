@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from itertools import combinations
 import json
 from pathlib import Path
 import shlex
 import sys
 import threading
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 from .baselines import BM25Baseline, ImportedRunBaseline, TfidfBaseline
@@ -267,6 +269,7 @@ def evaluate_config(
     runs: dict[str, Run] = {}
     method_metadata: dict[str, Any] = {}
     method_identities: dict[str, dict[str, Any]] = {}
+    method_execution: dict[str, dict[str, Any]] = {}
     for baseline_config in config.get("baselines", ()):
         baseline_config = _mapping(baseline_config, "baselines[]")
         kind = str(baseline_config.get("type") or "")
@@ -288,8 +291,22 @@ def evaluate_config(
             )
         else:
             raise ResearchDataError(f"unsupported baseline type: {kind!r}")
+        started = perf_counter()
         runs[name] = baseline.fit(corpus).run(queries, top_k=retrieval_depth)
-        method_metadata[name] = dict(baseline_config)
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        execution = {
+            "mode": "local_offline_fit_and_score",
+            "query_count": len(queries),
+            "total_ms": elapsed_ms,
+            "mean_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls": 0,
+            "estimated_external_cost_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+        }
+        method_metadata[name] = {**dict(baseline_config), "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": kind,
@@ -328,6 +345,7 @@ def evaluate_config(
                 f"imported run {name!r} requires manifest_sha256, "
                 "generation_config_sha256, and an exact method identity"
             )
+        started = perf_counter()
         imported = load_score_run(
             path,
             expected_query_ids=ordered_query_ids,
@@ -341,8 +359,41 @@ def evaluate_config(
         )
         adapter = ImportedRunBaseline(imported, name=name)
         runs[name] = adapter.fit(corpus).run(queries, top_k=retrieval_depth)
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ResearchDataError(
+                f"cannot read verified imported manifest: {manifest_path}"
+            ) from exc
+        if not isinstance(source_manifest, Mapping):
+            raise ResearchDataError(
+                f"verified imported manifest is not an object: {manifest_path}"
+            )
+        source_execution = source_manifest.get("execution")
+        source_coverage = source_manifest.get("coverage")
+        execution = {
+            "mode": "validated_import_of_frozen_run",
+            "query_count": len(queries),
+            "validation_and_load_total_ms": elapsed_ms,
+            "mean_validation_and_load_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls_during_evaluation": 0,
+            "estimated_external_cost_during_evaluation_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+            "source_execution": (
+                dict(source_execution)
+                if isinstance(source_execution, Mapping)
+                else None
+            ),
+            "source_coverage": (
+                dict(source_coverage) if isinstance(source_coverage, Mapping) else None
+            ),
+        }
         additional_inputs.extend((path, manifest_path))
-        method_metadata[name] = dict(imported_config)
+        method_metadata[name] = {**dict(imported_config), "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": str(imported_config.get("type") or "imported"),
@@ -363,6 +414,7 @@ def evaluate_config(
         if not source_names or missing:
             raise ResearchDataError(f"fusion {name!r} has missing sources: {missing}")
         source_runs = {source: runs[source] for source in source_names}
+        started = perf_counter()
         if kind == "rrf":
             runs[name] = rrf_fuse(
                 source_runs,
@@ -389,6 +441,20 @@ def evaluate_config(
             }
         else:
             raise ResearchDataError(f"unsupported fusion type: {kind!r}")
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        execution = {
+            "mode": "local_offline_fusion",
+            "query_count": len(queries),
+            "total_ms": elapsed_ms,
+            "mean_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls": 0,
+            "estimated_external_cost_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+        }
+        method_metadata[name] = {**method_metadata[name], "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": kind,
@@ -490,11 +556,59 @@ def evaluate_config(
         )
         evaluations[name] = result
 
-    comparisons: list[dict[str, Any]] = []
     statistics_config = _mapping(config.get("statistics", {}), "statistics")
-    for comparison_index, comparison in enumerate(
-        statistics_config.get("comparisons", ())
-    ):
+    explicit_comparisons = statistics_config.get("comparisons", ())
+    family_value = statistics_config.get("comparison_family")
+    comparison_family_description = "explicit configured comparisons"
+    comparison_method_order: list[str] | None = None
+    if family_value is not None:
+        if explicit_comparisons:
+            raise ResearchDataError(
+                "statistics may not define both comparisons and comparison_family"
+            )
+        family_config = _mapping(family_value, "statistics.comparison_family")
+        family_type = str(family_config.get("type") or "")
+        if family_type != "all_methods_unordered_pairs":
+            raise ResearchDataError(
+                f"unsupported statistics comparison family: {family_type!r}"
+            )
+        raw_method_order = family_config.get("method_order")
+        if not isinstance(raw_method_order, list):
+            raise ResearchDataError(
+                "statistics.comparison_family.method_order must be an array"
+            )
+        comparison_method_order = [str(value) for value in raw_method_order]
+        if (
+            len(comparison_method_order) < 2
+            or len(set(comparison_method_order)) != len(comparison_method_order)
+        ):
+            raise ResearchDataError(
+                "all-method comparison family requires at least two unique methods"
+            )
+        unknown = sorted(set(comparison_method_order) - set(evaluations))
+        missing = sorted(set(evaluations) - set(comparison_method_order))
+        if unknown or missing:
+            raise ResearchDataError(
+                "all-method comparison family must exactly cover evaluated methods: "
+                f"unknown={unknown}, missing={missing}"
+            )
+        family_metric = str(family_config.get("metric") or "ndcg@10")
+        comparison_specs: Sequence[Mapping[str, Any]] = tuple(
+            {"left": left, "right": right, "metric": family_metric}
+            for left, right in combinations(comparison_method_order, 2)
+        )
+        comparison_family_description = (
+            "all unordered pairs over the frozen evaluated-method order"
+        )
+    else:
+        if not isinstance(explicit_comparisons, Sequence) or isinstance(
+            explicit_comparisons, (str, bytes)
+        ):
+            raise ResearchDataError("statistics.comparisons must be an array")
+        comparison_specs = explicit_comparisons
+
+    comparisons: list[dict[str, Any]] = []
+    for comparison_index, comparison in enumerate(comparison_specs):
         comparison = _mapping(comparison, "statistics.comparisons[]")
         left, right = str(comparison.get("left") or ""), str(comparison.get("right") or "")
         metric = str(comparison.get("metric") or "ndcg@10")
@@ -543,10 +657,15 @@ def evaluate_config(
         comparisons.append(comparison_result)
 
     multiple_comparison_policy: dict[str, Any] = {
-        "family": "all configured primary paired permutation comparisons",
+        "family": comparison_family_description,
         "methods": ["holm_family_wise", "benjamini_hochberg_fdr"],
         "comparison_count": len(comparisons),
         "applied": bool(comparisons),
+        **(
+            {"frozen_method_order": comparison_method_order}
+            if comparison_method_order is not None
+            else {}
+        ),
     }
     if comparisons:
         primary_adjustments = adjust_p_values(
@@ -614,6 +733,7 @@ def evaluate_config(
             "excluded_query_ids": sorted(identity_unsafe_ids),
         },
         "methods": evaluations,
+        "method_execution": method_execution,
         "paired_comparisons": comparisons,
         "multiple_comparison_policy": multiple_comparison_policy,
     }
