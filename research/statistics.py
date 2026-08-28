@@ -125,3 +125,52 @@ def paired_permutation_test(
         "permutations": total,
         "seed": seed,
     }
+
+
+def adjust_p_values(
+    p_values: Mapping[str, float],
+) -> dict[str, dict[str, float]]:
+    """Apply Holm family-wise and Benjamini-Hochberg FDR corrections.
+
+    The mapping keys are stable comparison identities.  Both procedures are
+    computed over the complete supplied family and returned in input order.
+    """
+
+    if not p_values:
+        raise ValueError("multiple-comparison correction requires p-values")
+    checked: list[tuple[str, float, int]] = []
+    for index, (raw_name, raw_value) in enumerate(p_values.items()):
+        name = str(raw_name).strip()
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid p-value for {name!r}") from exc
+        if not name or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"invalid p-value for {name!r}")
+        checked.append((name, value, index))
+    if len({name for name, _value, _index in checked}) != len(checked):
+        raise ValueError("multiple-comparison identities must be unique")
+
+    ordered = sorted(checked, key=lambda item: (item[1], item[2], item[0]))
+    count = len(ordered)
+    holm: dict[str, float] = {}
+    running_holm = 0.0
+    for rank, (name, value, _index) in enumerate(ordered, 1):
+        running_holm = max(running_holm, (count - rank + 1) * value)
+        holm[name] = min(1.0, running_holm)
+
+    benjamini_hochberg: dict[str, float] = {}
+    running_bh = 1.0
+    for rank in range(count, 0, -1):
+        name, value, _index = ordered[rank - 1]
+        running_bh = min(running_bh, value * count / rank)
+        benjamini_hochberg[name] = min(1.0, running_bh)
+
+    return {
+        name: {
+            "raw_two_sided_p_value": value,
+            "holm_family_wise_p_value": holm[name],
+            "benjamini_hochberg_fdr_p_value": benjamini_hochberg[name],
+        }
+        for name, value, _index in checked
+    }

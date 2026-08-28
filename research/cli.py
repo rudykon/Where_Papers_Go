@@ -48,7 +48,7 @@ from .metrics import evaluate_run, stratified_metrics
 from .pcl_retry import PCLRetryPolicy
 from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provider
 from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_strata
-from .statistics import paired_bootstrap_ci, paired_permutation_test
+from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
 from .types import Run
 
 
@@ -489,7 +489,9 @@ def evaluate_config(
 
     comparisons: list[dict[str, Any]] = []
     statistics_config = _mapping(config.get("statistics", {}), "statistics")
-    for comparison in statistics_config.get("comparisons", ()):
+    for comparison_index, comparison in enumerate(
+        statistics_config.get("comparisons", ())
+    ):
         comparison = _mapping(comparison, "statistics.comparisons[]")
         left, right = str(comparison.get("left") or ""), str(comparison.get("right") or "")
         metric = str(comparison.get("metric") or "ndcg@10")
@@ -499,8 +501,10 @@ def evaluate_config(
         permutation_iterations = int(statistics_config.get("permutation_iterations", 10_000))
         seed = int(statistics_config.get("seed", 20260814))
         comparison_result = {
+                "comparison_id": f"comparison-{comparison_index + 1}",
                 "left": left,
                 "right": right,
+                "metric": metric,
                 "bootstrap": paired_bootstrap_ci(
                     evaluations[left]["per_query"],
                     evaluations[right]["per_query"],
@@ -534,6 +538,41 @@ def evaluate_config(
                 seed=seed,
             )
         comparisons.append(comparison_result)
+
+    multiple_comparison_policy: dict[str, Any] = {
+        "family": "all configured primary paired permutation comparisons",
+        "methods": ["holm_family_wise", "benjamini_hochberg_fdr"],
+        "comparison_count": len(comparisons),
+        "applied": bool(comparisons),
+    }
+    if comparisons:
+        primary_adjustments = adjust_p_values(
+            {
+                str(result["comparison_id"]): float(
+                    result["permutation"]["two_sided_p_value"]
+                )
+                for result in comparisons
+            }
+        )
+        safe_adjustments = (
+            adjust_p_values(
+                {
+                    str(result["comparison_id"]): float(
+                        result["identity_safe_permutation"]["two_sided_p_value"]
+                    )
+                    for result in comparisons
+                }
+            )
+            if identity_safe_test_ids
+            else None
+        )
+        for result in comparisons:
+            comparison_id = str(result["comparison_id"])
+            result["multiple_comparison"] = primary_adjustments[comparison_id]
+            if safe_adjustments is not None:
+                result["identity_safe_multiple_comparison"] = safe_adjustments[
+                    comparison_id
+                ]
 
     report = {
         "schema_version": 2,
@@ -573,6 +612,7 @@ def evaluate_config(
         },
         "methods": evaluations,
         "paired_comparisons": comparisons,
+        "multiple_comparison_policy": multiple_comparison_policy,
     }
     metrics_path = output_dir / "metrics.json"
     leakage_path = output_dir / "leakage_audit.json"
