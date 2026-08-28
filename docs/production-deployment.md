@@ -42,6 +42,14 @@ deployment should use Nginx authentication because both schemes use the
 indexes, caches, and benchmark artifacts remain ignored/local. Never put their
 contents into a unit, proxy template, shell history, or Git.
 
+The template deliberately omits capability/UTS controls that fail or are
+ignored by this host's user manager. Individual `/usr/bin/true` unit probes on
+2026-08-28 showed that `PrivateDevices`, `ProtectClock`, `ProtectKernelLogs`,
+and `ProtectKernelModules` each exit `218/CAPABILITIES`; the explicit empty
+capability set and `ProtectHostname` are likewise unsuitable here. The unit
+retains the individually verified filesystem, namespace, privilege,
+address-family, resource, and umask restrictions.
+
 ## Immutable preflight
 
 Run from the repository root on an `agent/*` branch. These checks are read-only:
