@@ -157,6 +157,29 @@ def verify_method_freeze(
     metrics = _mapping(freeze.get("metrics"), "method_freeze.metrics")
     statistics = _mapping(freeze.get("statistics"), "method_freeze.statistics")
     candidates = _mapping(freeze.get("candidates"), "method_freeze.candidates")
+    method_hyperparameters = _mapping(
+        freeze.get("method_hyperparameters"),
+        "method_freeze.method_hyperparameters",
+    )
+    expected_method_hash = str(
+        freeze.get("method_hyperparameters_canonical_sha256") or ""
+    )
+    actual_method_hash = canonical_json_sha256(method_hyperparameters)
+    if len(expected_method_hash) != 64 or actual_method_hash != expected_method_hash:
+        raise ResearchDataError("sealed-test method hyperparameters are not frozen")
+    method_family = freeze.get("method_family")
+    if (
+        not isinstance(method_family, list)
+        or not method_family
+        or any(not str(value).strip() for value in method_family)
+        or len({str(value) for value in method_family}) != len(method_family)
+    ):
+        raise ResearchDataError("sealed-test method family is empty or duplicated")
+    source_protocol = _mapping(
+        freeze.get("source_protocol"), "method_freeze.source_protocol"
+    )
+    if not source_protocol:
+        raise ResearchDataError("sealed-test source protocol is not frozen")
     if int(candidates.get("count", 0)) != 20087:
         raise ResearchDataError("sealed-test freeze must retain 20,087 candidates")
     fingerprint = str(candidates.get("ordered_ids_sha256") or "")
@@ -171,6 +194,9 @@ def verify_method_freeze(
         "commits": verified_commits,
         "artifacts": verified_artifacts,
         "candidates": dict(candidates),
+        "method_family": [str(value) for value in method_family],
+        "method_hyperparameters_sha256": actual_method_hash,
+        "source_protocol_sha256": canonical_json_sha256(source_protocol),
         "metrics_sha256": canonical_json_sha256(metrics),
         "statistics_sha256": canonical_json_sha256(statistics),
     }
