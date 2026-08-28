@@ -55,6 +55,7 @@ from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_stra
 from .reranker_runs import LocalBGECrossEncoderProvider, build_cross_encoder_run
 from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
 from .scope_rank_runs import build_scope_rank_suite
+from .scope_rank_selective import evaluate_scope_rank_selective
 from .types import Run
 
 
@@ -1068,6 +1069,12 @@ def _parser() -> argparse.ArgumentParser:
         help="freeze train-only SCOPE-Rank and every named offline ablation",
     )
     scope_rank.add_argument("--config", type=Path, required=True)
+
+    scope_selective = subparsers.add_parser(
+        "evaluate-scope-rank-selective",
+        help="evaluate frozen SCOPE-Rank accept/abstain decisions without refitting",
+    )
+    scope_selective.add_argument("--config", type=Path, required=True)
     return parser
 
 
@@ -1290,6 +1297,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-scope-rank-suite":
             manifest = build_scope_rank_suite(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "evaluate-scope-rank-selective":
+            manifest = evaluate_scope_rank_selective(
                 args.config,
                 generation_command=recorded_command,
             )
