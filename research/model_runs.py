@@ -197,6 +197,25 @@ def _directory_record(path: Path) -> dict[str, Any]:
     }
 
 
+def _activate_adapter_or_fail(model: Any, adapter_name: str) -> tuple[str, ...]:
+    """Explicitly activate an adapter and verify the runtime composition."""
+    if not adapter_name:
+        raise ResearchDataError("SPECTER2 proximity adapter did not load")
+    try:
+        model.set_active_adapters(adapter_name)
+        active = model.active_adapters
+        names = tuple(sorted(str(name) for name in active.flatten()))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ResearchDataError(
+            "SPECTER2 proximity adapter activation could not be verified"
+        ) from exc
+    if adapter_name not in names:
+        raise ResearchDataError(
+            "SPECTER2 proximity adapter is loaded but not active"
+        )
+    return names
+
+
 class LocalScientificEncoderProvider:
     """Pinned local SPECTER2 or SciNCL CLS encoder."""
 
@@ -268,7 +287,7 @@ class LocalScientificEncoderProvider:
         }
         self.fingerprint = canonical_json_sha256(
             {
-                "provider": "local_transformers_scientific_cls_v1",
+                "provider": "local_transformers_scientific_cls_v2",
                 "protocol": self.protocol,
                 "model_repo": self.model_repo,
                 "model_revision": self.model_revision,
@@ -277,6 +296,11 @@ class LocalScientificEncoderProvider:
                 "adapter_revision": self.adapter_revision,
                 "adapter_tree_sha256": (
                     adapter_record["tree_sha256"] if adapter_record else ""
+                ),
+                "adapter_activation": (
+                    "explicit_set_active_with_membership_assertion"
+                    if self.protocol == "specter2"
+                    else "not_applicable"
                 ),
                 "max_length": self.max_length,
                 "batch_size": self.batch_size,
@@ -290,6 +314,7 @@ class LocalScientificEncoderProvider:
         self._tokenizer: Any = None
         self._model: Any = None
         self._torch: Any = None
+        self._active_adapter_names: tuple[str, ...] = ()
 
     def prepare_text(self, text: str) -> str:
         if TITLE_ABSTRACT_SEPARATOR not in text:
@@ -332,10 +357,11 @@ class LocalScientificEncoderProvider:
             adapter_name = model.load_adapter(
                 str(self.adapter_dir),
                 load_as="specter2_proximity",
-                set_active=True,
+                set_active=False,
             )
-            if not adapter_name:
-                raise ResearchDataError("SPECTER2 proximity adapter did not load")
+            self._active_adapter_names = _activate_adapter_or_fail(
+                model, adapter_name
+            )
         else:
             model = AutoModel.from_pretrained(
                 str(self.model_dir),
@@ -475,7 +501,7 @@ def build_scientific_encoder_run(
     ]
     query_hashes, query_texts = _prepared_hashes(provider, query_inputs)
     generation_config = {
-        "builder": "scientific-prototype-cls-max-pooling-v1",
+        "builder": "scientific-prototype-cls-max-pooling-v2",
         "protocol": provider.protocol,
         "model_repo": provider.model_repo,
         "model_revision": provider.model_revision,
@@ -562,7 +588,7 @@ def build_scientific_encoder_run(
         "bytes": cache_path.stat().st_size,
     }
     implementation_revision = (
-        "scientific-prototype-cls-max-pooling-v1@" + sha256_file(Path(__file__))
+        "scientific-prototype-cls-max-pooling-v2@" + sha256_file(Path(__file__))
     )
     return write_run(
         output_path,
@@ -594,6 +620,11 @@ def build_scientific_encoder_run(
                 "pooling": "last_hidden_state[:,0,:]",
                 "normalization": "L2",
                 "deterministic_algorithms": True,
+                "adapter_activation": (
+                    "explicit_set_active_with_membership_assertion"
+                    if provider.protocol == "specter2"
+                    else "not_applicable"
+                ),
                 "candidate_surrogate_disclosure": (
                     "venue prototypes are mapped to title/abstract fields; they are "
                     "not represented as original papers"

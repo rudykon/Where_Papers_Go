@@ -254,6 +254,35 @@ print(json.dumps({{"local_dir": str(local_dir)}}))
         with self.assertRaisesRegex(ResearchDataError, "exactly pinned"):
             load_model_asset_config(self.config)
 
+    def test_adapter_overlay_lock_has_exact_wheel_hashes(self) -> None:
+        lock = (
+            Path(__file__).resolve().parents[1]
+            / "research"
+            / "configs"
+            / "m3_adapter_overlay_requirements.txt"
+        )
+        requirements = {
+            line.split(" --hash=sha256:", 1)[0]: line.split(
+                " --hash=sha256:", 1
+            )[1]
+            for line in lock.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")
+        }
+        self.assertEqual(
+            requirements,
+            {
+                "adapters==1.3.0": (
+                    "c0620b1b98df4af3876aa1e053ba43d0a19d82e62fc6a3ebc67d158183e07919"
+                ),
+                "huggingface-hub==0.36.2": (
+                    "48f0c8eac16145dfce371e9d2d7772854a4f591bcb56c9cf548accf531d54270"
+                ),
+                "transformers==4.57.6": (
+                    "4c9e9de11333ddfe5114bc872c9f370509198acf0b87a832a0ab9458e2bd0550"
+                ),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

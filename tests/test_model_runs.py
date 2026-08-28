@@ -16,6 +16,7 @@ from research.data import (
 from research.model_runs import (
     TITLE_ABSTRACT_SEPARATOR,
     LocalScientificEncoderProvider,
+    _activate_adapter_or_fail,
     build_scientific_encoder_run,
     load_scientific_prototypes,
 )
@@ -273,6 +274,33 @@ class ScientificModelRunTests(unittest.TestCase):
                 model_repo="allenai/specter2_base",
                 model_revision="a" * 40,
             )
+
+    def test_specter2_adapter_activation_is_explicit_and_fail_closed(self) -> None:
+        class Active:
+            def __init__(self, names: tuple[str, ...]) -> None:
+                self.names = names
+
+            def flatten(self) -> tuple[str, ...]:
+                return self.names
+
+        class Model:
+            active_adapters = Active(())
+
+            def set_active_adapters(self, name: str) -> None:
+                self.active_adapters = Active((name,))
+
+        model = Model()
+        self.assertEqual(
+            _activate_adapter_or_fail(model, "specter2_proximity"),
+            ("specter2_proximity",),
+        )
+
+        class BrokenModel(Model):
+            def set_active_adapters(self, name: str) -> None:
+                self.active_adapters = Active(())
+
+        with self.assertRaisesRegex(ResearchDataError, "not active"):
+            _activate_adapter_or_fail(BrokenModel(), "specter2_proximity")
 
 
 if __name__ == "__main__":

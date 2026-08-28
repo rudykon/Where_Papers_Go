@@ -260,6 +260,22 @@ payload 哈希差异都会失败关闭，绝不覆盖。HF 下载属于准备步
 精度、batch size、设备和确定性设置。metadata dry-run 默认 120 秒硬超时，
 单资产下载默认 21,600 秒硬超时，二者都可由 CLI 显式调整并写入审计：
 
+SPECTER2 的 proximity adapter 必须使用与 AdapterHub 兼容的独立
+overlay。当前冻结组合是 Python 3.12、`torch==2.11.0+cu130`、
+`adapters==1.3.0`、`transformers==4.57.6` 和
+`huggingface-hub==0.36.2`。三个 PyPI wheel 的哈希锁定在
+`research/configs/m3_adapter_overlay_requirements.txt`；在忽略的隔离运行时中先
+执行 `pip install --dry-run --report ...`，确认解析后再执行：
+
+```bash
+python -m pip install --no-deps --require-hashes \
+  -r research/configs/m3_adapter_overlay_requirements.txt
+```
+
+不得将该 overlay 安装到 Web/API 或既有模型环境。正式 SPECTER2 运行在
+forward 前显式调用 `set_active_adapters` 并验证活动组合含
+`specter2_proximity`；仅成功加载权重不视为通过。
+
 ```bash
 python -m research build-scientific-encoder-run \
   --protocol scincl \
