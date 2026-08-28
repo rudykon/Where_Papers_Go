@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from scripts.build_recent_journal_benchmark import (
     BuildWindow,
@@ -11,6 +13,8 @@ from scripts.build_recent_journal_benchmark import (
     classify_broad_field,
     jats_to_text,
     prepare_crossref_record,
+    build_parser,
+    plan_benchmark,
     resolve_item_venue,
     select_records_for_journal,
     select_bulk_records,
@@ -215,6 +219,38 @@ class DeterministicSamplingTests(unittest.TestCase):
         )
         self.assertEqual(selected, repeated)
         self.assertEqual(len(selected), 2)
+
+
+class PlanningTests(unittest.TestCase):
+    def test_plan_is_zero_network_and_does_not_create_output(self) -> None:
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary) / "future"
+            args = build_parser().parse_args(
+                [
+                    "--output-dir",
+                    str(output),
+                    "--from-date",
+                    "2026-07-01",
+                    "--until-date",
+                    "2026-07-31",
+                    "--sample-size",
+                    "36",
+                    "--bulk-pages",
+                    "2",
+                    "--journal-attempt-multiplier",
+                    "1",
+                    "--max-network-requests",
+                    "40",
+                    "--plan-only",
+                ]
+            )
+            plan = plan_benchmark(args)
+            self.assertFalse(plan["network_performed"])
+            self.assertEqual(plan["selection"]["target_records"], 36)
+            self.assertEqual(plan["request_bound"]["bulk_logical_requests"], 2)
+            self.assertEqual(plan["request_bound"]["configured_http_attempt_cap"], 40)
+            self.assertEqual(plan["external_cost"]["estimated_charge_usd"], 0.0)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
