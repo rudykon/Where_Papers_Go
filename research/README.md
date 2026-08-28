@@ -180,9 +180,17 @@ python -m research build-prototype-vector-run \
   --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
   --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_embeddings.json.gz \
   --output benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl
+
+PYTHONDONTWRITEBYTECODE=1 python -m research evaluate \
+  --config research/configs/m3_bge_m3_prototype_max.json
 ```
 
-正式 `evaluate` 不访问网络，只导入上述冻结 run。当前网页 scope 若采集时间晚于 cutoff，会保存在 production 画像中，但自动排除在论文主榜画像之外。
+正式 `evaluate` 不访问网络，只导入上述冻结 run。当前 bge-m3
+prototype-max 的 June-slice Hit@10 / nDCG@10 为 `0.1096714484 /
+0.0593422852`；相对 clean-PCL BM25 的 nDCG@10 改善通过配对检验，
+相对 TF-IDF 的全切片 95% 区间跨过零，不宣称显著。当前网页
+scope 若采集时间晚于 cutoff，会保存在 production 画像中，但自动排除在
+论文主榜画像之外。
 
 ## 泄漏规则
 

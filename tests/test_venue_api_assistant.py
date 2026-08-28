@@ -122,7 +122,10 @@ class CandidateConstraintTests(unittest.TestCase):
                 [],
             )
 
-        self.assertEqual([len(batch) for batch in calls], [5, 5, 2])
+        self.assertCountEqual([len(batch) for batch in calls], [5, 5, 2])
+        self.assertEqual(
+            {entity_id for batch in calls for entity_id in batch}, set(range(1, 13))
+        )
         self.assertEqual(set(scores), set(range(1, 13)))
 
     def test_rerank_runs_two_batches_concurrently(self) -> None:

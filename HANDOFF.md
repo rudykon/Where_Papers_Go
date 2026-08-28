@@ -1,50 +1,51 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-27 (Asia/Shanghai)
+> Updated: 2026-08-28 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Start with the next-session checkpoint in Section 0. The remainder of Section
 > 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
 > pre-P0 acquisition handoff as historical context; do not reinterpret their old
 > branch, HEAD, dirty-tree, or "not started" statements as current.
 
-## 0. P0 completion addendum
+## 0. Authoritative P0/M3 addendum
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 and refreshed on 2026-08-27 for a
-fresh conversation. The project has moved from foundation work into formal
-experimental validation:
+This checkpoint was prepared on 2026-08-26 and refreshed through 2026-08-28.
+The project has moved from foundation work into formal experimental
+validation:
 
 - P0-A through P0-C are complete and all exit gates passed;
 - the product/MVP is approximately 85% complete, but the last recorded online
   500-paper run was still limited by Search API availability;
-- the reproducible offline research platform is approximately 80% complete;
-- SIGIR Full Paper readiness is approximately 40--45% because only clean BM25
-  and TF-IDF have formal full-corpus runs; the overall product-plus-paper goal
-  is approximately 60% complete. These percentages are engineering judgments,
-  not mechanically counted tasks;
-- the source branch is published as `origin/agent/p0-causal-evaluation` and the
-  local branch tracks it. Four authorized non-force attempts on 2026-08-26
-  failed before authentication because the local HTTPS proxy selected a dead
-  upstream node; dedicated GitHub routing restored transport on 2026-08-27 and
-  the subsequent non-force push succeeded. After the source branch absorbed
-  the latest `origin/main` and passed 217 unit tests plus the 7/7 deterministic
-  retrieval benchmark, it was integrated into `main` by non-force fast-forward
-  on 2026-08-27. It is not tagged, released, or represented by a pull request;
+- the reproducible offline research platform is approximately 85% complete;
+- SIGIR Full Paper readiness is approximately 50--55% now that four lexical
+  ablations and a bound bge-m3 run are formal, but property-graph/LightRAG,
+  SPECTER2/SciNCL, cross-encoder, SCOPE-Rank, a sealed future test and expert
+  evaluation remain. The overall product-plus-paper goal is approximately 65%
+  complete. These percentages are engineering judgments, not mechanically
+  counted tasks;
+- the active branch is `agent/m3-strong-baselines`, created from `main` at
+  `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. The P0 source branch remains
+  published as `origin/agent/p0-causal-evaluation`; it and `main` were aligned
+  at that commit when M3 began. M3 source commits through `6a5da7b` are local
+  until the final non-force branch push recorded at the end of this session;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, and LightRAG stores remain local and were not
   uploaded. Their immutable paths and hashes below are the cross-session
   contract.
 
-The next milestone is M3 strong baselines. Work in this order unless the user
-changes the objective:
+The first M3 tranche is complete. Continue in this order unless the user changes
+the objective:
 
-1. update the stale post-P0 wording in `README.md`, `research/README.md`, and the
-   research roadmap without changing claims;
-2. run static, paper-concat, deterministic-prototype, and clean-PCL lexical
-   ablations on the exposed 4,791-query development set;
-3. build the bge-m3 prototype-max frozen run against the exact P0-C binding;
-4. implement offline property-graph and LightRAG score-run builders with real
+1. **complete:** update the stale post-P0 wording in `README.md`,
+   `research/README.md`, and the research roadmap without changing claims;
+2. **complete:** run static, paper-concat, deterministic-prototype, and
+   clean-PCL lexical ablations on the exposed 4,791-query development set;
+3. **complete:** build and strictly import the bge-m3 prototype-max frozen run
+   against the exact P0-C binding;
+4. **next eligible work, not yet authorized:** implement offline property-graph
+   and LightRAG score-run builders with real
    prototype-to-evidence edges;
 5. add SPECTER2/SciNCL and a cross-encoder, then compare all methods with paired
    statistics before training or claiming gains for SCOPE-Rank;
@@ -73,11 +74,120 @@ sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manif
 
 Suggested next-session prompt:
 
-> Read root `HANDOFF.md` completely, verify the current Git branch/HEAD and the
-> two manifest hashes, preserve every ignored/historical artifact, then begin
-> M3 in the recorded order. Start by reconciling stale documentation and
-> producing the four bound lexical ablations; do not launch live Search or
-> create a sealed test yet.
+> Read root `HANDOFF.md` completely with Section 0 as authoritative, verify the
+> current M3 branch/upstream and all recorded artifact hashes, and preserve every
+> ignored/historical artifact. Review the completed lexical and bge-m3 evidence,
+> then ask before beginning the offline property-graph/LightRAG builders. Do not
+> launch live Search, create a sealed test, or rebuild the clean PCL corpus.
+
+### M3 strong-baseline checkpoint (2026-08-28)
+
+The user-authorized M3 scope through bge-m3 is complete. No live Search was
+called, no sealed test was created, and no clean PCL corpus was rebuilt. All
+pre-existing P0, failed, historical, credential, paper, PCL, graph, vector and
+LightRAG artifacts were preserved. The source commits are:
+
+- `5080079`: reconcile post-P0 documentation and add four M3 lexical configs;
+- `30abe18`: bind all active corpus inputs and add DOI identity exclusion;
+- `6b656d7`: fail closed on distinctive evaluation-title containment;
+- `6249482`: require an exact P0 reference binding before bge-m3 API access;
+- `6a5da7b`: add the strict offline bge-m3 import/evaluation config.
+
+All formal runs contain all 4,791 exposed-development queries in the same order
+and share the 20,087-candidate universe. Aggregate metrics below are on the
+existing 2,161-query June slice inside that exposed development set; it is not
+a newly sealed or unseen test.
+
+| Corpus view | Method | Hit@10 | nDCG@10 |
+| --- | --- | ---: | ---: |
+| static JCR catalog | BM25 | 0.0411846367 | 0.0216848408 |
+| static JCR catalog | TF-IDF | 0.0458121240 | 0.0249273148 |
+| paper concat | BM25 | 0.4298935678 | 0.2761714949 |
+| paper concat | TF-IDF | 0.3933364183 | 0.2378211564 |
+| deterministic prototypes | BM25 | 0.3063396576 | 0.1914840623 |
+| deterministic prototypes | TF-IDF | 0.2813512263 | 0.1686092584 |
+| clean-PCL prototypes | BM25 | 0.0777417862 | 0.0443966293 |
+| clean-PCL prototypes | TF-IDF | 0.0920869968 | 0.0525464592 |
+| clean-PCL prototypes | bge-m3 prototype max | 0.1096714484 | 0.0593422852 |
+
+The four lexical v3 artifacts and independently recomputed manifest/metrics
+SHA-256 values are:
+
+- `lexical_static_v3`: manifest `ee22860422faf97750a35357b25ec87daf0f216d141627587e1d43ae3c9dfbac`,
+  metrics `24421185749f35edfe1f27f6ba1d1d963280ff226c0c0d14b96c380c9cdf9b5d`;
+- `lexical_paper_concat_v3`: manifest `fc6ae7015a8e65e88d101abfd486338909392f64b1b6e0a5762e9b78c7e72d7a`,
+  metrics `d2e006cacf9da7fba942934d5d40cdca2bc1e45255f96c771201662b204a37d2`;
+- `lexical_deterministic_prototype_v3`: manifest
+  `30ad0e3ef57a40c884ebf6ab8952e1ae25dc15ce81017b0a36d27ebbeca9a90d`,
+  metrics `e7c9d99e33f6a8c55c8f9b98c677e432e0e93798a6f3bb69ab08fb14ae4e48dd`;
+- `lexical_clean_pcl_v3`: manifest `dcd35f9567baf0b427391bd38d362fa3a399281394805c67174170db8173e6b9`,
+  metrics `41ffb401c2aad73a84867ff4f3d9f6260f2dea4bbb33c8bb2aa1d5d91096a0c1`.
+
+The paper-concat v1 audit correctly failed after finding 12 validation/test
+paper identities in active OpenAlex evidence whose source dates preceded the
+cutoff but whose Crossref dates fell in April--June. The DOI-only v2 filter
+removed nine but correctly still failed on three title-containment matches.
+Both failed directories remain preserved. v3 conservatively excludes 13 whole
+evidence rows matching 12 query identities; its exclusion-audit SHA-256 is
+`6e97a6f5fa6edb72c583b0094c539c2ec7f0158800ff529fab5a4b1307fe86f9`.
+The deterministic-prototype v3 view drops nine whole prototype units matching
+the same 12 identities; its exclusion-audit SHA-256 is
+`4343f5e87711bafcd59fd8e69db81741a4fb17a1581fe3451b54729b62f69213`.
+The immutable source corpora were not rewritten. Every formal v3 leakage audit
+has zero critical findings; warnings remain visible (84 for static, 86 for the
+prototype/evidence views).
+
+The bge-m3 artifacts are:
+
+- cache `bge_m3_embeddings.json.gz`, SHA-256
+  `25c357ce06b3173298d48bcc02d422b1101bfa1190dc4c9804d0556ac4cd891b`;
+- frozen score run `bge_m3_prototype_max.jsonl`, 479,100 rows, SHA-256
+  `3b1b0372511d50dea0a7231fc6ab7ee648fddf0203e89363ec56208b284eedde`;
+- source sidecar SHA-256
+  `18d06f2b85b0fddfbedc221bf9dd92de469dd05fc3ac8eb10fcff6100306c062`;
+- strict evaluation directory `bge_m3_prototype_max_evaluation_v1`, manifest
+  SHA-256 `898a0c6fe11a5115cec101f9ec7c30fc64f0c59e194bcda8ca3e433359309ece`,
+  metrics SHA-256 `7cf200702755d08c31eedce76f4f289fa774dc17a3b288f3e3450ae7b3ce43ed`.
+
+The vector run uses 40,198 prototypes and 44,989 unique 1,024-dimensional
+normalized embeddings. Its sidecar records `dirty=false`, code commit
+`6249482`, provider fingerprint
+`1f2fc9c5a6e71e31e8fa33a740fae28deeb88903018536643686b7c4475f80d5`,
+and exact agreement with P0-C dataset/profile byte hashes plus query/candidate
+fingerprints. The strict importer reran on clean commit `6a5da7b`, passed the
+prototype-view leakage audit, and reproduced the clean-PCL lexical metrics.
+The user explicitly authorized sending these prototype texts and 4,791 query
+title/abstract texts to the ignored `llmapi.json` PCL embedding endpoint. The
+first sandboxed attempt was blocked before any network access; the authorized
+run used only that embedding endpoint and did not call Search.
+
+Against clean-PCL BM25, bge-m3's test nDCG@10 difference is `+0.0149456559`,
+95% paired-bootstrap CI `[0.0075369861, 0.0227085033]`, permutation
+`p=0.0004997501`; the identity-safe direction is also positive. Against
+clean-PCL TF-IDF, the full-slice difference is `+0.0067958260`, but its 95% CI
+`[-0.0006736246, 0.0148814886]` crosses zero and permutation `p=0.0734632684`,
+so no full-slice significance claim is justified. On the 2,115-query
+identity-safe diagnostic the difference is `+0.0100215984`, CI
+`[0.0028533734, 0.0174689776]`, `p=0.0099950025`. History, profile level,
+subject and quartile strata each sum exactly to the 2,161-query denominator.
+
+Final source verification after these changes:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests`: `221/221`
+  passed in `56.653s`;
+- the candidate-rerank concurrency regression was made scheduler-independent:
+  it still checks 5/5/2 batch sizes, all 12 API inputs and all 12 output scores,
+  and passed ten isolated repetitions before the full suite;
+- `PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format
+  json`: `7/7`, micro Recall@K `1.0`;
+- `git diff --check` and all five M3 config JSON parses passed;
+- the two immutable P0 manifest SHA-256 values remain
+  `882f5aec66ed8958d806e526f9e00ef2f722eb164cfc3158418d3f46229f7fd0`
+  and `6f3c6e4f1ca1220cff45d206edf9db5ecb936724ac3c8b171c462abd55dd84e6`;
+- `docs/Where-Papers-Go.png` remains tracked with blob
+  `42b021f7088e08c165fa615a8d3b7bd60af25fd1`;
+- `main`, `origin/main` and `origin/agent/p0-causal-evaluation` remain at the
+  verified M3 branch point `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`.
 
 P0-A through P0-C were completed in order across 2026-08-24–25. No credentials,
 ignored benchmark data, paper files, API caches, or historical source artifacts
@@ -192,8 +302,9 @@ but unindexed catalog overlaps remain visible warnings. A regression test also
 proves that a DOI embedded in an active `paper:...:doi:...` source ID still
 fails closed.
 
-All P0 exit gates are satisfied. Section 10 now describes eligible follow-on
-work; do not start those larger experiments or publish artifacts without a new
+All P0 exit gates remain satisfied. The authorized M3 work through bge-m3 is
+recorded above; Section 10 is historical context for the remaining follow-on
+work. Do not start those larger experiments or publish artifacts without a new
 explicit request.
 
 ## 1. Current objective
