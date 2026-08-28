@@ -26,7 +26,11 @@ from research.fusion import LearnedLinearFusion, rrf_fuse
 from research.leakage import audit_leakage, identity_unsafe_query_ids
 from research.metrics import evaluate_run
 from research.reporting import build_query_strata, summarize_strata
-from research.statistics import paired_bootstrap_ci, paired_permutation_test
+from research.statistics import (
+    adjust_p_values,
+    paired_bootstrap_ci,
+    paired_permutation_test,
+)
 from research.types import Query, ScoredDocument, VenueDocument
 
 
@@ -517,6 +521,22 @@ class FusionMetricAndStatisticsTests(unittest.TestCase):
         )
         self.assertGreaterEqual(permutation["two_sided_p_value"], 0.0)
         self.assertLessEqual(permutation["two_sided_p_value"], 1.0)
+
+    def test_multiple_comparison_corrections_cover_the_complete_family(self) -> None:
+        adjusted = adjust_p_values(
+            {"first": 0.01, "second": 0.04, "third": 0.03, "fourth": 0.20}
+        )
+        self.assertEqual(list(adjusted), ["first", "second", "third", "fourth"])
+        self.assertAlmostEqual(adjusted["first"]["holm_family_wise_p_value"], 0.04)
+        self.assertAlmostEqual(adjusted["third"]["holm_family_wise_p_value"], 0.09)
+        self.assertAlmostEqual(
+            adjusted["first"]["benjamini_hochberg_fdr_p_value"], 0.04
+        )
+        self.assertAlmostEqual(
+            adjusted["second"]["benjamini_hochberg_fdr_p_value"], 0.05333333333333334
+        )
+        with self.assertRaises(ValueError):
+            adjust_p_values({"bad": float("nan")})
 
 
 class StratifiedReportingTests(unittest.TestCase):
