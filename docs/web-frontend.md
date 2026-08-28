@@ -68,3 +68,5 @@ where_paper_go/static/app.js     # 筛选、请求、进度、卡片和详情抽
 - Roboto 通过 Google Fonts 加载；网络不可用时会自动回退到 Noto Sans、苹方或微软雅黑，不影响使用。
 
 前端不保存 API key，也不直接读取 CSV。生产部署时建议让 `where_paper_go.web_app` 只监听回环地址，由 Nginx/Caddy 负责 HTTPS、登录和访问日志；同时为每个用户增加请求限流和审计记录。
+
+仓库现已提供可渲染的 user-systemd 单元、Nginx TLS/鉴权/限流配置、结构化审计、严格 readiness 和可恢复原子替换工具。完整启停、升级、回滚、LAN 边界和管理员待执行步骤见 [生产部署手册](production-deployment.md)。

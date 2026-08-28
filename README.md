@@ -164,6 +164,12 @@ where-paper-go-web --host 0.0.0.0 --port 8000
 
 Open `http://127.0.0.1:8000/` locally, or `http://<server-ip>:8000/` over SSH/LAN. The interface supports Chinese/English switching, combined scope filters, persistent retrieval progress, streamed results, and evidence details.
 
+For a restartable production service, strict readiness, HTTPS/auth proxy,
+request limiting/audit, shadow upgrade, and recoverable rollback, follow the
+[production deployment runbook](docs/production-deployment.md). A direct
+`0.0.0.0` listener is a trusted-LAN transition only, not an Internet-facing
+deployment.
+
 <details>
 <summary><strong>CLI examples</strong></summary>
 
