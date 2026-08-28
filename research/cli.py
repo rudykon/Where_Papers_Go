@@ -22,6 +22,7 @@ from .data import (
     build_run_binding,
     canonical_json_sha256,
     exclude_query_identities_from_prototypes,
+    load_blind_query_dataset,
     load_evidence_concat_corpus,
     load_jcr_corpus,
     load_jsonl_corpus,
@@ -50,12 +51,25 @@ from .metrics import evaluate_run, stratified_metrics
 from .model_assets import materialize_model_assets
 from .model_runs import LocalScientificEncoderProvider, build_scientific_encoder_run
 from .pcl_retry import PCLRetryPolicy
-from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provider
+from .prototype_vectors import (
+    build_prototype_vector_run,
+    pcl_embedding_provider,
+    plan_prototype_vector_cache,
+)
 from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_strata
 from .reranker_runs import LocalBGECrossEncoderProvider, build_cross_encoder_run
 from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
 from .scope_rank_runs import build_scope_rank_suite
+from .scope_rank_inference import build_frozen_scope_predictions
 from .scope_rank_selective import evaluate_scope_rank_selective
+from .sealed_test import build_sealed_test, plan_sealed_test
+from .sealed_sources import build_sealed_lexical_run, build_sealed_reference_binding
+from .sealed_evaluation import evaluate_sealed_test
+from .expert_review import (
+    build_conflict_report,
+    build_expert_review_package,
+    export_expert_review,
+)
 from .types import Run
 
 
@@ -63,6 +77,15 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ResearchDataError(f"configuration field {name!r} must be an object")
     return value
+
+
+def _load_cli_query_bundle(
+    args: argparse.Namespace,
+    *,
+    query_fields: Sequence[str] = ("title", "abstract"),
+):
+    loader = load_blind_query_dataset if args.blind_dataset else load_recent_journal_dataset
+    return loader(args.dataset, query_fields=tuple(query_fields))
 
 
 def _resolve(config_path: Path, value: Any) -> Path:
@@ -936,6 +959,41 @@ def _parser() -> argparse.ArgumentParser:
             "never call the embedding API"
         ),
     )
+    prototype_run.add_argument(
+        "--blind-dataset",
+        action="store_true",
+        help="Require the closed, physically label-free sealed-query schema.",
+    )
+    prototype_run.add_argument(
+        "--authorization-reference",
+        default="",
+        help="Required when any prepared text is missing from the embedding cache.",
+    )
+    prototype_run.add_argument(
+        "--max-new-embeddings",
+        type=int,
+        default=None,
+        help="Hard cap on newly transmitted prepared texts.",
+    )
+    prototype_run.add_argument(
+        "--estimated-external-cost-usd",
+        type=float,
+        default=None,
+        help="Required non-negative bound when network embedding is needed.",
+    )
+
+    prototype_plan = subparsers.add_parser(
+        "plan-prototype-vector-cache",
+        help="report exact prototype/query embedding cache coverage without network",
+    )
+    prototype_plan.add_argument("--api-config", type=Path, required=True)
+    prototype_plan.add_argument("--dataset", type=Path, required=True)
+    prototype_plan.add_argument("--profiles", type=Path, required=True)
+    prototype_plan.add_argument("--cache", type=Path, required=True)
+    prototype_plan.add_argument("--blind-dataset", action="store_true")
+    prototype_plan.add_argument(
+        "--estimated-external-cost-usd", type=float, required=True
+    )
 
     graph_run = subparsers.add_parser(
         "build-property-graph-run",
@@ -960,6 +1018,7 @@ def _parser() -> argparse.ArgumentParser:
     graph_run.add_argument("--edge-support-weight", type=float, default=0.15)
     graph_run.add_argument("--bm25-k1", type=float, default=1.2)
     graph_run.add_argument("--bm25-b", type=float, default=0.75)
+    graph_run.add_argument("--blind-dataset", action="store_true")
 
     lightrag_run = subparsers.add_parser(
         "build-lightrag-mix-run",
@@ -978,6 +1037,7 @@ def _parser() -> argparse.ArgumentParser:
     lightrag_run.add_argument("--rrf-k", type=int, default=60)
     lightrag_run.add_argument("--local-weight", type=float, default=1.0)
     lightrag_run.add_argument("--global-weight", type=float, default=1.0)
+    lightrag_run.add_argument("--blind-dataset", action="store_true")
 
     model_assets = subparsers.add_parser(
         "materialize-model-assets",
@@ -1019,6 +1079,7 @@ def _parser() -> argparse.ArgumentParser:
     scientific_run.add_argument("--prototype-chunk-size", type=int, default=4096)
     scientific_run.add_argument("--ignore-prototype-weights", action="store_true")
     scientific_run.add_argument("--no-fp16", action="store_true")
+    scientific_run.add_argument("--blind-dataset", action="store_true")
 
     cross_run = subparsers.add_parser(
         "build-cross-encoder-run",
@@ -1039,6 +1100,7 @@ def _parser() -> argparse.ArgumentParser:
     cross_run.add_argument("--candidate-pool", type=int, default=100)
     cross_run.add_argument("--top-k", type=int, default=100)
     cross_run.add_argument("--no-fp16", action="store_true")
+    cross_run.add_argument("--blind-dataset", action="store_true")
 
     clean = subparsers.add_parser(
         "rebuild-clean-corpus",
@@ -1075,6 +1137,77 @@ def _parser() -> argparse.ArgumentParser:
         help="evaluate frozen SCOPE-Rank accept/abstain decisions without refitting",
     )
     scope_selective.add_argument("--config", type=Path, required=True)
+
+    sealed_plan = subparsers.add_parser(
+        "plan-sealed-test",
+        help="verify the freeze and print a zero-network future-test acquisition plan",
+    )
+    sealed_plan.add_argument("--config", type=Path, required=True)
+
+    sealed_build = subparsers.add_parser(
+        "build-sealed-test",
+        help="acquire a bounded future set and atomically publish a restricted label vault",
+    )
+    sealed_build.add_argument("--config", type=Path, required=True)
+
+    sealed_predict = subparsers.add_parser(
+        "build-frozen-scope-predictions",
+        help="apply frozen train-only SCOPE-Rank models to physically label-free queries",
+    )
+    sealed_predict.add_argument("--config", type=Path, required=True)
+
+    sealed_binding = subparsers.add_parser(
+        "build-sealed-reference-binding",
+        help="freeze blind-query order and the unchanged candidate universe",
+    )
+    sealed_binding.add_argument("--dataset", type=Path, required=True)
+    sealed_binding.add_argument("--profiles", type=Path, required=True)
+    sealed_binding.add_argument("--output", type=Path, required=True)
+    sealed_binding.add_argument("--profile-cutoff", default="2026-03-31")
+
+    sealed_lexical = subparsers.add_parser(
+        "build-sealed-lexical-run",
+        help="build a label-blind BM25 or TF-IDF future-query score run",
+    )
+    sealed_lexical.add_argument("--dataset", type=Path, required=True)
+    sealed_lexical.add_argument("--profiles", type=Path, required=True)
+    sealed_lexical.add_argument("--reference-manifest", type=Path, required=True)
+    sealed_lexical.add_argument("--output", type=Path, required=True)
+    sealed_lexical.add_argument("--name", required=True)
+    sealed_lexical.add_argument("--type", choices=("bm25", "tfidf"), required=True)
+    sealed_lexical.add_argument("--top-k", type=int, default=100)
+    sealed_lexical.add_argument("--bm25-k1", type=float, default=1.2)
+    sealed_lexical.add_argument("--bm25-b", type=float, default=0.75)
+    sealed_lexical.add_argument("--no-sublinear-tf", action="store_true")
+    sealed_lexical.add_argument("--no-prototypes", action="store_true")
+
+    sealed_evaluate = subparsers.add_parser(
+        "evaluate-sealed-test",
+        help="verify pre-label prediction hashes, then unseal and evaluate once",
+    )
+    sealed_evaluate.add_argument("--config", type=Path, required=True)
+
+    expert_package = subparsers.add_parser(
+        "build-expert-review-package",
+        help="merge, deduplicate, blind, and randomize committed Top-K results",
+    )
+    expert_package.add_argument("--config", type=Path, required=True)
+
+    expert_conflicts = subparsers.add_parser(
+        "expert-review-conflicts",
+        help="audit complete three-rater items and list blinded disagreements",
+    )
+    expert_conflicts.add_argument("--package-dir", type=Path, required=True)
+    expert_conflicts.add_argument("--state-dir", type=Path, required=True)
+    expert_conflicts.add_argument("--output", type=Path)
+
+    expert_export = subparsers.add_parser(
+        "export-expert-review",
+        help="export complete real anonymous annotations and Fleiss kappa",
+    )
+    expert_export.add_argument("--package-dir", type=Path, required=True)
+    expert_export.add_argument("--state-dir", type=Path, required=True)
+    expert_export.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
@@ -1253,7 +1386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         elif args.command == "build-prototype-vector-run":
-            bundle = load_recent_journal_dataset(args.dataset)
+            bundle = _load_cli_query_bundle(args)
             provider = pcl_embedding_provider(args.api_config)
             last_progress_bucket = -1
 
@@ -1292,9 +1425,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reference_manifest_path=args.reference_manifest,
                 embedding_progress=report_embedding_progress,
                 cache_only=args.cache_only,
+                external_authorization_reference=args.authorization_reference,
+                max_new_embeddings=args.max_new_embeddings,
+                estimated_external_cost_usd=args.estimated_external_cost_usd,
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "plan-prototype-vector-cache":
+            bundle = _load_cli_query_bundle(args)
+            provider = pcl_embedding_provider(args.api_config)
+            plan = plan_prototype_vector_cache(
+                provider=provider,
+                bundle=bundle,
+                profiles_path=args.profiles,
+                cache_path=args.cache,
+                estimated_external_cost_usd=args.estimated_external_cost_usd,
+            )
+            print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-scope-rank-suite":
             manifest = build_scope_rank_suite(
                 args.config,
@@ -1329,10 +1476,139 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
+        elif args.command == "plan-sealed-test":
+            print(
+                json.dumps(
+                    plan_sealed_test(args.config),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-sealed-test":
+            manifest = build_sealed_test(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "dataset": {
+                            "record_count": manifest["dataset"]["record_count"],
+                            "blind_queries": manifest["dataset"]["blind_queries"],
+                            "sealed_labels_sha256": manifest["dataset"]["sealed_labels"]["sha256"],
+                        },
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-frozen-scope-predictions":
+            manifest = build_frozen_scope_predictions(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "prediction_commitment": manifest["prediction_commitment"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-sealed-reference-binding":
+            bundle = load_blind_query_dataset(args.dataset)
+            manifest = build_sealed_reference_binding(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                output_path=args.output,
+                profile_cutoff=args.profile_cutoff,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-sealed-lexical-run":
+            bundle = load_blind_query_dataset(args.dataset)
+            manifest = build_sealed_lexical_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                output_path=args.output,
+                method_name=args.name,
+                method_type=args.type,
+                top_k=args.top_k,
+                k1=args.bm25_k1,
+                b=args.bm25_b,
+                sublinear_tf=not args.no_sublinear_tf,
+                use_prototypes=not args.no_prototypes,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "evaluate-sealed-test":
+            manifest = evaluate_sealed_test(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "metrics": manifest["metrics"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-expert-review-package":
+            manifest = build_expert_review_package(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "sample": manifest["sample"],
+                        "human_dependency": manifest["human_dependency"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "expert-review-conflicts":
+            report = build_conflict_report(args.package_dir, args.state_dir)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        f"conflict report exists and will not be overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "export-expert-review":
+            manifest = export_expert_review(
+                args.package_dir,
+                args.state_dir,
+                args.output_dir,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-property-graph-run":
-            bundle = load_recent_journal_dataset(
-                args.dataset,
-                query_fields=tuple(args.query_fields),
+            bundle = _load_cli_query_bundle(
+                args, query_fields=tuple(args.query_fields)
             )
             manifest = build_property_graph_run(
                 bundle=bundle,
@@ -1356,9 +1632,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-lightrag-mix-run":
-            bundle = load_recent_journal_dataset(
-                args.dataset,
-                query_fields=tuple(args.query_fields),
+            bundle = _load_cli_query_bundle(
+                args, query_fields=tuple(args.query_fields)
             )
             manifest = build_lightrag_mix_run(
                 bundle=bundle,
@@ -1391,7 +1666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-scientific-encoder-run":
-            bundle = load_recent_journal_dataset(args.dataset)
+            bundle = _load_cli_query_bundle(args)
             provider = LocalScientificEncoderProvider(
                 protocol=args.protocol,
                 model_dir=args.model_dir,
@@ -1445,7 +1720,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-cross-encoder-run":
-            bundle = load_recent_journal_dataset(args.dataset)
+            bundle = _load_cli_query_bundle(args)
             provider = LocalBGECrossEncoderProvider(
                 model_dir=args.model_dir,
                 model_repo=args.model_repo,
