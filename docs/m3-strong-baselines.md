@@ -138,6 +138,7 @@ model revisions, and no unapproved fifth model was downloaded. Its absence is
 not represented as a completed experiment.
 
 M3 may be called complete as a reproducible strong-baseline platform on the
-exposed development data. It does not establish that a paper method works:
-SCOPE-Rank has not yet been frozen and evaluated here, and no future sealed test
-or real expert labels exist at this checkpoint.
+exposed development data. It does not establish that a paper method works.
+SCOPE-Rank was subsequently frozen and evaluated with a clear negative result;
+see [SCOPE-Rank exposed-development freeze](scope-rank-results.md). No future
+sealed test or real expert labels existed at the M3 checkpoint.

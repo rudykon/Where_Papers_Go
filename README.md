@@ -50,7 +50,7 @@ Key product behavior:
 - CCF, TH-CPL, CAS, and JCR targets can be combined; multiple target tiers use **OR** semantics.
 - Topic retrieval strictly uses **LightRAG + exact vector retrieval + LLM + Search API**. It does not silently downgrade when one layer fails.
 - Search, vector, and LightRAG work are parallelized; LLM reranking uses two concurrent batches.
-- An **unvalidated SCOPE-Rank research scaffold** adapts recall-channel budgets from LLM ambiguity/cross-domain signals and live channel coverage; it is not yet an experimentally supported ranking method. The former fixed budget remains available as an explicit ablation.
+- A formal **offline SCOPE-Rank research implementation** now covers adaptive recall, train-only fusion, constraints, abstention and provenance explanations. Its exposed-development learned result is negative and is not used as evidence that the product ranking is better; fixed linear/RRF alternatives remain explicit ablations.
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
 
@@ -99,7 +99,7 @@ flowchart LR
     I --> V[Exact vector recall]
     I --> G[LightRAG mix recall]
     I --> S[Search API evidence]
-    V --> A[Unvalidated SCOPE-Rank scaffold]
+    V --> A[Experimental SCOPE-Rank research path]
     G --> A
     S --> A
     A --> M[Candidate fusion]
@@ -248,12 +248,14 @@ python3 -m research evaluate \
 
 The checked-in configuration includes BM25, TF-IDF, RRF, and train-only learned linear fusion. Frozen vector, graph, or LightRAG runs can be imported through the same interface. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, required baselines, ablations, statistics, and claims boundary.
 
-P0-A through P0-C are complete. The accepted clean-PCL lexical run binds the
+P0-A through P0-C and the M3 strong-baseline platform are complete. The accepted clean-PCL lexical run binds the
 4,791-query development set, the ordered 20,087-candidate universe, exact input
 hashes, configuration, code state, environment, and per-run sidecars; its
-leakage audit has zero critical findings. M3 strong-baseline work builds on that
-exposed development set and remains Search-free. It does not create or inspect
-a future sealed test.
+leakage audit has zero critical findings. M3 and SCOPE-Rank use that same
+Search-free exposed development set. The formal learned SCOPE-Rank result is
+significantly worse than the strongest M3 baseline; fixed linear/RRF fusion is
+only non-significantly higher. See the [complete negative-result freeze](docs/scope-rank-results.md).
+No future sealed test or real expert labels are claimed here.
 
 <a id="repository-map"></a>
 ## Repository map
