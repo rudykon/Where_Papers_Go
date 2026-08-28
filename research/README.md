@@ -288,6 +288,20 @@ SPECTER2 使用相同命令并增加精确 proximity adapter 目录、repo 和 r
 其运行环境还必须固定并记录 `adapters` 包。模型尚未实际下载和运行时，只能称
 “构建器、配置与获取审计完成”，不能填入指标或宣称该基线完成。
 
+不下载模型也可验证真实 Transformers/safetensors 本地加载、CLS pooling、
+归一化和 sequence-classification logits 路径。普通无 Torch 测试环境会明确
+skip；模型运行环境必须通过：
+
+```bash
+/home/wangrj/.cache/adodas_venv/bin/python -m unittest \
+  tests.test_local_model_runtime -v
+```
+
+2026-08-28 宿主验收使用 Python 3.12.3、Torch 2.11.0、Transformers 5.7.0、
+huggingface-hub 1.12.2 和 safetensors 0.7.0，结果为 2/2 通过；普通 Python
+环境因未安装 Torch 明确跳过 2 项。该 smoke 只证明真实本地加载和推理接口可用，
+不替代官方模型权重、SPECTER2 adapter 或全量 score run 验收。
+
 ## 泄漏规则
 
 以下任一项默认中止实验：
