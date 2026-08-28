@@ -65,9 +65,10 @@ if not arguments or arguments[0] != "download":
 if "--dry-run" in arguments:
     if os.environ.get("UNIT_HF_TIMEOUT") == "1":
         time.sleep(1)
+    weight_size = "-" if os.environ.get("UNIT_HF_CACHE_WEIGHT") == "1" else "12.0"
     print(json.dumps([
-        {{"filename": "config.json", "file_size": 8, "is_cached": False, "will_download": True}},
-        {{"filename": "model.safetensors", "file_size": 12, "is_cached": False, "will_download": True}},
+        {{"file": "config.json", "size": "8.0"}},
+        {{"file": "model.safetensors", "size": weight_size}},
     ]))
     raise SystemExit(0)
 if os.environ.get("UNIT_HF_FAIL_DOWNLOAD") == "1":
@@ -97,11 +98,35 @@ print(json.dumps({{"local_dir": str(local_dir)}}))
         self.assertEqual(audit["status"], "dry_run_complete")
         self.assertEqual(audit["preflight"]["planned_download_bytes"], 20)
         self.assertEqual(audit["preflight"]["cache_coverage_bytes"], 0)
+        self.assertFalse(audit["assets"][0]["dry_run"]["summary"]["fallback_estimate_used"])
+        self.assertEqual(audit["assets"][0]["dry_run"]["summary"]["file_count"], 2)
         self.assertEqual(audit["cost_and_quota"]["known_provider_api_cost_usd"], 0.0)
+        self.assertIn("model-asset-acquisition-v1@", audit["implementation"]["revision"])
+        self.assertIn("python", audit["runtime"])
         self.assertTrue(Path(audit["audit_path"]).is_file())
         self.assertEqual(sha256_file(Path(audit["audit_path"])), audit["audit_sha256"])
         specs, _record = load_model_asset_config(self.config)
         self.assertFalse((output / specs[0].directory_name).exists())
+
+    def test_dry_run_understands_hf_cli_cached_file_marker(self) -> None:
+        output = self.root / "cached-plan"
+        original = os.environ.get("UNIT_HF_CACHE_WEIGHT")
+        os.environ["UNIT_HF_CACHE_WEIGHT"] = "1"
+        try:
+            audit = materialize_model_assets(
+                config_path=self.config,
+                output_root=output,
+                hf_cli=self.hf,
+            )
+        finally:
+            if original is None:
+                os.environ.pop("UNIT_HF_CACHE_WEIGHT", None)
+            else:
+                os.environ["UNIT_HF_CACHE_WEIGHT"] = original
+        summary = audit["assets"][0]["dry_run"]["summary"]
+        self.assertEqual(summary["cached_file_count"], 1)
+        self.assertEqual(summary["planned_download_file_count"], 1)
+        self.assertEqual(summary["planned_download_bytes"], 8)
 
     def test_execute_requires_authorization_and_atomically_publishes(self) -> None:
         output = self.root / "models"

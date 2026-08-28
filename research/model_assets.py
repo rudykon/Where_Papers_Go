@@ -18,7 +18,12 @@ import subprocess
 from typing import Any, Mapping, Sequence
 import uuid
 
-from .data import ResearchDataError, canonical_json_sha256, sha256_file
+from .data import (
+    ResearchDataError,
+    canonical_json_sha256,
+    runtime_provenance,
+    sha256_file,
+)
 
 
 ASSET_MANIFEST_NAME = "ASSET_MANIFEST.json"
@@ -31,6 +36,7 @@ _HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9]{12,}\b")
 _KEY_VALUE_SECRET_RE = re.compile(
     r"(?i)\b(token|password|secret)=([^\s&]+)"
 )
+_HUMAN_SIZE_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*([KMGTPEZY]?)")
 
 
 @dataclass(frozen=True)
@@ -306,6 +312,23 @@ def _parse_json_output(text: str) -> Any:
 def _dry_run_entries(value: Any) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
 
+    def parsed_size(raw: Any) -> tuple[int, bool, bool] | None:
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, (int, float)):
+            size = int(raw)
+            return (size, False, False) if size >= 0 else None
+        text = str(raw or "").strip()
+        if text == "-":
+            return 0, True, False
+        match = _HUMAN_SIZE_RE.fullmatch(text)
+        if match is None:
+            return None
+        unit = match.group(2)
+        exponent = "KMGTPEZY".find(unit) + 1 if unit else 0
+        size = int(round(float(match.group(1)) * (1000**exponent)))
+        return size, False, bool(unit)
+
     def visit(item: Any) -> None:
         if isinstance(item, list):
             for child in item:
@@ -316,7 +339,7 @@ def _dry_run_entries(value: Any) -> list[dict[str, Any]]:
         name = next(
             (
                 str(item[key])
-                for key in ("filename", "file_name", "path", "name")
+                for key in ("filename", "file_name", "file", "path", "name")
                 if item.get(key) not in (None, "")
             ),
             "",
@@ -329,21 +352,24 @@ def _dry_run_entries(value: Any) -> list[dict[str, Any]]:
             ),
             None,
         )
-        try:
-            size = int(raw_size)
-        except (TypeError, ValueError):
-            size = -1
-        if name and size >= 0:
+        size_details = parsed_size(raw_size)
+        if name and size_details is not None:
+            size, inferred_cached, rounded = size_details
             cached = item.get("is_cached", item.get("cached"))
             will_download = item.get("will_download")
             entries.append(
                 {
                     "path": name,
                     "bytes": size,
-                    "cached": bool(cached) if cached is not None else None,
-                    "will_download": (
-                        bool(will_download) if will_download is not None else None
+                    "cached": (
+                        bool(cached) if cached is not None else inferred_cached
                     ),
+                    "will_download": (
+                        bool(will_download)
+                        if will_download is not None
+                        else not inferred_cached
+                    ),
+                    "size_is_rounded": rounded,
                 }
             )
         for child in item.values():
@@ -378,8 +404,17 @@ def _dry_run_summary(record: Mapping[str, Any], fallback_bytes: int) -> dict[str
         "file_count": len(entries),
         "known_total_bytes": known_total,
         "cached_bytes": cached_bytes,
+        "cached_file_count": sum(
+            entry.get("cached") is True for entry in entries
+        ),
+        "planned_download_file_count": sum(
+            entry.get("will_download") is True for entry in entries
+        ),
         "planned_download_bytes": download_bytes,
         "fallback_estimate_used": not bool(entries),
+        "human_size_rounding_present": any(
+            entry.get("size_is_rounded") is True for entry in entries
+        ),
         "files": entries,
     }
 
@@ -484,6 +519,11 @@ def materialize_model_assets(
         raise ResearchDataError("cannot determine Hugging Face CLI version")
     root = output_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
+    implementation = {
+        "name": "research.model_assets.materialize_model_assets",
+        "revision": "model-asset-acquisition-v1@" + sha256_file(Path(__file__)),
+    }
+    runtime = runtime_provenance()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     audit_path = (
         root
@@ -497,6 +537,8 @@ def materialize_model_assets(
         "authorization_reference": authorization if execute else "not_required",
         "generation_command": [str(value) for value in generation_command],
         "config": config_record,
+        "implementation": implementation,
+        "runtime": runtime,
         "hf_cli": {
             "path": str(cli),
             "version_stdout": str(version["stdout"]).strip(),
@@ -650,6 +692,8 @@ def materialize_model_assets(
                         "download_command": download["command"],
                         "authorization_reference": authorization,
                         "known_provider_api_cost_usd": 0.0,
+                        "implementation": implementation,
+                        "runtime": runtime,
                     },
                     "final_path": str(target),
                 }
