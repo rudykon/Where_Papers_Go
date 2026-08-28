@@ -254,7 +254,9 @@ def load_frozen_edge_graph(
             )
         venue_id = str(row.get("venue_id") or "").strip()
         expected_venue = next(iter(required_sources[evidence_id]))
-        valid_at = str(row.get("valid_at") or "").strip()[:10]
+        valid_at = str(
+            row.get("publication_date") or row.get("valid_at") or ""
+        ).strip()[:10]
         if venue_id != expected_venue:
             raise ResearchDataError(
                 f"{evidence_path}:{line_number}: evidence crosses candidate venues"
@@ -271,9 +273,12 @@ def load_frozen_edge_graph(
             raise ResearchDataError(
                 f"{evidence_path}:{line_number}: non-temporal or post-cutoff evidence"
             )
-        text = " ".join(
-            str(row.get("text") or row.get("title") or "").split()
-        )
+        text_parts: list[str] = []
+        for field in ("title", "abstract", "text"):
+            value = " ".join(str(row.get(field) or "").split())
+            if value and value not in text_parts:
+                text_parts.append(value)
+        text = "\n".join(text_parts)
         if not text:
             raise ResearchDataError(
                 f"{evidence_path}:{line_number}: linked evidence has no text"

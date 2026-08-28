@@ -136,9 +136,10 @@ class GraphRunTests(unittest.TestCase):
                     "evidence_id": "paper:v1:1",
                     "venue_id": "v1",
                     "kind": "paper",
-                    "valid_at": "2026-03-01",
+                    "publication_date": "2026-03-01",
                     "temporal_eligible": True,
-                    "text": "neural graph retrieval and propagation",
+                    "title": "neural graph retrieval",
+                    "abstract": "evidence propagation",
                 },
                 {
                     "evidence_id": "catalog:v2",
@@ -152,9 +153,10 @@ class GraphRunTests(unittest.TestCase):
                     "evidence_id": "paper:v2:1",
                     "venue_id": "v2",
                     "kind": "paper",
-                    "valid_at": "2026-02-01",
+                    "publication_date": "2026-02-01",
                     "temporal_eligible": True,
-                    "text": "clinical cancer imaging diagnosis",
+                    "title": "clinical cancer imaging",
+                    "abstract": "diagnosis evidence",
                 },
                 {
                     "evidence_id": "unreferenced",
@@ -234,6 +236,13 @@ class GraphRunTests(unittest.TestCase):
         self.assertTrue(manifest["edge_audit"]["candidate_coverage_complete"])
         self.assertTrue(manifest["execution"]["search_free"])
         self.assertEqual(manifest["execution"]["external_api_calls"], 0)
+        graph = load_frozen_edge_graph(
+            profiles_path=self.profiles,
+            prototypes_path=self.prototypes,
+            evidence_path=self.evidence,
+            cutoff="2026-03-31",
+        )
+        self.assertIn("evidence propagation", graph.evidence_texts["v1"][1])
         manifest_path = path.with_suffix(path.suffix + ".manifest.json")
         loaded = load_score_run(
             path,
@@ -275,7 +284,7 @@ class GraphRunTests(unittest.TestCase):
         post_cutoff_path = self.root / "post-cutoff.jsonl"
         for row in rows:
             if row["evidence_id"] == "paper:v1:1":
-                row["valid_at"] = "2026-04-01"
+                row["publication_date"] = "2026-04-01"
         _write_jsonl(post_cutoff_path, rows)
         with self.assertRaisesRegex(ResearchDataError, "post-cutoff"):
             load_frozen_edge_graph(
