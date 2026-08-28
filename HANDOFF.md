@@ -84,20 +84,38 @@ Suggested next-session prompt:
 
 ### Deployment checkpoint (2026-08-28)
 
-The current product was redeployed from `agent/m3-strong-baselines` after
-deployment reliability fix `cd09f6e`.  The user-level transient systemd unit
-is `where-papers-go.service`, listens on `0.0.0.0:8001`, and serves
-<http://172.22.13.155:8001/> on the current `enp4s0` address (loopback remains
-available at <http://127.0.0.1:8001/>).  The initial loopback-only deployment
-was corrected after LAN access failed; both addresses now return a ready health
-response and the LAN root returns HTTP 200.  Port `8000` was already owned by
-an unrelated Docker container, which was not stopped or modified.  The unit
-has `Restart=on-failure`, but because no persistent systemd/Docker convention
-exists in this repository, this transient unit does not survive a host reboot.
-After a reboot, rerun the documented web command with `--host 0.0.0.0 --port
-8001` or recreate the unit explicitly.  UFW's public configuration says
-`ENABLED=no`; reading privileged live rules would require an administrator
-password.
+The product was upgraded from the earlier transient deployment to the audited
+persistent user unit at source HEAD `ed644e1`. The active unit is
+`~/.config/systemd/user/where-papers-go.service`, listens on `0.0.0.0:8001`,
+is `enabled`, uses `Restart=on-failure`, and runs under a user manager with
+`Linger=yes`. It serves <http://172.22.13.155:8001/> on `enp4s0` (loopback
+remains available at <http://127.0.0.1:8001/>). A direct, proxy-bypassed LAN
+request returned HTTP 200. Port `8000` remains owned by an unrelated Docker
+container and was not stopped or modified. The former transient recovery unit
+is stopped; the shadow unit and private shadow environment are stopped but
+preserved.
+
+The installed unit SHA-256 is
+`2ad4619abff7677e1b54960ab55ea891eed233841caa619c90cfa6fbff680b7c`.
+Its private `0600` runtime environment SHA-256 is
+`8a465904ce88b602c7c786b3d104878543fd745b707fbc131c5571a555723280`.
+The incompatible predecessor was recoverably renamed to
+`where-papers-go.service.backup-20260828T084402.672194Z`, SHA-256
+`7c5aaca8ef2523d3aba8a19e144c39ece3d35532eeb1f3796046fc348a19f76c`;
+nothing was deleted. `systemd-analyze --user verify` passed before installation.
+The formal service then passed its initial health gate and an explicit restart:
+the PID changed, the second preload was 18,719 ms, bindings remained current,
+and `NRestarts=0`, `Result=success`. `enabled` plus `Linger=yes` proves the
+configured user-manager boot recovery path; a literal host reboot was not
+performed and must not be claimed.
+
+The listener remains plain HTTP without front-door authentication and is only
+appropriate on the documented trusted LAN. The repository now contains an
+audited Nginx TLS/Basic-Auth/rate-limit/path-only-audit template plus exact
+activation commands, but Nginx is absent and no hostname/certificate was
+provided, so activation remains an administrator task. UFW's public
+configuration previously reported `ENABLED=no`; privileged live firewall rules
+were not changed.
 
 The first prewarm failed closed because the production vector file was stale
 for the current graph.  The vector CLI also exposed an obsolete top-level
@@ -136,7 +154,7 @@ storage finalization; it does not change embeddings, graph content, manifest
 bindings, or online queries.  The real local LightRAG import+mix-query test and
 the heartbeat lifecycle regression both pass.
 
-Deployment acceptance was completed without calling `/api/search`, creating a
+The original transient deployment acceptance was completed without calling `/api/search`, creating a
 sealed test, rebuilding PCL, or making any external API request:
 
 - `/api/health`: `ready=true`, persistent worker ready, 19,612 ms preload,
@@ -145,6 +163,22 @@ sealed test, rebuilding PCL, or making any external API request:
 - full suite: 223 tests passed in 56.287 seconds;
 - deterministic retrieval benchmark: 7/7 cases at full recall,
   micro-recall@k 1.0.
+
+Persistent-deployment acceptance at deployed source commit `ed644e1` likewise made no `/api/search`,
+LLM, Search, or embedding request. `/api/health` was ready after both start and
+restart with the exact vector and LightRAG hashes above; `/api/options` reported
+45,207 records and 23,555 venues; direct LAN root returned HTTP 200; liveness
+returned the custom `where-paper-go/1.0` banner and the documented security
+headers. The full suite passed 251 tests with three sandbox-only loopback skips,
+while the socket-security module passed 10/10 on the host. The deterministic
+retrieval benchmark passed 7/7 with micro Recall@K 1.0. Tracked-file credential
+pattern scanning found no match, and all recorded P0/M3/current/predecessor
+artifact hashes remained unchanged.
+
+The persistent-deployment source commits are `15cf827` (worker/binding failure
+handling), `0ddf0cb` (deployment and proxy contract), `6089888` (private env
+renderer), `6783b82` (host-compatible user-unit hardening), `5b783e2`
+(bind-before-listen startup), and `ed644e1` (terminal fail-closed behavior).
 
 ### M3 strong-baseline checkpoint (2026-08-28)
 

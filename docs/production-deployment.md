@@ -7,11 +7,16 @@ proxy file is renamed to a timestamped backup before atomic replacement.
 
 ## Current boundary (2026-08-28)
 
-The currently running user service is a transient unit on
-`0.0.0.0:8001`. Loopback and `172.22.13.155:8001` are reachable, but the LAN
-listener is plain HTTP and has no front-door authentication. Treat it as a
-temporary trusted-LAN endpoint only: do not expose port 8001 through a router,
-public firewall, or untrusted Wi-Fi. The target topology is:
+The active deployment is the persistent user unit
+`~/.config/systemd/user/where-papers-go.service`. It is `enabled`, the user
+manager has `Linger=yes`, and a stop/start plus a second explicit restart both
+passed the mandatory startup health gate. The former transient recovery unit
+is stopped, and the retained shadow unit is stopped/disabled rather than
+deleted. The runtime environment intentionally keeps `WPG_HOST=0.0.0.0` so
+loopback and `172.22.13.155:8001` remain reachable, but this LAN listener is
+plain HTTP and has no front-door authentication. Treat it as a temporary
+trusted-LAN endpoint only: do not expose port 8001 through a router, public
+firewall, or untrusted Wi-Fi. The target topology is:
 
 ```text
 Internet/LAN client
@@ -19,6 +24,25 @@ Internet/LAN client
   -> 127.0.0.1:8001 (Where Papers Go user service)
   -> persistent worker -> graph + exact vectors + LightRAG mix + LLM + Search
 ```
+
+Latest Search-free acceptance evidence:
+
+| Check | Observed result |
+| --- | --- |
+| installed unit | SHA-256 `2ad4619abff7677e1b54960ab55ea891eed233841caa619c90cfa6fbff680b7c`; `active/running`, `enabled`, `Restart=on-failure` |
+| private runtime env | mode `0600`; SHA-256 `8a465904ce88b602c7c786b3d104878543fd745b707fbc131c5571a555723280` |
+| preserved predecessor | `where-papers-go.service.backup-20260828T084402.672194Z`; SHA-256 `7c5aaca8ef2523d3aba8a19e144c39ece3d35532eeb1f3796046fc348a19f76c` |
+| restart recovery | PID changed after the explicit restart; second preload `18,719 ms`; `NRestarts=0`, `Result=success` |
+| runtime binding | ready worker; vector SHA-256 `d3995c353b29614bac6954d895f3daaf4f2afee67d19ff0eb78089c4e3dc1cab`; LightRAG manifest SHA-256 `59d59babe37703175eb6a640bbe5c480386a3359a71073588b808747659b9bb3` |
+| product endpoints | direct LAN root HTTP 200; `/api/options` reports 45,207 records / 23,555 venues; liveness exposes the custom `where-paper-go/1.0` banner and all documented security headers |
+| regressions | 251 tests passed with three sandbox-only socket skips; the same socket module passed 10/10 on the host; deterministic retrieval passed 7/7 with micro Recall@K 1.0 |
+
+No `/api/search`, remote LLM/Search, embedding call, literal host reboot, or
+administrator action was used for this acceptance. `enabled` plus `Linger=yes`
+establishes the user-manager boot recovery configuration; do not rewrite this
+as proof of a physical reboot. Nginx/HTTPS activation remains the documented
+administrator step because Nginx is not installed and no hostname/certificate
+was supplied.
 
 The application itself enforces a second Search/LLM admission limit, caps body
 size and concurrent searches, emits body-free JSON audit records to journald,
