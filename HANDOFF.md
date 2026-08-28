@@ -28,8 +28,10 @@ validation:
 - the active branch is `agent/m3-strong-baselines`, created from `main` at
   `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. The P0 source branch remains
   published as `origin/agent/p0-causal-evaluation`; it and `main` were aligned
-  at that commit when M3 began. M3 source commits through `6a5da7b` are local
-  until the final non-force branch push recorded at the end of this session;
+  at that commit when M3 began. The M3 branch was first published non-force at
+  `3cd7246` as `origin/agent/m3-strong-baselines` after one transient TLS
+  handshake failure; the local branch tracks it. No PR, merge, tag or direct
+  `main` push was created;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, and LightRAG stores remain local and were not
   uploaded. Their immutable paths and hashes below are the cross-session
