@@ -25,11 +25,11 @@ try:  # pragma: no cover - the deployment target is Linux.
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from .paths import PROJECT_ROOT
+from .paths import DATA_DIR, PROJECT_ROOT
 
 
 STATE_SCHEMA_VERSION = 1
-DEFAULT_STATE_FILE = PROJECT_ROOT / "data" / ".tavily_key_pool_state.json"
+DEFAULT_STATE_FILE = DATA_DIR / ".tavily_key_pool_state.json"
 LEGACY_KEY_FIELDS = (
     "api_key",
     "key",
@@ -208,7 +208,11 @@ class TavilyKeyPool:
         raw_state_file = config.get("key_pool_state_file") or DEFAULT_STATE_FILE
         state_file = Path(str(raw_state_file))
         if not state_file.is_absolute():
-            state_file = PROJECT_ROOT / state_file
+            state_file = (
+                DATA_DIR.joinpath(*state_file.parts[1:])
+                if state_file.parts and state_file.parts[0] == "data"
+                else PROJECT_ROOT / state_file
+            )
         return cls(
             keys,
             quota_per_key=_positive_int(
