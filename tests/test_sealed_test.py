@@ -5,9 +5,14 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
-from research.data import ResearchDataError, load_blind_query_dataset
-from research.sealed_test import split_labeled_dataset
+from research.data import (
+    ResearchDataError,
+    canonical_json_sha256,
+    load_blind_query_dataset,
+)
+from research.sealed_test import split_labeled_dataset, verify_method_freeze
 
 
 def _labeled_row(identifier: str, day: int) -> dict[str, object]:
@@ -83,6 +88,53 @@ class SealedDatasetTests(unittest.TestCase):
             path.write_text(json.dumps(row) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ResearchDataError, "label fields"):
                 load_blind_query_dataset(path)
+
+    def test_freeze_verifies_method_hyperparameters_and_source_protocol(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "artifact.json"
+            artifact.write_text("{}\n", encoding="utf-8")
+            method = {"top_k": 100, "profile_cutoff": "2026-03-31"}
+            freeze = {
+                "status": "frozen_before_future_data_acquisition",
+                "commits": {"method": "a" * 40},
+                "artifacts": [
+                    {
+                        "name": "artifact",
+                        "path": artifact.name,
+                        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+                    }
+                ],
+                "candidates": {
+                    "count": 20087,
+                    "ordered_ids_sha256": "b" * 64,
+                },
+                "method_family": ["lightrag", "scope_rank_full"],
+                "method_hyperparameters": method,
+                "method_hyperparameters_canonical_sha256": canonical_json_sha256(
+                    method
+                ),
+                "source_protocol": {"bm25": {"k1": 1.2}},
+                "metrics": {"primary": "ndcg@10"},
+                "statistics": {
+                    "comparison_family": "all_methods_unordered_pairs"
+                },
+            }
+            with patch("research.sealed_test._git_object_exists", return_value=True):
+                verified = verify_method_freeze(root / "freeze.json", freeze)
+            self.assertEqual(
+                verified["method_hyperparameters_sha256"],
+                canonical_json_sha256(method),
+            )
+            self.assertEqual(verified["method_family"], freeze["method_family"])
+            self.assertEqual(len(verified["source_protocol_sha256"]), 64)
+
+            freeze["method_hyperparameters_canonical_sha256"] = "0" * 64
+            with patch("research.sealed_test._git_object_exists", return_value=True):
+                with self.assertRaisesRegex(
+                    ResearchDataError, "hyperparameters are not frozen"
+                ):
+                    verify_method_freeze(root / "freeze.json", freeze)
 
 
 if __name__ == "__main__":
