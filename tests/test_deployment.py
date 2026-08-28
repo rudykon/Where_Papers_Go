@@ -102,6 +102,37 @@ class DeploymentManifestTests(TestCase):
         self.assertNotIn("$http_authorization", payload)
         self.assertNotIn("@@", payload)
 
+    def test_runtime_environment_is_private_nonsecret_and_atomic(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "runtime.env"
+            args = Namespace(
+                output=output,
+                host="0.0.0.0",
+                port=8001,
+                data_dir=manage_deployment.PROJECT_ROOT / "data",
+                api_config=manage_deployment.PROJECT_ROOT / "llmapi.json",
+                rate_limit_requests=6,
+                rate_limit_window_seconds=60,
+                max_concurrent_searches=2,
+                request_body_limit=200_000,
+                request_read_timeout=30,
+                audit_log=True,
+                trust_proxy=False,
+                trusted_proxy_cidrs="127.0.0.0/8,::1/128",
+                require_api_auth=False,
+                api_token_file=None,
+                apply=True,
+            )
+            result = manage_deployment.render_environment(args)
+
+            self.assertEqual(result["status"], "installed")
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            text = output.read_text(encoding="utf-8")
+            self.assertIn("WPG_HOST=0.0.0.0", text)
+            self.assertIn("WPG_AUDIT_LOG=1", text)
+            self.assertNotIn("api_key", text.casefold())
+            self.assertNotIn("token", text.casefold())
+
     def test_health_contract_fails_each_missing_mandatory_layer(self) -> None:
         healthy = {
             "status": "ready",
