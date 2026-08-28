@@ -15,6 +15,8 @@ research/
 ├── historical_builder.py # 20,087 刊多来源、多原型历史画像
 ├── pcl_retry.py          # 独立持久化 PCL 重试队列
 ├── prototype_vectors.py  # bge-m3 多原型 max-pooling 冻结 run
+├── scope_rank_runs.py     # 正式 SCOPE-Rank 与 11 个冻结消融
+├── scope_rank_selective.py # 不重拟合的 coverage/risk/校准事后评测
 ├── leakage.py            # DOI/标题/内容/时间/跨分割泄漏审计
 ├── baselines.py          # BM25、TF-IDF 和冻结 run 统一接口
 ├── fusion.py             # RRF 和 train-only 学习融合
@@ -27,8 +29,8 @@ research/
 ```
 
 新对话开始前先阅读根目录 [`HANDOFF.md`](../HANDOFF.md)，并以 Section 0
-作为当前权威状态。P0-A～P0-C 已全部通过；当前工作从同一 4,791-query
-development set 和 20,087-candidate universe 继续 M3 强基线。大型语料、
+作为当前权威状态。P0-A～P0-C、M3 强基线与 SCOPE-Rank 暴露开发集评测已冻结；
+learned SCOPE-Rank 是显著负结果，不得声称方法有效。大型语料、
 embedding 和逐查询 run 继续保存在忽略目录，不属于上述源码结构，也不得为
 开始 M3 而重新生成。
 
@@ -327,6 +329,40 @@ safetensors 0.7.0，真实模型测试 6/6 通过；SPECTER2 活动 adapter 还�
 `pip check` 会看到与本实验无关的父环境 vLLM/Transformers 版本冲突；正式
 provider 不导入 vLLM，manifest 仍完整记录重复可见的 distributions，不能把
 环境描述为全局依赖无冲突。
+
+## 6. SCOPE-Rank 正式运行、消融与拒答评测
+
+方法配置只读取已冻结 M3 run，使用确定性 train/calibration 分割，并在任何
+validation/test 标签评分之前一次性产生 full + 11 消融。三个命令都必须使用
+新输出路径；正式目录不得覆盖：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+python -m research build-scope-rank-suite \
+  --config research/configs/scope_rank_exposed_development_v1.json
+
+PYTHONDONTWRITEBYTECODE=1 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+python -m research evaluate \
+  --config research/configs/scope_rank_unified_evaluation_v1.json
+
+PYTHONDONTWRITEBYTECODE=1 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+python -m research evaluate-scope-rank-selective \
+  --config research/configs/scope_rank_selective_evaluation_v2.json
+```
+
+正式 learned full 在 2,161-query June test 的 nDCG@10 为 `0.0138134702`，
+最强 M3 LightRAG 为 `0.0855317887`；LightRAG 减 full 的 95% CI 为
+`[0.0610749606, 0.0823773039]`，Holm `p=0.0389805097`。线性和 RRF 替代的
+nDCG@10 为 `0.0883333369 / 0.0868353087`，但与 LightRAG 比较均为
+Holm `p=1.0`，不宣称增益。full 校准器在 221 个 train-only 校准 query 上
+Top-1 正确数为 0，因而 fail-closed 并对全部 query 拒答。
+
+完整 78 配对、所有消融、selective metrics、哈希、成本/延迟和根因见
+[`docs/scope-rank-results.md`](../docs/scope-rank-results.md)。这是可复现平台交付与科学负结果，
+不是 sealed-test 或论文方法有效性证据。
 
 ## 泄漏规则
 

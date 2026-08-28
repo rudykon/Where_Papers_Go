@@ -11,8 +11,9 @@
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 and refreshed through source HEAD
-`95f1b4d79e9a3ce26a567b27dd6bce2b49108214` on 2026-08-28. The current
+This checkpoint was prepared on 2026-08-26 and refreshed through the last
+formal artifact-producing source HEAD
+`4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5` on 2026-08-28. The current
 exit-gate state supersedes the earlier percentage estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
@@ -22,18 +23,25 @@ exit-gate state supersedes the earlier percentage estimates:
   TLS/authenticated reverse proxy, a literal host reboot, and the authorized
   live 500-paper Search/LLM acceptance remain external/manual gates, so the
   overall product must not be called 100% complete;
-- Stage B's formal property-graph and LightRAG-mix runs, unified evaluation,
-  full-family paired corrections, negative-result reporting, pinned local
-  SPECTER2/SciNCL builders, and bge cross-encoder builder are implemented and
-  tested. The official SPECTER2/SciNCL/reranker weights have not been downloaded
-  or scored, so M3 has not passed its exit gate;
-- model acquisition is now repository-auditable: every exact HF revision is
-  dry-run first, cache/disk/cost/quota state is recorded, downloads require a
-  non-secret explicit-authorization reference, failures preserve `.building`,
-  and successful payloads are SHA-256 checked before atomic publication;
-- the active branch `agent/m3-strong-baselines` will be synchronized with
-  `origin/agent/m3-strong-baselines` after this HANDOFF-only refresh; its latest
-  implementation commit is `95f1b4d`. `main`, `origin/main`, and
+- Stage B/M3 is complete on the exposed development set. The four authorized
+  official Hugging Face revisions, including the active SPECTER2 proximity
+  adapter, were downloaded into ignored shadow-managed assets, validated and
+  scored. The 11-method/55-pair unified evaluation, corrections, costs,
+  latencies, failure counts and negative results are frozen;
+- Stage C's formal SCOPE-Rank implementation, 11 named ablations, provenance
+  explanations, train-only fitting/calibration, 13-method/78-pair comparison
+  and selective-risk evaluation are complete and reproducible. The learned
+  full method is a significant negative result; fixed linear/RRF alternatives
+  are not significantly better than LightRAG. Engineering completion must not
+  be rewritten as a method-effectiveness claim;
+- model acquisition remains repository-auditable: every exact HF revision was
+  dry-run first, cache/disk/cost/quota state was recorded, failures preserve
+  `.building`, and successful payloads were SHA-256 checked before atomic
+  publication. The ignored isolated runtime contains `adapters==1.3.0` and its
+  official-model test suite passed 6/6;
+- the active branch `agent/m3-strong-baselines` is synchronized with
+  `origin/agent/m3-strong-baselines` through formal evidence commit `4946fde`.
+  `main`, `origin/main`, and
   `origin/agent/p0-causal-evaluation` remain protected and aligned at
   `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. No PR, merge, tag, force push,
   or direct `main` push was created;
@@ -50,23 +58,17 @@ Continue in this order unless the user changes the objective:
 3. **complete:** retain the pinned local scientific/cross-encoder builders,
    acquisition tool/config, timeout/credential protections and real local
    safetensors integration test;
-4. **blocked external gate:** obtain explicit authorization for approximately
-   3.188 GB of pinned public HF assets and the necessary `adapters` runtime,
-   and restore a working official Hugging Face network path. Do not add
-   `--execute` before both conditions are satisfied;
-5. after a successful all-asset dry-run, download to shadow directories,
-   validate manifests, install `adapters` in an isolated ignored runtime, run a
-   bounded throughput smoke, then build complete SPECTER2, SciNCL and cross-
-   encoder score runs without Search/API calls. Decide ColBERT only from the
-   measured remaining GPU/time budget;
-6. import every strong run through the same binding and recompute complete
-   metrics, strata, failures, latency/cost and corrected paired statistics;
-7. only after the M3 method/data/metric protocol is frozen, implement and
-   validate SCOPE-Rank and all named ablations using allowed train data only;
-8. only after that freeze, create a genuinely future sealed test and the
+4. **complete:** retain all four pinned official-model assets, the ignored
+   isolated `adapters` runtime and the complete M3 unified freeze;
+5. **complete:** retain the SCOPE-Rank method/config freeze, all 11 ablations,
+   78-pair statistics, selective v2 report and explicit negative conclusion;
+6. **next:** with method, hyperparameters, candidates, metrics, statistics and
+   commits now frozen, create a genuinely future sealed test without inspecting
+   its labels or retuning the method;
+7. build and validate the
    200--300-query, three-expert blind-evaluation package. Never synthesize human
    labels;
-9. finish the final full validation, documentation and HANDOFF update. Keep
+8. finish the final full validation, documentation and HANDOFF update. Keep
    administrator TLS activation, real expert labels, and any unapproved live
    Search/LLM evaluation explicitly pending.
 
@@ -83,7 +85,7 @@ git rev-parse HEAD
 git branch -vv
 python -m research --help
 PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
-/home/wangrj/.cache/adodas_venv/bin/python -m unittest tests.test_local_model_runtime -v
+benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest tests.test_local_model_runtime -v
 PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format json
 systemctl --user is-active where-papers-go.service
 curl --noproxy '*' --fail --silent http://127.0.0.1:8001/api/health
@@ -94,11 +96,11 @@ sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manif
 Suggested next-session prompt:
 
 > Read root `HANDOFF.md` completely with Section 0 as authoritative, verify the
-> current M3 branch/upstream and all recorded artifact hashes, and preserve every
-> ignored/historical artifact. Resume at the pinned-model external gate: do not
-> download until explicit authorization and a successful all-asset HF dry-run;
-> do not launch live Search, create a sealed test, start SCOPE-Rank before M3
-> freeze, or rebuild the clean PCL corpus.
+> current M3/SCOPE branch/upstream and all recorded artifact hashes, and preserve
+> every ignored/historical artifact. Resume after the frozen negative SCOPE-Rank
+> result: build a genuinely future sealed test and the expert blind-evaluation
+> infrastructure without retuning, synthesizing labels, launching live Search,
+> or rebuilding the clean PCL corpus.
 
 ### Deployment checkpoint (2026-08-28)
 
@@ -521,6 +523,126 @@ active prototype text/labels/source IDs/dates remain critical, while retained
 but unindexed catalog overlaps remain visible warnings. A regression test also
 proves that a DOI embedded in an active `paper:...:doi:...` source ID still
 fails closed.
+
+### M3 completion and SCOPE-Rank freeze (2026-08-28)
+
+This subsection supersedes every earlier Section 0 sentence saying that model
+weights, M3 or SCOPE-Rank are pending. The user authorized official Hugging Face
+HTTPS acquisition of the four pinned revisions and installation of `adapters`
+inside an ignored isolated runtime. All assets were shadow-built, validated and
+atomically published under `benchmark_artifacts/m3_model_assets_20260828`:
+
+- SPECTER2 base payload tree
+  `6bc1b5d17888179ebec2df1c13207a99930fc63cb669dd52c421376244d2bd18`,
+  asset manifest
+  `c8438fa50d029b1809b1f482e7566bcafd005b6ae8d90a6114ecc07324d4882d`;
+- SPECTER2 proximity-adapter payload tree
+  `21ed8bb9b6f76c6309fcc4f2e4ff78d780f22616341877571fa93f70bfc66b5d`,
+  asset manifest
+  `3ad8879aee83efe6a078131686540c5975a33c7ba9e22474fb54c1cabf1f7969`;
+- SciNCL payload tree
+  `76e8f6bcdec65367b6308fe4adec6cf40f18853324df20b5886f790e785e8e99`,
+  asset manifest
+  `950661c82b30a77e54b2e141945f412b3c816ee63579e3c8f3470ea088be00ef`;
+- bge-reranker-v2-m3 payload tree
+  `77b86c362f174b467f53c755c4fcc394f42fbc2569352e99ac53ae550b9d41e4`,
+  asset manifest
+  `b086bde210834832072d38dfb4db88db44930660c6d0d0c651d23944da769e63`.
+
+The acquisition audit SHA-256 is
+`3dacbe9c58638f98e4ea8476baa3ebced8fa654afa624a3b6d8b3fdc689530d9`;
+its subsequent revalidation audit is
+`d4a37bcd80a79fddccce1cad967376f46277735d44b2f84cf28b6a79afc94217`.
+The ignored runtime uses Python 3.12.3, Torch 2.11.0,
+`adapters==1.3.0`, Transformers 4.57.6, huggingface-hub 0.36.2 and
+safetensors 0.7.0. Official local-model tests passed 6/6, including an active
+SPECTER2 adapter enable/disable output-difference check. The overlay sees an
+unrelated parent vLLM/Transformers conflict in `pip check`; the formal provider
+does not import vLLM, so do not describe the global environment as conflict-free.
+
+The complete M3 evaluation is
+`benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2`:
+
+- method/config commit `20a3769fd79afe5390e598177c2d0b1a6f77d5ec`;
+- manifest `2a9ca6d8a81d08c000f547aa5f1030e70e038e3cc59cd913adceee1cee22af93`;
+- metrics `2ab71e3f9a549f6cefb5ebaeb22572a587e7d40a763864c9701bac10017891ef`;
+- leakage audit `7b0450dff725643e52cca84339d272648939d0ce464bbb22c4ca412ce1963196`;
+- 11 methods, 55 unordered paired comparisons, 2,000 bootstrap/permutation
+  iterations, Holm/BH correction, zero critical leakage, zero failed queries
+  and zero Search/API calls.
+
+LightRAG is the strongest M3 nDCG@10 result (`0.0855317887`). It is not
+significantly different from the two multichannel RRF variants. The standalone
+cross-encoder is the worst method (`0.0290261645` nDCG@10); this negative result
+remains in the comparison family. See `docs/m3-strong-baselines.md` for every
+run hash, full table, strata, latency and cost. ColBERT was conditional, outside
+the four authorized revisions and was not downloaded; do not represent it as a
+completed experiment.
+
+Formal SCOPE-Rank was then frozen at
+`9a1f3deeafa0f2b907d186b0c1ba80dc82908363`. It reads exact M3 score runs and
+implements the label-blind query representation, seven-channel adaptive recall,
+cross-encoder feature, missingness/profile/provenance features, deterministic
+hard constraints, train-only pairwise ranker, disjoint train-only calibration,
+abstention and Top-5 provenance explanations. The train split is deterministically
+partitioned into 865 fit and 221 calibration queries; validation/test labels
+were not used for fitting or calibration.
+
+SCOPE formal artifacts under
+`benchmark_artifacts/scope_rank_20260828/exposed_development_v1`:
+
+- suite manifest `971a91b5ac9f615f7916df30fb42a2ffb90e5a18a950c34bc6a316621b071080`;
+- suite leakage audit `1a5c183a09f386bd8acb7bcf3e0b839dd80633b5ec79b77cdfa22437584912ad`;
+- decisions `9acaa383b11d886bbdf056731296952df3baf2df60953737009cc5e87ed9ce40`
+  (57,492 rows);
+- full explanations `cdbe2c0f8c4a14f0d5b4f669a3bbc881c525a0e3bd5f3af6d2dc4d8b371759b5`
+  (23,955 rows);
+- full run `2d4c97122ab268248e321ec194323ee44c4e3435d0c3a4ae2829234003d7828f`,
+  sidecar `a02666f721324eb6d4def1cdee6aeb24d769699395828cf8b15dce27f5a9e52a`.
+
+Every one of the 12 variants has 4,791 complete Top-100 rankings / 479,100
+rows, zero failures, zero external calls, USD 0.00 external cost and zero hard-
+constraint output violations. The dataset has no explicit user quartile
+constraints and all papers are journal articles, so it does not empirically
+stress constraint filtering; that limitation is recorded rather than hidden.
+
+The 13-method/78-pair evaluation was frozen at
+`e30a1d76f4eb4b3e699ffafb54bf81e54b0f2b80` and published at
+`benchmark_artifacts/scope_rank_20260828/unified_evaluation_v1`:
+
+- manifest `6c77c86ad54efcfe55ea024444cd560d71d5390c70b28e0c8e859c655836722f`;
+- metrics `e97089760e528cb1938ea2a74fb30c6fb21e5f71d36e86af04527bf5c477a923`;
+- leakage audit `7b0450dff725643e52cca84339d272648939d0ce464bbb22c4ca412ce1963196`.
+
+The learned full method is a clear negative result: nDCG@10 `0.0138134702`
+versus M3 LightRAG `0.0855317887`; LightRAG-minus-full is `+0.0717183185`,
+95% CI `[0.0610749606, 0.0823773039]`, Holm-adjusted `p=0.0389805097`.
+Fixed linear (`0.0883333369`) and RRF (`0.0868353087`) have small positive
+point estimates over LightRAG but both Holm-adjusted comparisons are `p=1.0`.
+Removing missingness significantly improves the learned model to `0.0387873292`
+but remains far below M3. Large positive learned weights on absent-channel
+indicators are the primary diagnosed failure mechanism.
+
+Selective v2 was produced from clean commit
+`4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5` at
+`benchmark_artifacts/scope_rank_20260828/selective_evaluation_v2`:
+
+- manifest `2475ec92e4768fb1d68b787e951d9a8c2341c25eb207a9fef86c979472dbef12`;
+- metrics `47be7677484d8bcd50e727d6d9bbb0951dd935d43ae6cd256b25e6cbad78b568`.
+
+Full observed 0/221 correct Top-1 train-only calibration examples, set threshold
+1.0 and correctly failed closed: test coverage is 0, and selective precision
+is `null`. Calibration removal keeps the exact ranking but accepts all queries
+at test precision `0.0046274873`. Selective v1 remains preserved and is
+superseded only because it conflated exact score-run equality with rank-order
+equality; v2 records both. The full/calibration/constraint variants share exact
+479,100-row rank-order fingerprint `be6fa691...dbaf`.
+
+The complete method, statistics, selective results, costs, root cause and claim
+boundary are in `docs/scope-rank-results.md`. Stage C is complete as an
+engineering/reproducibility delivery, but its scientific success gate failed.
+No paper claim of SCOPE-Rank effectiveness, improvement, calibration quality or
+state of the art is permitted from this evidence.
 
 All P0 exit gates remain satisfied. The bge-era subsection immediately above is
 retained as immutable history; the newer graph/model checkpoint is the current
