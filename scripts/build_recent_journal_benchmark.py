@@ -653,6 +653,7 @@ class CrossrefClient:
         request_interval: float,
         use_environment_proxy: bool,
         refresh_cache: bool,
+        max_network_requests: int,
     ) -> None:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -661,6 +662,7 @@ class CrossrefClient:
         self.retries = retries
         self.request_interval = request_interval
         self.refresh_cache = refresh_cache
+        self.max_network_requests = max_network_requests
         handlers: list[Any] = [] if use_environment_proxy else [urllib.request.ProxyHandler({})]
         self.opener = urllib.request.build_opener(*handlers)
         self.last_request_at = 0.0
@@ -688,6 +690,11 @@ class CrossrefClient:
         retryable = {429, 500, 502, 503, 504}
         for attempt in range(self.retries + 1):
             with self._request_lock:
+                if self.network_requests >= self.max_network_requests:
+                    raise ValueError(
+                        "Crossref network request budget exhausted before request: "
+                        f"{self.network_requests}/{self.max_network_requests}"
+                    )
                 elapsed = time.monotonic() - self.last_request_at
                 if elapsed < self.request_interval:
                     time.sleep(self.request_interval - elapsed)
@@ -860,6 +867,161 @@ def _csv_set(value: str, allowed: Iterable[str], option: str) -> set[str]:
     return selected
 
 
+def _crossref_request_url(
+    path: str, params: Mapping[str, str], *, mailto: str
+) -> str:
+    query = dict(params)
+    query["mailto"] = mailto
+    return CROSSREF_API + path + "?" + urllib.parse.urlencode(query)
+
+
+def _crossref_filters(window: BuildWindow) -> str:
+    return ",".join(
+        (
+            f"from-pub-date:{window.from_date.isoformat()}",
+            f"until-pub-date:{window.until_date.isoformat()}",
+            "type:journal-article",
+            "has-abstract:true",
+        )
+    )
+
+
+def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
+    """Return a zero-network request/cache/cost bound for a benchmark build."""
+
+    window = resolve_window(args.from_date, args.until_date)
+    fields = _csv_set(args.fields, BROAD_FIELDS, "--fields")
+    quartiles = _csv_set(args.quartiles.upper(), QUARTILES, "--quartiles")
+    venues, catalog_ambiguous = load_jcr_venues(args.data_dir)
+    strata = stratified_journal_order(
+        venues,
+        fields=fields,
+        quartiles=quartiles,
+        seed=args.seed,
+    )
+    expected_strata = [
+        (field, quartile)
+        for field in sorted(fields)
+        for quartile in QUARTILES
+        if quartile in quartiles
+    ]
+    missing_strata = [key for key in expected_strata if not strata.get(key)]
+    if missing_strata:
+        raise ValueError(
+            "internal JCR catalog has no journals for strata: "
+            + ", ".join(f"{field}/{quartile}" for field, quartile in missing_strata)
+        )
+    targets = allocate_stratum_targets(
+        expected_strata,
+        sample_size=args.sample_size,
+        samples_per_stratum=args.samples_per_stratum,
+    )
+    cache_dir = args.cache_dir or (args.output_dir / "crossref_cache")
+    known_urls: list[str] = []
+    known_urls.append(
+        _crossref_request_url(
+            "/works",
+            {
+                "filter": _crossref_filters(window),
+                "rows": str(args.bulk_rows),
+                "sort": "published",
+                "order": "desc",
+                "cursor": "*",
+            },
+            mailto=args.mailto,
+        )
+    )
+    fallback_request_cap = 0
+    fallback_by_stratum: dict[str, int] = {}
+    for field, quartile in expected_strata:
+        target = targets[(field, quartile)]
+        needed_journals = (
+            target + args.max_papers_per_journal - 1
+        ) // args.max_papers_per_journal
+        attempt_cap = max(
+            needed_journals,
+            needed_journals * args.journal_attempt_multiplier,
+        )
+        selected = strata[(field, quartile)][:attempt_cap]
+        fallback_by_stratum[f"{field}/{quartile}"] = len(selected)
+        fallback_request_cap += len(selected)
+        for venue in selected:
+            known_urls.append(
+                _crossref_request_url(
+                    "/journals/"
+                    + urllib.parse.quote(venue.lookup_issn, safe="")
+                    + "/works",
+                    {
+                        "filter": _crossref_filters(window),
+                        "rows": str(args.rows_per_journal),
+                        "sort": "published",
+                        "order": "desc",
+                    },
+                    mailto=args.mailto,
+                )
+            )
+    cache_paths = [
+        cache_dir / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.json"
+        for url in known_urls
+    ]
+    known_cache_hits = sum(path.is_file() for path in cache_paths)
+    maximum_logical_requests = args.bulk_pages + fallback_request_cap
+    uncapped_http_attempts = maximum_logical_requests * (args.retries + 1)
+    return {
+        "schema_version": 1,
+        "artifact_type": "crossref_benchmark_zero_network_plan",
+        "network_performed": False,
+        "window": {
+            "from": window.from_date.isoformat(),
+            "until": window.until_date.isoformat(),
+        },
+        "selection": {
+            "sample_size": args.sample_size,
+            "targeted_strata": sum(value > 0 for value in targets.values()),
+            "target_records": sum(targets.values()),
+            "eligible_journals": len(venues),
+            "ambiguous_issn_count": len(catalog_ambiguous),
+        },
+        "request_bound": {
+            "bulk_logical_requests": args.bulk_pages,
+            "fallback_logical_requests": fallback_request_cap,
+            "fallback_by_stratum": fallback_by_stratum,
+            "maximum_logical_requests": maximum_logical_requests,
+            "maximum_http_attempts_without_budget_cap": uncapped_http_attempts,
+            "configured_http_attempt_cap": args.max_network_requests,
+            "retries_per_logical_request": args.retries,
+            "unknown_cursor_urls_after_first_page": max(0, args.bulk_pages - 1),
+        },
+        "cache": {
+            "path": str(cache_dir.resolve()),
+            "directory_exists": cache_dir.is_dir(),
+            "existing_json_files": (
+                sum(1 for path in cache_dir.glob("*.json") if path.is_file())
+                if cache_dir.is_dir()
+                else 0
+            ),
+            "known_request_url_count": len(known_urls),
+            "known_cache_hit_count": known_cache_hits,
+            "known_cache_coverage": known_cache_hits / len(known_urls),
+            "note": (
+                "Only the first global cursor URL is knowable without reading a "
+                "response; later cursor-page cache keys remain deliberately unknown."
+            ),
+        },
+        "external_cost": {
+            "estimated_charge_usd": 0.0,
+            "basis": (
+                "No paid API key, billing account, Search, LLM, or embedding "
+                "provider is configured by this Crossref-only builder."
+            ),
+        },
+        "output": {
+            "path": str(args.output_dir.resolve()),
+            "already_exists": args.output_dir.exists(),
+        },
+    }
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -918,6 +1080,7 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         request_interval=args.request_interval,
         use_environment_proxy=args.use_environment_proxy,
         refresh_cache=args.refresh_cache,
+        max_network_requests=args.max_network_requests,
     )
     rejection_counts: Counter[str] = Counter()
     request_failures: list[dict[str, Any]] = []
@@ -1129,6 +1292,7 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "not a uniform sample of all papers in the date window"
             ),
             "network_requests": client.network_requests,
+            "network_request_budget": args.max_network_requests,
             "cache_hits": client.cache_hits,
             "permanent_request_failures": request_failures,
             "bulk_scan": {
@@ -1162,6 +1326,7 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "min_abstract_chars": args.min_abstract_chars,
             "seed": args.seed,
             "environment_proxy_used": args.use_environment_proxy,
+            "max_network_requests": args.max_network_requests,
             "mailto": args.mailto,
         },
         "dataset": {
@@ -1250,6 +1415,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--request-interval", type=float, default=0.12)
+    parser.add_argument(
+        "--max-network-requests",
+        type=int,
+        default=1000,
+        help=(
+            "Hard cap on HTTP attempts, including retries; the build fails closed "
+            "before attempt 1001 by default."
+        ),
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Print a zero-network cache/request/cost plan and do not create outputs.",
+    )
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument(
         "--allow-incomplete",
@@ -1284,6 +1463,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Crossref rows values must not exceed the 1000-row limit")
     if args.retries < 0 or args.timeout <= 0 or args.request_interval < 0:
         raise ValueError("retry, timeout, and request interval values are invalid")
+    if args.max_network_requests <= 0:
+        raise ValueError("--max-network-requests must be positive")
     if "@" not in args.mailto:
         raise ValueError("--mailto must be a valid contact email address")
 
@@ -1293,7 +1474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         _validate_args(args)
-        manifest = build_benchmark(args)
+        manifest = plan_benchmark(args) if args.plan_only else build_benchmark(args)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))

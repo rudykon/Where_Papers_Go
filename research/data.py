@@ -54,6 +54,38 @@ class TemporalSplit:
         }
 
 
+BLIND_QUERY_ALLOWED_FIELDS = frozenset(
+    {
+        "abstract",
+        "article_type",
+        "language",
+        "paper_id",
+        "publication_date",
+        "publication_date_precision",
+        "title",
+        "user_constraints",
+    }
+)
+BLIND_QUERY_LABEL_FIELDS = frozenset(
+    {
+        "broad_field",
+        "gold_container_title",
+        "gold_entity_id",
+        "gold_issns",
+        "gold_jcr_category",
+        "gold_jcr_quartile",
+        "gold_journal_id",
+        "gold_journal_name",
+        "journal_name",
+        "label",
+        "primary_field",
+        "relevance",
+        "split",
+        "venue_id",
+    }
+)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -393,6 +425,75 @@ def load_recent_journal_dataset(
         source_rows[query_id] = row
     queries.sort(key=lambda item: (item.publication_date, item.query_id))
     return DatasetBundle(tuple(queries), qrels, source_rows)
+
+
+def load_blind_query_dataset(
+    path: Path,
+    *,
+    query_fields: Sequence[str] = ("title", "abstract"),
+) -> DatasetBundle:
+    """Load a physically label-free query file for pre-commit inference.
+
+    The accepted schema is intentionally closed.  This prevents a newly added
+    metadata column from silently carrying a gold venue, field, quartile, or
+    split cue into a sealed-test prediction process.
+    """
+
+    requested_fields = tuple(str(value).strip() for value in query_fields)
+    if (
+        not requested_fields
+        or any(not value for value in requested_fields)
+        or not set(requested_fields) <= BLIND_QUERY_ALLOWED_FIELDS
+    ):
+        raise ResearchDataError("blind query_fields are empty or outside the safe schema")
+    queries: list[Query] = []
+    source_rows: dict[str, Mapping[str, Any]] = {}
+    for line_number, row in _iter_jsonl(path):
+        forbidden = sorted(set(row) & BLIND_QUERY_LABEL_FIELDS)
+        unknown = sorted(set(row) - BLIND_QUERY_ALLOWED_FIELDS)
+        if forbidden:
+            raise ResearchDataError(
+                f"{path}:{line_number}: blind query contains label fields: {forbidden}"
+            )
+        if unknown:
+            raise ResearchDataError(
+                f"{path}:{line_number}: blind query contains unapproved fields: {unknown}"
+            )
+        query_id = str(row.get("paper_id") or "").strip()
+        if not query_id:
+            raise ResearchDataError(f"{path}:{line_number}: missing paper_id")
+        if query_id in source_rows:
+            raise ResearchDataError(
+                f"{path}:{line_number}: duplicate query ID {query_id!r}"
+            )
+        publication_date = str(row.get("publication_date") or "").strip()[:10]
+        parse_iso_date(publication_date, field_name="publication date")
+        title = str(row.get("title") or "").strip()
+        abstract = str(row.get("abstract") or "").strip()
+        parts = [str(row.get(field) or "").strip() for field in requested_fields]
+        text = "\n".join(part for part in parts if part)
+        if not text:
+            raise ResearchDataError(f"{path}:{line_number}: empty query text")
+        constraints = row.get("user_constraints")
+        if constraints is not None and not isinstance(constraints, Mapping):
+            raise ResearchDataError(
+                f"{path}:{line_number}: user_constraints must be an object"
+            )
+        queries.append(
+            Query(
+                query_id=query_id,
+                text=text,
+                publication_date=publication_date,
+                title=title,
+                abstract=abstract,
+                doi="",
+                gold_venue_name="",
+                metadata={"language": row.get("language") or "unknown"},
+            )
+        )
+        source_rows[query_id] = row
+    queries.sort(key=lambda item: (item.publication_date, item.query_id))
+    return DatasetBundle(tuple(queries), {}, source_rows)
 
 
 def temporal_split(
