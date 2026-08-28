@@ -86,12 +86,18 @@ Suggested next-session prompt:
 
 The current product was redeployed from `agent/m3-strong-baselines` after
 deployment reliability fix `cd09f6e`.  The user-level transient systemd unit
-is `where-papers-go.service` and serves <http://127.0.0.1:8001/>.  Port `8000`
-was already owned by an unrelated Docker container, which was not stopped or
-modified.  The unit has `Restart=on-failure`, but because no persistent
-systemd/Docker convention exists in this repository, this transient unit does
-not survive a host reboot.  After a reboot, rerun the documented web command or
-recreate the unit explicitly.
+is `where-papers-go.service`, listens on `0.0.0.0:8001`, and serves
+<http://172.22.13.155:8001/> on the current `enp4s0` address (loopback remains
+available at <http://127.0.0.1:8001/>).  The initial loopback-only deployment
+was corrected after LAN access failed; both addresses now return a ready health
+response and the LAN root returns HTTP 200.  Port `8000` was already owned by
+an unrelated Docker container, which was not stopped or modified.  The unit
+has `Restart=on-failure`, but because no persistent systemd/Docker convention
+exists in this repository, this transient unit does not survive a host reboot.
+After a reboot, rerun the documented web command with `--host 0.0.0.0 --port
+8001` or recreate the unit explicitly.  UFW's public configuration says
+`ENABLED=no`; reading privileged live rules would require an administrator
+password.
 
 The first prewarm failed closed because the production vector file was stale
 for the current graph.  The vector CLI also exposed an obsolete top-level
