@@ -891,7 +891,11 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
                 "statistics": {
                     "bootstrap_iterations": 100,
                     "permutation_iterations": 100,
-                    "comparisons": [{"left": "rrf", "right": "bm25", "metric": "hit@1"}],
+                    "comparison_family": {
+                        "type": "all_methods_unordered_pairs",
+                        "method_order": ["bm25", "tfidf", "rrf", "learned"],
+                        "metric": "hit@1",
+                    },
                 },
             }
             config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -931,6 +935,16 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             self.assertEqual(report["identity_safe_test"]["full_query_count"], 1)
             self.assertEqual(report["methods"]["bm25"]["identity_safe"]["query_count"], 1)
             self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(set(report["method_execution"]), set(report["methods"]))
+            self.assertEqual(
+                report["method_execution"]["bm25"]["external_api_calls"], 0
+            )
+            self.assertTrue(report["method_execution"]["learned"]["search_free"])
+            self.assertEqual(len(report["paired_comparisons"]), 6)
+            self.assertEqual(
+                report["multiple_comparison_policy"]["frozen_method_order"],
+                ["bm25", "tfidf", "rrf", "learned"],
+            )
             self.assertEqual(report["frozen_run_contract"]["query_count"], 3)
             self.assertEqual(
                 report["frozen_run_contract"]["candidate_universe_count"], 2
@@ -959,6 +973,7 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             )
             self.assertIn("dependencies", manifest["runtime"])
             self.assertIn("hardware", manifest["runtime"])
+            self.assertIn("execution", manifest["methods"]["bm25"])
 
 
 class CachedCorpusBuilderTests(unittest.TestCase):
