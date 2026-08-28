@@ -236,7 +236,11 @@ def _resolve_cli(value: str | Path) -> Path:
     return path
 
 
-def _run_command(command: Sequence[str]) -> dict[str, Any]:
+def _run_command(
+    command: Sequence[str], *, timeout_seconds: float
+) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        raise ResearchDataError("external command timeout must be positive")
     try:
         completed = subprocess.run(
             list(command),
@@ -245,7 +249,24 @@ def _run_command(command: Sequence[str]) -> dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout_seconds,
         )
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        def decoded(value: str | bytes | None) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        returncode = 124
+        stdout = decoded(exc.stdout)
+        stderr = decoded(exc.stderr) + (
+            f"\ncommand timed out after {timeout_seconds:.3f} seconds"
+        )
+        timed_out = True
     except OSError as exc:
         raise ResearchDataError(f"cannot execute Hugging Face CLI: {command[0]}") from exc
     def redact(value: str) -> str:
@@ -258,9 +279,11 @@ def _run_command(command: Sequence[str]) -> dict[str, Any]:
 
     return {
         "command": [str(value) for value in command],
-        "returncode": completed.returncode,
-        "stdout": redact(completed.stdout[-200_000:]),
-        "stderr": redact(completed.stderr[-200_000:]),
+        "timeout_seconds": timeout_seconds,
+        "timed_out": timed_out,
+        "returncode": returncode,
+        "stdout": redact(stdout[-200_000:]),
+        "stderr": redact(stderr[-200_000:]),
     }
 
 
@@ -429,6 +452,8 @@ def materialize_model_assets(
     authorization_reference: str = "",
     selected_assets: Sequence[str] = (),
     max_workers: int = 4,
+    dry_run_timeout_seconds: float = 120.0,
+    download_timeout_seconds: float = 21_600.0,
     disk_safety_multiplier: float = 1.25,
     disk_reserve_bytes: int = 1_073_741_824,
     generation_command: Sequence[str] = (),
@@ -437,6 +462,8 @@ def materialize_model_assets(
 
     if max_workers < 1 or max_workers > 32:
         raise ResearchDataError("model acquisition max_workers must be in [1, 32]")
+    if dry_run_timeout_seconds <= 0 or download_timeout_seconds <= 0:
+        raise ResearchDataError("model acquisition timeouts must be positive")
     if disk_safety_multiplier < 1.0 or disk_reserve_bytes < 0:
         raise ResearchDataError("model acquisition disk safety settings are invalid")
     authorization = " ".join(authorization_reference.split())
@@ -452,7 +479,7 @@ def materialize_model_assets(
             raise ResearchDataError(f"unknown model assets requested: {unknown}")
         specs = tuple(spec for spec in specs if spec.name in requested)
     cli = _resolve_cli(hf_cli)
-    version = _run_command((str(cli), "--version"))
+    version = _run_command((str(cli), "--version"), timeout_seconds=30.0)
     if version["returncode"] != 0:
         raise ResearchDataError("cannot determine Hugging Face CLI version")
     root = output_root.resolve()
@@ -499,7 +526,9 @@ def materialize_model_assets(
                 continue
             command = _base_download_command(cli, spec, max_workers=max_workers)
             command.extend(("--dry-run",))
-            dry_run = _run_command(command)
+            dry_run = _run_command(
+                command, timeout_seconds=dry_run_timeout_seconds
+            )
             summary = _dry_run_summary(dry_run, spec.estimated_download_bytes)
             planned_files = {
                 str(item["path"]) for item in summary["files"]
@@ -580,7 +609,9 @@ def materialize_model_assets(
             record["shadow_path"] = str(building)
             command = _base_download_command(cli, spec, max_workers=max_workers)
             command.extend(("--local-dir", str(building)))
-            download = _run_command(command)
+            download = _run_command(
+                command, timeout_seconds=download_timeout_seconds
+            )
             record["download"] = download
             if download["returncode"] != 0:
                 record["status"] = "download_failed_shadow_preserved"
