@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from where_paper_go import web_app
 
@@ -42,14 +42,62 @@ class WebAppTests(TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch.object(web_app, "DATA_DIR", data_dir):
+            with (
+                patch.object(web_app, "DATA_DIR", data_dir),
+                patch.object(
+                    web_app,
+                    "_runtime_status",
+                    return_value={
+                        "persistent_worker": True,
+                        "process_ready": True,
+                        "bindings_current": True,
+                        "ready": True,
+                        "preload_ms": 1,
+                    },
+                ),
+            ):
                 payload = web_app._health_payload()
 
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["lightrag"]["mode"], "mix")
         self.assertEqual(payload["lightrag"]["embedding_model"], "bge-m3")
         self.assertEqual(payload["lightrag"]["dimensions"], 1024)
+        self.assertTrue(payload["checks"]["bindings_current"])
+        self.assertNotIn(str(data_dir), json.dumps(payload, ensure_ascii=False))
         self.assertNotIn("api_key", json.dumps(payload, ensure_ascii=False))
+
+    def test_health_fails_closed_when_worker_dies_or_bindings_change(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "venue_graph.json.gz").touch()
+            (data_dir / "venue_graph_vectors.json.gz").touch()
+            lightrag_dir = data_dir / "lightrag_storage"
+            lightrag_dir.mkdir()
+            (lightrag_dir / "venue_import_manifest.json").write_text(
+                json.dumps({"query_mode": "mix", "counts": {}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(web_app, "DATA_DIR", data_dir),
+                patch.object(web_app, "_config_status", return_value={"ready": True}),
+                patch.object(
+                    web_app,
+                    "_runtime_status",
+                    return_value={
+                        "persistent_worker": True,
+                        "process_ready": False,
+                        "bindings_current": False,
+                        "ready": False,
+                        "preload_ms": 1,
+                    },
+                ),
+            ):
+                payload = web_app._health_payload()
+
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertFalse(payload["checks"]["worker"])
+        self.assertFalse(payload["checks"]["bindings_current"])
 
     def test_config_status_recognizes_tavily_key_pool_without_exposing_keys(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -119,6 +167,99 @@ class WebAppTests(TestCase):
         self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
         self.assertTrue(payload["retryable"])
         self.assertIn("Search API", payload["detail"])
+
+    def test_worker_crash_is_retryable_and_redacts_internal_credentials(self) -> None:
+        with (
+            patch.object(web_app, "_load_result_cache", return_value=None),
+            patch.object(
+                web_app._SEARCH_RUNTIME,
+                "run",
+                side_effect=RuntimeError(
+                    "Authorization: Bearer super-secret-worker-token"
+                ),
+            ),
+            patch.object(
+                web_app,
+                "configured_secret_values",
+                return_value=("super-secret-worker-token",),
+            ),
+        ):
+            status, payload = web_app._run_search(
+                {"query": "wireless systems", "targets": ["CCF-A"]}
+            )
+
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertTrue(payload["retryable"])
+        self.assertNotIn("super-secret-worker-token", serialized)
+        self.assertIn("[REDACTED]", serialized)
+
+    def test_stale_dependency_stamp_makes_worker_unready(self) -> None:
+        manager = web_app.RetrievalWorkerManager()
+
+        class AliveProcess:
+            def poll(self):
+                return None
+
+        manager._process = AliveProcess()
+        manager._dependency_stamp = [("graph", 1, 1)]
+        with patch.object(
+            web_app,
+            "_result_dependency_stamp",
+            return_value=[("graph", 2, 1)],
+        ):
+            self.assertTrue(manager.process_ready)
+            self.assertFalse(manager.bindings_current)
+            self.assertFalse(manager.ready)
+        manager._process = None
+        manager.close()
+
+    def test_dead_worker_is_reaped_and_restarted_from_fresh_bindings(self) -> None:
+        manager = web_app.RetrievalWorkerManager()
+        first = Mock()
+        first.poll.return_value = None
+        first.stdin = Mock()
+        first.wait.return_value = 0
+        second = Mock()
+        second.poll.return_value = None
+        second.stdin = Mock()
+        second.wait.return_value = 0
+        ready_line = json.dumps({"ready": True, "preload_ms": 7})
+        stamp = [("graph", 1, 1)]
+        with (
+            patch.object(web_app, "_result_dependency_stamp", return_value=stamp),
+            patch.object(web_app.subprocess, "Popen", side_effect=[first, second]) as popen,
+            patch.object(manager, "_readline", side_effect=[ready_line, ready_line]),
+        ):
+            manager.start()
+            self.assertTrue(manager.ready)
+            first.poll.return_value = 1
+            manager.start()
+            self.assertTrue(manager.ready)
+            self.assertEqual(popen.call_count, 2)
+            first.wait.assert_called()
+        manager.close()
+
+    def test_invalid_worker_protocol_is_discarded_without_partial_result(self) -> None:
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock()
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        with (
+            patch.object(
+                web_app,
+                "_result_dependency_stamp",
+                return_value=[("graph", 1, 1)],
+            ),
+            patch.object(web_app.subprocess, "Popen", return_value=process),
+            patch.object(manager, "_readline", return_value="not-json\n"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "启动协议无效"):
+                manager.start()
+        self.assertIsNone(manager._process)
+        process.terminate.assert_called_once()
+        manager.close()
 
     def test_stream_relays_progress_before_final_payload(self) -> None:
         completed = __import__("subprocess").CompletedProcess(

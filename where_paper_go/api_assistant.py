@@ -36,10 +36,10 @@ from .enrichment import (
 )
 
 
-from .paths import PROJECT_ROOT
+from .paths import DATA_DIR, PROJECT_ROOT
 
 
-DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / ".query_api_cache"
+DEFAULT_CACHE_DIR = DATA_DIR / ".query_api_cache"
 
 
 class ApiAssistantError(RuntimeError):
