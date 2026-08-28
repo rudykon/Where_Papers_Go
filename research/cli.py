@@ -54,6 +54,7 @@ from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provide
 from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_strata
 from .reranker_runs import LocalBGECrossEncoderProvider, build_cross_encoder_run
 from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
+from .scope_rank_runs import build_scope_rank_suite
 from .types import Run
 
 
@@ -1061,6 +1062,12 @@ def _parser() -> argparse.ArgumentParser:
     clean.add_argument("--pcl-retries", type=int, default=2)
     clean.add_argument("--pcl-backoff-base", type=float, default=2.0)
     clean.add_argument("--pcl-backoff-max", type=float, default=30.0)
+
+    scope_rank = subparsers.add_parser(
+        "build-scope-rank-suite",
+        help="freeze train-only SCOPE-Rank and every named offline ablation",
+    )
+    scope_rank.add_argument("--config", type=Path, required=True)
     return parser
 
 
@@ -1281,6 +1288,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-scope-rank-suite":
+            manifest = build_scope_rank_suite(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         elif args.command == "build-property-graph-run":
             bundle = load_recent_journal_dataset(
                 args.dataset,
