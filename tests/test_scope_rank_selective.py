@@ -23,7 +23,7 @@ CONFIG_PATH = (
     PROJECT_ROOT
     / "research"
     / "configs"
-    / "scope_rank_selective_evaluation_v1.json"
+    / "scope_rank_selective_evaluation_v2.json"
 )
 
 
@@ -151,9 +151,34 @@ class ScopeRankSelectiveIntegrationTests(unittest.TestCase):
                 "".join(json.dumps(row) + "\n" for row in decisions),
                 encoding="utf-8",
             )
+            full_run_path = root / "full.jsonl"
+            constraint_run_path = root / "constraint.jsonl"
+            full_run_path.write_text(
+                json.dumps(
+                    {
+                        "query_id": "q0",
+                        "rank": 1,
+                        "score": 0.9,
+                        "venue_id": "v1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            constraint_run_path.write_text(
+                json.dumps(
+                    {
+                        "query_id": "q0",
+                        "rank": 1,
+                        "score": 0.9000000001,
+                        "venue_id": "v1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             leakage_path = root / "leakage.json"
             _write_json(leakage_path, {"passed": True, "findings": []})
-            run_sha = "a" * 64
             suite_path = root / "suite.json"
             suite = {
                 "artifact_type": "scope_rank_suite",
@@ -171,7 +196,20 @@ class ScopeRankSelectiveIntegrationTests(unittest.TestCase):
                 "leakage_audit": {"sha256": sha256_file(leakage_path)},
                 "variants": {
                     variant: {
-                        "run": {"sha256": run_sha},
+                        "run": {
+                            "path": str(
+                                constraint_run_path
+                                if variant
+                                == "scope_rank_ablate_constraint_features"
+                                else full_run_path
+                            ),
+                            "sha256": sha256_file(
+                                constraint_run_path
+                                if variant
+                                == "scope_rank_ablate_constraint_features"
+                                else full_run_path
+                            ),
+                        },
                         "calibration": {
                             "enabled": variant != "scope_rank_ablate_calibration"
                         },
@@ -225,7 +263,17 @@ class ScopeRankSelectiveIntegrationTests(unittest.TestCase):
             self.assertEqual(no_calibration["selective_precision"], 0.5)
             self.assertTrue(
                 metrics["frozen_ablation_checks"][
-                    "calibration_ablation_preserves_ranking"
+                    "calibration_ablation_exact_score_run_equal"
+                ]
+            )
+            self.assertFalse(
+                metrics["frozen_ablation_checks"][
+                    "constraint_feature_ablation_exact_score_run_equal"
+                ]
+            )
+            self.assertTrue(
+                metrics["frozen_ablation_checks"][
+                    "constraint_feature_ablation_rank_order_equal"
                 ]
             )
 
