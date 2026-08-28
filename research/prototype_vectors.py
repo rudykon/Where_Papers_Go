@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
@@ -208,6 +209,9 @@ def build_prototype_vector_run(
     reference_manifest_path: Path | None = None,
     embedding_progress: Callable[[int, int], None] | None = None,
     cache_only: bool = False,
+    external_authorization_reference: str = "",
+    max_new_embeddings: int | None = None,
+    estimated_external_cost_usd: float | None = None,
     generation_command: Sequence[str],
 ) -> dict[str, Any]:
     """Embed profiles/queries, max-pool prototypes, and freeze a reusable run."""
@@ -249,13 +253,14 @@ def build_prototype_vector_run(
     all_texts.update(query_texts)
     embedding_started = perf_counter()
     with FileEmbeddingCache(cache_path) as cache:
+        preliminary_rows = cache.get_many(provider.fingerprint, list(all_texts))
+        preliminary_missing_count = len(all_texts) - len(preliminary_rows)
         if cache_only:
-            cached_rows = cache.get_many(provider.fingerprint, list(all_texts))
-            missing_count = len(all_texts) - len(cached_rows)
-            if missing_count:
+            cached_rows = preliminary_rows
+            if preliminary_missing_count:
                 raise ResearchDataError(
                     "cache-only vector run refuses external embedding calls: "
-                    f"{missing_count} prepared texts are missing"
+                    f"{preliminary_missing_count} prepared texts are missing"
                 )
             cached_dimensions = {
                 dimension for dimension, _vector in cached_rows.values()
@@ -269,6 +274,25 @@ def build_prototype_vector_run(
             embedded_count = 0
             cached_count = len(cached_rows)
         else:
+            if preliminary_missing_count and not external_authorization_reference.strip():
+                raise ResearchDataError(
+                    "external embedding calls require an explicit authorization reference"
+                )
+            if (
+                max_new_embeddings is not None
+                and preliminary_missing_count > max_new_embeddings
+            ):
+                raise ResearchDataError(
+                    "missing embedding count exceeds the authorized cap: "
+                    f"{preliminary_missing_count}/{max_new_embeddings}"
+                )
+            if preliminary_missing_count and (
+                estimated_external_cost_usd is None
+                or estimated_external_cost_usd < 0
+            ):
+                raise ResearchDataError(
+                    "external embedding calls require a non-negative cost estimate"
+                )
             dimensions, embedded_count, cached_count = ensure_cached_embeddings(
                 provider, all_texts, cache, progress=embedding_progress
             )
@@ -352,8 +376,37 @@ def build_prototype_vector_run(
                 "embedding_total_ms": embedding_total_ms,
                 "scoring_total_ms": scoring_total_ms,
                 "mean_scoring_ms_per_query": scoring_total_ms / len(bundle.queries),
-                "external_api_calls": 0 if cache_only else None,
-                "estimated_external_cost_usd": 0.0 if cache_only else None,
+                "external_api_calls": (
+                    0
+                    if cache_only
+                    else math.ceil(embedded_count / provider.batch_size)
+                ),
+                "external_http_attempt_upper_bound": (
+                    0
+                    if cache_only
+                    else math.ceil(embedded_count / provider.batch_size)
+                    * (
+                        int(
+                            getattr(
+                                getattr(provider, "config", None),
+                                "max_retries",
+                                0,
+                            )
+                        )
+                        + 1
+                    )
+                ),
+                "external_authorization_reference": (
+                    None if cache_only else external_authorization_reference
+                ),
+                "authorized_new_embedding_cap": (
+                    0 if cache_only else max_new_embeddings
+                ),
+                "estimated_external_cost_usd": (
+                    0.0
+                    if cache_only or not embedded_count
+                    else estimated_external_cost_usd
+                ),
                 "failed_query_count": 0,
                 "offline_only": cache_only,
                 "search_free": True,
@@ -366,6 +419,79 @@ def build_prototype_vector_run(
         },
     )
     return manifest
+
+
+def plan_prototype_vector_cache(
+    *,
+    provider: EmbeddingProvider,
+    bundle: DatasetBundle,
+    profiles_path: Path,
+    cache_path: Path,
+    estimated_external_cost_usd: float,
+) -> dict[str, Any]:
+    """Inspect exact cache coverage without embedding or returning input text."""
+
+    if estimated_external_cost_usd < 0:
+        raise ResearchDataError("embedding cost estimate must be non-negative")
+    units, venue_ids = load_prototype_units(profiles_path)
+    _prototype_hashes, prototype_texts = _prepared_hashes(
+        provider, [unit.text for unit in units]
+    )
+    _query_hashes, query_texts = _prepared_hashes(
+        provider, [query.text for query in bundle.queries]
+    )
+    combined = dict(prototype_texts)
+    combined.update(query_texts)
+    with FileEmbeddingCache(cache_path) as cache:
+        cached = cache.get_many(provider.fingerprint, list(combined))
+    prototype_unique = set(prototype_texts)
+    query_unique = set(query_texts)
+    missing = set(combined) - set(cached)
+    batches = math.ceil(len(missing) / provider.batch_size) if missing else 0
+    max_retries = int(
+        getattr(getattr(provider, "config", None), "max_retries", 0)
+    )
+    return {
+        "schema_version": 1,
+        "artifact_type": "prototype_vector_cache_plan",
+        "network_performed": False,
+        "provider": {
+            "model": provider.model,
+            "fingerprint": provider.fingerprint,
+            "batch_size": provider.batch_size,
+            "max_retries": max_retries,
+        },
+        "coverage": {
+            "candidate_count": len(venue_ids),
+            "prototype_count": len(units),
+            "query_count": len(bundle.queries),
+            "unique_prepared_text_count": len(combined),
+            "cached_unique_text_count": len(cached),
+            "missing_unique_text_count": len(missing),
+            "missing_prototype_text_count": len(missing & prototype_unique),
+            "missing_query_text_count": len(missing & query_unique),
+            "cache_coverage": len(cached) / len(combined),
+        },
+        "request_bound": {
+            "logical_embedding_batches": batches,
+            "http_attempt_upper_bound": batches * (max_retries + 1),
+        },
+        "payload": {
+            "missing_prepared_character_count": sum(
+                len(combined[key]) for key in missing
+            ),
+            "text_values_returned": False,
+        },
+        "cost": {
+            "estimated_external_cost_usd": estimated_external_cost_usd,
+            "pricing_source": "caller-supplied bounded estimate",
+        },
+        "cache": {
+            "path": str(cache_path.resolve()),
+            "sha256": sha256_file(cache_path) if cache_path.is_file() else None,
+            "bytes": cache_path.stat().st_size if cache_path.is_file() else 0,
+        },
+    }
 
 
 def pcl_embedding_provider(api_config: Path) -> OpenAICompatibleEmbeddingProvider:

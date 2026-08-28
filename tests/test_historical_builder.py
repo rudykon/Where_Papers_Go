@@ -42,6 +42,7 @@ from research.historical_builder import (
 from research.pcl_retry import PCLRetryOutcome, PCLRetryQueue
 from research.prototype_vectors import (
     build_prototype_vector_run,
+    plan_prototype_vector_cache,
     validate_reference_binding,
 )
 from research.types import Query, VenueDocument
@@ -1914,12 +1915,38 @@ class PrototypeRetrievalTests(unittest.TestCase):
                 top_k=2,
                 query_batch_size=1,
                 prototype_chunk_size=2,
+                external_authorization_reference="unit-test synthetic texts",
+                max_new_embeddings=3,
+                estimated_external_cost_usd=0.0,
                 generation_command=("python", "-m", "research", "test-vector"),
             )
             first = json.loads(output.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(first["venue_id"], "v1")
             self.assertEqual(manifest["prototype_count"], 3)
             self.assertEqual(manifest["venue_count"], 2)
+            plan = plan_prototype_vector_cache(
+                provider=FakeEmbeddingProvider(),
+                bundle=bundle,
+                profiles_path=profiles,
+                cache_path=root / "vectors.json.gz",
+                estimated_external_cost_usd=0.0,
+            )
+            self.assertFalse(plan["network_performed"])
+            self.assertEqual(plan["coverage"]["missing_unique_text_count"], 0)
+            self.assertEqual(plan["request_bound"]["logical_embedding_batches"], 0)
+            self.assertFalse(plan["payload"]["text_values_returned"])
+            with self.assertRaisesRegex(ResearchDataError, "authorization reference"):
+                build_prototype_vector_run(
+                    provider=FakeEmbeddingProvider(),
+                    bundle=bundle,
+                    dataset_path=dataset,
+                    profiles_path=profiles,
+                    cache_path=root / "unauthorized-vectors.json.gz",
+                    output_path=root / "unauthorized-run.jsonl",
+                    top_k=2,
+                    generation_command=("python", "test-vector"),
+                )
+            self.assertFalse((root / "unauthorized-run.jsonl").exists())
 
             class CacheOnlyProvider(FakeEmbeddingProvider):
                 def embed(self, texts):
