@@ -179,10 +179,11 @@ python -m research build-prototype-vector-run \
   --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
   --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
   --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_embeddings.json.gz \
-  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl
+  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max_cache_only_v3.jsonl \
+  --cache-only
 
 PYTHONDONTWRITEBYTECODE=1 python -m research evaluate \
-  --config research/configs/m3_bge_m3_prototype_max.json
+  --config research/configs/m3_all_strong_baselines_unified_v2.json
 ```
 
 正式 `evaluate` 不访问网络，只导入上述冻结 run。当前 bge-m3
@@ -221,14 +222,16 @@ python -m research build-lightrag-mix-run \
   --top-k 100 --rrf-k 60 --local-weight 1.0 --global-weight 1.0
 ```
 
-统一中期评测配置是
-`research/configs/m3_graph_lightrag_bge_unified.json`。当前完整 June-test
-分母为 2,161；LightRAG mix 相对 bge-m3 的 nDCG@10 差值为正且经 Holm
-校正显著，property graph 与通用 BM25+bge RRF 的差值在 Holm 校正后均不显著，
-TF-IDF 和 BM25 相对 bge-m3 为负结果。这里只是已暴露 development set 结果，
-不能作为 sealed test 或论文最终有效性结论。
+完整强基线冻结配置是
+`research/configs/m3_all_strong_baselines_unified_v2.json`。它统一导入 BM25、
+TF-IDF、bge-m3、SPECTER2、SciNCL、property graph、LightRAG mix、cross-encoder
+和三个 RRF 对照，并对 11 个方法的全部 55 个无序方法对作统一校正。完整
+June-test 分母为 2,161；结果、哈希、延迟、失败统计和所有显著/非显著/负结果见
+[M3 strong-baseline freeze](../docs/m3-strong-baselines.md)。这里只是已暴露
+development set 结果，不能作为 sealed test 或论文最终有效性结论。旧配置和旧
+artifact 继续保留，不作为最新全方法冻结。
 
-SPECTER2、SciNCL 和 bge-reranker-v2-m3 必须先从精确 commit 获取到忽略目录。
+SPECTER2、SciNCL 和 bge-reranker-v2-m3 从精确 commit 获取到忽略目录。
 仓库配置 `research/configs/m3_official_model_assets.json` 固定 repo、40 位
 revision、最小推理文件集合及约 3.188 GB 的规划估计。以下命令始终先对全部
 缺失资产执行 HF CLI dry-run，记录缓存覆盖、磁盘、已知 API 成本和配额边界；
@@ -277,7 +280,8 @@ forward 前显式调用 `set_active_adapters` 并验证活动组合含
 `specter2_proximity`；仅成功加载权重不视为通过。
 
 ```bash
-python -m research build-scientific-encoder-run \
+benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  -m research build-scientific-encoder-run \
   --protocol scincl \
   --model-dir benchmark_artifacts/m3_model_assets_20260828/scincl__ebc5348d184b \
   --model-repo malteos/scincl \
@@ -285,10 +289,11 @@ python -m research build-scientific-encoder-run \
   --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
   --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
   --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
-  --cache benchmark_artifacts/m3_strong_baselines_20260827/scincl_embeddings.sqlite3 \
-  --output benchmark_artifacts/m3_strong_baselines_20260827/scincl_prototype_max.jsonl
+  --cache benchmark_artifacts/m3_strong_baselines_20260827/scincl_embeddings_v2.sqlite3 \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/scincl_prototype_max_v2.jsonl
 
-python -m research build-cross-encoder-run \
+benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  -m research build-cross-encoder-run \
   --model-dir benchmark_artifacts/m3_model_assets_20260828/bge_reranker_v2_m3__953dc6f6f85a \
   --model-repo BAAI/bge-reranker-v2-m3 \
   --model-revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e \
@@ -296,27 +301,32 @@ python -m research build-cross-encoder-run \
   --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
   --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
   --first-stage-run benchmark_artifacts/m3_strong_baselines_20260827/lightrag_mix_edge_rrf_v1.jsonl \
-  --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_pairs.sqlite3 \
-  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_prototype_max.jsonl
+  --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_pairs_b128.sqlite3 \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_lightrag_top100_b128.jsonl \
+  --batch-size 128
 ```
 
 SPECTER2 使用相同命令并增加精确 proximity adapter 目录、repo 和 revision；
-其运行环境还必须固定并记录 `adapters` 包。模型尚未实际下载和运行时，只能称
-“构建器、配置与获取审计完成”，不能填入指标或宣称该基线完成。
+其运行环境还必须固定并记录 `adapters` 包。2026-08-28 的四组授权资产已全部
+原子发布并校验，SPECTER2、SciNCL 和 cross-encoder 正式 run 均完成且以零
+Search/API 调用导入统一评测。不得把这项状态外推为 sealed-test 结论。
 
 不下载模型也可验证真实 Transformers/safetensors 本地加载、CLS pooling、
 归一化和 sequence-classification logits 路径。普通无 Torch 测试环境会明确
 skip；模型运行环境必须通过：
 
 ```bash
-/home/wangrj/.cache/adodas_venv/bin/python -m unittest \
+benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest \
   tests.test_local_model_runtime -v
 ```
 
-2026-08-28 宿主验收使用 Python 3.12.3、Torch 2.11.0、Transformers 5.7.0、
-huggingface-hub 1.12.2 和 safetensors 0.7.0，结果为 2/2 通过；普通 Python
-环境因未安装 Torch 明确跳过 2 项。该 smoke 只证明真实本地加载和推理接口可用，
-不替代官方模型权重、SPECTER2 adapter 或全量 score run 验收。
+2026-08-28 正式隔离运行时使用 Python 3.12.3、Torch 2.11.0、
+`adapters==1.3.0`、Transformers 4.57.6、huggingface-hub 0.36.2 和
+safetensors 0.7.0，真实模型测试 6/6 通过；SPECTER2 活动 adapter 还通过
+启用/禁用输出差异检查。该 overlay 通过 `.pth` 读取既有 Torch 环境，因此
+`pip check` 会看到与本实验无关的父环境 vLLM/Transformers 版本冲突；正式
+provider 不导入 vLLM，manifest 仍完整记录重复可见的 distributions，不能把
+环境描述为全局依赖无冲突。
 
 ## 泄漏规则
 
