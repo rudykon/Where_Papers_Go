@@ -69,12 +69,16 @@ Stop if any value differs. Diagnose the binding; do not rebuild in place.
 
 ## Prepare and dry-run the user service
 
-Create the non-secret environment file and replace its placeholder paths with
-the absolute production paths. The installed file must remain mode `0600`:
+Create the non-secret environment file with explicit production paths. The
+renderer is a dry-run until `--apply`, and the installed file is mode `0600`:
 
 ```bash
-install -d -m 0700 ~/.config/where-papers-go
-install -m 0600 deploy/env/where-papers-go.env.example ~/.config/where-papers-go/runtime.env
+python -m scripts.manage_deployment render-env \
+  --host 0.0.0.0 \
+  --output ~/.config/where-papers-go/runtime.env
+python -m scripts.manage_deployment render-env \
+  --host 0.0.0.0 \
+  --output ~/.config/where-papers-go/runtime.env --apply
 ```
 
 Keep `WPG_HOST=0.0.0.0` only while preserving the temporary trusted-LAN
