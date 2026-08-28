@@ -24,6 +24,14 @@ class WebAppTests(TestCase):
         self.assertEqual(favicon_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(brand_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
+    def test_frontend_discards_preliminary_results_after_terminal_failure(self) -> None:
+        javascript = (web_app.WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('state.payload = null;', javascript)
+        self.assertIn('state.resultStatus = "error";', javascript)
+        self.assertNotIn("partial_error", javascript)
+        self.assertNotIn("preliminary_failed", javascript)
+
     def test_health_reports_built_runtime_without_secrets(self) -> None:
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
@@ -168,6 +176,22 @@ class WebAppTests(TestCase):
         self.assertTrue(payload["retryable"])
         self.assertIn("Search API", payload["detail"])
 
+    def test_worker_timeout_returns_no_payload_and_does_not_cache(self) -> None:
+        timeout = __import__("subprocess").TimeoutExpired([], 900)
+        with (
+            patch.object(web_app, "_load_result_cache", return_value=None),
+            patch.object(web_app, "_store_result_cache") as store,
+            patch.object(web_app._SEARCH_RUNTIME, "run", side_effect=timeout),
+        ):
+            status, payload = web_app._run_search(
+                {"query": "wireless systems", "targets": ["CCF-A"]}
+            )
+
+        self.assertEqual(status, HTTPStatus.GATEWAY_TIMEOUT)
+        self.assertEqual(payload["error"], "检索超时")
+        self.assertNotIn("results", payload)
+        store.assert_not_called()
+
     def test_worker_crash_is_retryable_and_redacts_internal_credentials(self) -> None:
         with (
             patch.object(web_app, "_load_result_cache", return_value=None),
@@ -261,6 +285,32 @@ class WebAppTests(TestCase):
         process.terminate.assert_called_once()
         manager.close()
 
+    def test_timed_out_worker_is_disposed_before_next_request(self) -> None:
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock()
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        manager._process = process
+        command = [
+            web_app.sys.executable,
+            "-m",
+            "where_paper_go.recommender",
+            "--query",
+            "wireless systems",
+        ]
+        timeout = __import__("subprocess").TimeoutExpired(command, 1)
+        with (
+            patch.object(manager, "start"),
+            patch.object(manager, "_readline", side_effect=timeout),
+            self.assertRaises(__import__("subprocess").TimeoutExpired),
+        ):
+            manager._round_trip(command, 1)
+
+        self.assertIsNone(manager._process)
+        process.terminate.assert_called_once()
+        manager.close()
+
     def test_stream_relays_progress_before_final_payload(self) -> None:
         completed = __import__("subprocess").CompletedProcess(
             args=[],
@@ -299,6 +349,44 @@ class WebAppTests(TestCase):
             ["accepted", "progress", "results", "complete"],
         )
         self.assertEqual(events[-1]["payload"]["results"][0]["name"], "MobiCom")
+
+    def test_stream_failure_has_no_complete_event_or_cached_partial_result(self) -> None:
+        failed = __import__("subprocess").CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout="",
+            stderr="Search API 未提供可用网页证据",
+        )
+
+        def fake_stream(_command, on_event, timeout=900):
+            self.assertEqual(timeout, 900)
+            on_event(
+                {
+                    "type": "results",
+                    "phase": "preliminary",
+                    "payload": {"results": [{"name": "Local-only candidate"}]},
+                }
+            )
+            return failed
+
+        events = []
+        with (
+            patch.object(web_app, "_load_result_cache", return_value=None),
+            patch.object(web_app, "_store_result_cache") as store,
+            patch.object(web_app._SEARCH_RUNTIME, "stream", side_effect=fake_stream),
+        ):
+            web_app._run_search_stream(
+                {"query": "wireless systems", "targets": ["CCF-A"]},
+                events.append,
+            )
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["accepted", "results", "error"],
+        )
+        self.assertEqual(events[-1]["status"], HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertNotIn("complete", {event["type"] for event in events})
+        store.assert_not_called()
 
     def test_complete_result_cache_hits_and_invalidates_with_dependencies(self) -> None:
         completed = __import__("subprocess").CompletedProcess(
