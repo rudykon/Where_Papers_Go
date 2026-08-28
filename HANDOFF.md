@@ -82,6 +82,64 @@ Suggested next-session prompt:
 > then ask before beginning the offline property-graph/LightRAG builders. Do not
 > launch live Search, create a sealed test, or rebuild the clean PCL corpus.
 
+### Deployment checkpoint (2026-08-28)
+
+The current product was redeployed from `agent/m3-strong-baselines` after
+deployment reliability fix `cd09f6e`.  The user-level transient systemd unit
+is `where-papers-go.service` and serves <http://127.0.0.1:8001/>.  Port `8000`
+was already owned by an unrelated Docker container, which was not stopped or
+modified.  The unit has `Restart=on-failure`, but because no persistent
+systemd/Docker convention exists in this repository, this transient unit does
+not survive a host reboot.  After a reboot, rerun the documented web command or
+recreate the unit explicitly.
+
+The first prewarm failed closed because the production vector file was stale
+for the current graph.  The vector CLI also exposed an obsolete top-level
+`venue_embeddings` import; `cd09f6e` corrects it to
+`where_paper_go.embeddings` and adds a CLI regression test.  A shadow bge-m3
+vector build then used all `4,945` cached semantic texts and made zero external
+embedding calls.  It was validated and promoted recoverably:
+
+- current `data/venue_graph_vectors.json.gz`: SHA-256
+  `d3995c353b29614bac6954d895f3daaf4f2afee67d19ff0eb78089c4e3dc1cab`,
+  `23,454` vectors, bge-m3, 1,024 dimensions;
+- preserved predecessor
+  `data/venue_graph_vectors.pre-redeploy-20260828.json.gz`: SHA-256
+  `edf6e543a74b97af36aadaa27590f72beab4d93ede81da2196b13708aa8133db`.
+
+LightRAG was likewise rebuilt in a shadow directory with networking disabled,
+validated through an actual storage initialize/finalize cycle, and only then
+promoted.  Its binding is source digest
+`7dd39e60a2526e4c2d0602f64267a4c01fe85e2bed6d0c6e056fa0db87c4ac4b`,
+semantic digest
+`f0aa91bf06cc9ca6c5b66bec085fda472731fb5647f36721561e5a3a7c4f0f55`,
+embedding-provider fingerprint
+`1f2fc9c5a6e71e31e8fa33a740fae28deeb88903018536643686b7c4475f80d5`,
+and counts `23,714` chunks / `23,714` entities / `2,007` input
+relationships.  The current manifest SHA-256 is
+`59d59babe37703175eb6a640bbe5c480386a3359a71073588b808747659b9bb3`.
+The complete 427 MB predecessor remains at
+`data/lightrag_storage.pre-redeploy-20260828/`; its manifest SHA-256 is
+`0f84b064c5ecda1180071b851475b4ec22acaa5f16aad205454e0abd6c143ebb`.
+Empty/partial diagnostic `.building` directories were also preserved.
+
+Python 3.14 plus LightRAG 1.5.6 exposed a one-shot import wakeup bug: the
+chunking future could finish without waking an otherwise idle event loop.
+`cd09f6e` adds an import-only 250 ms timer heartbeat that is cancelled before
+storage finalization; it does not change embeddings, graph content, manifest
+bindings, or online queries.  The real local LightRAG import+mix-query test and
+the heartbeat lifecycle regression both pass.
+
+Deployment acceptance was completed without calling `/api/search`, creating a
+sealed test, rebuilding PCL, or making any external API request:
+
+- `/api/health`: `ready=true`, persistent worker ready, 19,612 ms preload,
+  current bge-m3/LightRAG bindings visible;
+- `/api/options`: 45,207 records and 23,555 venues; `/`: HTTP 200;
+- full suite: 223 tests passed in 56.287 seconds;
+- deterministic retrieval benchmark: 7/7 cases at full recall,
+  micro-recall@k 1.0.
+
 ### M3 strong-baseline checkpoint (2026-08-28)
 
 The user-authorized M3 scope through bge-m3 is complete. No live Search was
