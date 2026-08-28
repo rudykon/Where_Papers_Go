@@ -45,9 +45,11 @@ from .historical_builder import (
 )
 from .leakage import audit_leakage, identity_unsafe_query_ids
 from .metrics import evaluate_run, stratified_metrics
+from .model_runs import LocalScientificEncoderProvider, build_scientific_encoder_run
 from .pcl_retry import PCLRetryPolicy
 from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provider
 from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_strata
+from .reranker_runs import LocalBGECrossEncoderProvider, build_cross_encoder_run
 from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
 from .types import Run
 
@@ -846,6 +848,53 @@ def _parser() -> argparse.ArgumentParser:
     lightrag_run.add_argument("--local-weight", type=float, default=1.0)
     lightrag_run.add_argument("--global-weight", type=float, default=1.0)
 
+    scientific_run = subparsers.add_parser(
+        "build-scientific-encoder-run",
+        help="freeze a pinned local SPECTER2 or SciNCL prototype score run",
+    )
+    scientific_run.add_argument(
+        "--protocol", choices=("specter2", "scincl"), required=True
+    )
+    scientific_run.add_argument("--model-dir", type=Path, required=True)
+    scientific_run.add_argument("--model-repo", required=True)
+    scientific_run.add_argument("--model-revision", required=True)
+    scientific_run.add_argument("--adapter-dir", type=Path)
+    scientific_run.add_argument("--adapter-repo", default="")
+    scientific_run.add_argument("--adapter-revision", default="")
+    scientific_run.add_argument("--dataset", type=Path, required=True)
+    scientific_run.add_argument("--profiles", type=Path, required=True)
+    scientific_run.add_argument("--reference-manifest", type=Path, required=True)
+    scientific_run.add_argument("--output", type=Path, required=True)
+    scientific_run.add_argument("--cache", type=Path, required=True)
+    scientific_run.add_argument("--device", default="cuda:0")
+    scientific_run.add_argument("--embedding-batch-size", type=int, default=32)
+    scientific_run.add_argument("--max-length", type=int, default=512)
+    scientific_run.add_argument("--top-k", type=int, default=100)
+    scientific_run.add_argument("--query-batch-size", type=int, default=16)
+    scientific_run.add_argument("--prototype-chunk-size", type=int, default=4096)
+    scientific_run.add_argument("--ignore-prototype-weights", action="store_true")
+    scientific_run.add_argument("--no-fp16", action="store_true")
+
+    cross_run = subparsers.add_parser(
+        "build-cross-encoder-run",
+        help="rerank a frozen first-stage run with a pinned local cross-encoder",
+    )
+    cross_run.add_argument("--model-dir", type=Path, required=True)
+    cross_run.add_argument("--model-repo", required=True)
+    cross_run.add_argument("--model-revision", required=True)
+    cross_run.add_argument("--dataset", type=Path, required=True)
+    cross_run.add_argument("--profiles", type=Path, required=True)
+    cross_run.add_argument("--reference-manifest", type=Path, required=True)
+    cross_run.add_argument("--first-stage-run", type=Path, required=True)
+    cross_run.add_argument("--output", type=Path, required=True)
+    cross_run.add_argument("--cache", type=Path, required=True)
+    cross_run.add_argument("--device", default="cuda:0")
+    cross_run.add_argument("--batch-size", type=int, default=32)
+    cross_run.add_argument("--max-length", type=int, default=512)
+    cross_run.add_argument("--candidate-pool", type=int, default=100)
+    cross_run.add_argument("--top-k", type=int, default=100)
+    cross_run.add_argument("--no-fp16", action="store_true")
+
     clean = subparsers.add_parser(
         "rebuild-clean-corpus",
         help="derive a causal research corpus from stored acquisition shards only",
@@ -1047,10 +1096,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         elif args.command == "build-prototype-vector-run":
-            bundle = load_recent_journal_dataset(
-                args.dataset,
-                query_fields=tuple(args.query_fields),
-            )
+            bundle = load_recent_journal_dataset(args.dataset)
             provider = pcl_embedding_provider(args.api_config)
             last_progress_bucket = -1
 
@@ -1114,7 +1160,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 edge_support_weight=args.edge_support_weight,
                 k1=args.bm25_k1,
                 b=args.bm25_b,
-                query_fields=tuple(args.query_fields),
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
@@ -1137,6 +1182,118 @@ def main(argv: Sequence[str] | None = None) -> int:
                 global_weight=args.global_weight,
                 query_fields=tuple(args.query_fields),
                 generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-scientific-encoder-run":
+            bundle = load_recent_journal_dataset(args.dataset)
+            provider = LocalScientificEncoderProvider(
+                protocol=args.protocol,
+                model_dir=args.model_dir,
+                model_repo=args.model_repo,
+                model_revision=args.model_revision,
+                adapter_dir=args.adapter_dir,
+                adapter_repo=args.adapter_repo,
+                adapter_revision=args.adapter_revision,
+                device=args.device,
+                batch_size=args.embedding_batch_size,
+                max_length=args.max_length,
+                fp16=not args.no_fp16,
+            )
+            last_progress_bucket = -1
+
+            def report_scientific_progress(processed: int, total: int) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed // 1024
+                if processed != total and bucket == last_progress_bucket:
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "scientific_embedding_progress": {
+                                "processed": processed,
+                                "total": total,
+                                "protocol": args.protocol,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            manifest = build_scientific_encoder_run(
+                provider=provider,
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                cache_path=args.cache,
+                output_path=args.output,
+                top_k=args.top_k,
+                query_batch_size=args.query_batch_size,
+                prototype_chunk_size=args.prototype_chunk_size,
+                apply_prototype_weights=not args.ignore_prototype_weights,
+                generation_command=recorded_command,
+                embedding_progress=report_scientific_progress,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-cross-encoder-run":
+            bundle = load_recent_journal_dataset(args.dataset)
+            provider = LocalBGECrossEncoderProvider(
+                model_dir=args.model_dir,
+                model_repo=args.model_repo,
+                model_revision=args.model_revision,
+                device=args.device,
+                batch_size=args.batch_size,
+                max_length=args.max_length,
+                fp16=not args.no_fp16,
+            )
+            last_progress_bucket = -1
+
+            def report_cross_progress(
+                processed_queries: int,
+                total_queries: int,
+                processed_pairs: int,
+                newly_scored_pairs: int,
+            ) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed_queries // 50
+                if (
+                    processed_queries != total_queries
+                    and bucket == last_progress_bucket
+                ):
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "cross_encoder_progress": {
+                                "processed_queries": processed_queries,
+                                "total_queries": total_queries,
+                                "processed_pairs": processed_pairs,
+                                "newly_scored_pairs": newly_scored_pairs,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            manifest = build_cross_encoder_run(
+                provider=provider,
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                first_stage_run_path=args.first_stage_run,
+                cache_path=args.cache,
+                output_path=args.output,
+                candidate_pool=args.candidate_pool,
+                top_k=args.top_k,
+                generation_command=recorded_command,
+                progress=report_cross_progress,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         else:  # pragma: no cover - argparse enforces the command choices
