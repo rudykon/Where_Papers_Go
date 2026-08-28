@@ -819,6 +819,7 @@ class VenueHTTPServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         handler_class: type[BaseHTTPRequestHandler],
         security_config: WebSecurityConfig,
+        bind_and_activate: bool = True,
     ) -> None:
         self.security_config = security_config
         self.rate_limiter = SlidingWindowRateLimiter(
@@ -828,7 +829,11 @@ class VenueHTTPServer(ThreadingHTTPServer):
         self.search_slots = threading.BoundedSemaphore(
             security_config.max_concurrent_searches
         )
-        super().__init__(server_address, handler_class)
+        super().__init__(
+            server_address,
+            handler_class,
+            bind_and_activate=bind_and_activate,
+        )
 
 
 class VenueHandler(BaseHTTPRequestHandler):
@@ -921,15 +926,19 @@ class VenueHandler(BaseHTTPRequestHandler):
         headers: Mapping[str, str] | None = None,
     ) -> None:
         body = _json_bytes(payload)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for name, value in (headers or {}).items():
-            self.send_header(name, value)
-        self.end_headers()
-        self.wfile.write(body)
-        self._response_bytes = len(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+            self._response_bytes = len(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+            self._response_bytes = 0
 
     def _send_file(self, path: Path) -> None:
         try:
@@ -940,13 +949,17 @@ class VenueHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if content_type.startswith("text/") or path.suffix in {".js", ".json"}:
             content_type += "; charset=utf-8"
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
-        self._response_bytes = len(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+            self._response_bytes = len(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+            self._response_bytes = 0
 
     def _read_json_body(self) -> dict[str, Any]:
         try:
@@ -1019,12 +1032,16 @@ class VenueHandler(BaseHTTPRequestHandler):
     def _send_search_stream(self, body: dict[str, Any]) -> None:
         # Validate all user-controlled arguments before committing a 200 stream.
         _search_command(body)
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-transform")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Connection", "close")
-        self.end_headers()
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+            return
         self.close_connection = True
         disconnected = False
 
@@ -1120,10 +1137,20 @@ def main(argv: list[str] | None = None) -> int:
         security_config = WebSecurityConfig.from_environment()
     except ValueError as exc:
         parser.error(str(exc))
-    server = VenueHTTPServer((args.host, args.port), VenueHandler, security_config)
+    server = VenueHTTPServer(
+        (args.host, args.port),
+        VenueHandler,
+        security_config,
+        bind_and_activate=False,
+    )
     try:
+        # Reserve the address before the expensive preload, but do not listen:
+        # startup probes must receive connection-refused instead of queuing and
+        # timing out only to trigger BrokenPipe traces once preload completes.
+        server.server_bind()
         _SEARCH_RUNTIME.start()
-    except RuntimeError as exc:
+        server.server_activate()
+    except (OSError, RuntimeError) as exc:
         server.server_close()
         parser.error(str(exc))
     print(
