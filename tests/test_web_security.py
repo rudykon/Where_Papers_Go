@@ -152,6 +152,22 @@ class WebSecurityTests(TestCase):
         self.assertEqual(len(audit_lines), 1)
         self.assertNotIn('"status":0', audit_lines[0])
 
+    def test_server_can_bind_without_listening_until_preload_is_ready(self) -> None:
+        try:
+            server = web_app.VenueHTTPServer(
+                ("127.0.0.1", 0),
+                web_app.VenueHandler,
+                WebSecurityConfig(audit_enabled=False),
+                bind_and_activate=False,
+            )
+        except PermissionError:
+            self.skipTest("sandbox forbids loopback sockets; run on the host/CI")
+        self.addCleanup(server.server_close)
+        server.server_bind()
+        self.assertEqual(server.socket.getsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_ACCEPTCONN), 0)
+        server.server_activate()
+        self.assertEqual(server.socket.getsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_ACCEPTCONN), 1)
+
     def test_http_search_auth_and_rate_limit_fail_before_worker_use(self) -> None:
         token_config = WebSecurityConfig(
             api_token="c" * 40,
