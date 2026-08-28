@@ -45,6 +45,7 @@ from .historical_builder import (
 )
 from .leakage import audit_leakage, identity_unsafe_query_ids
 from .metrics import evaluate_run, stratified_metrics
+from .model_assets import materialize_model_assets
 from .model_runs import LocalScientificEncoderProvider, build_scientific_encoder_run
 from .pcl_retry import PCLRetryPolicy
 from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provider
@@ -848,6 +849,18 @@ def _parser() -> argparse.ArgumentParser:
     lightrag_run.add_argument("--local-weight", type=float, default=1.0)
     lightrag_run.add_argument("--global-weight", type=float, default=1.0)
 
+    model_assets = subparsers.add_parser(
+        "materialize-model-assets",
+        help="dry-run and optionally atomically publish pinned HF model assets",
+    )
+    model_assets.add_argument("--config", type=Path, required=True)
+    model_assets.add_argument("--output-root", type=Path, required=True)
+    model_assets.add_argument("--hf-cli", default="hf")
+    model_assets.add_argument("--asset", action="append", default=[])
+    model_assets.add_argument("--max-workers", type=int, default=4)
+    model_assets.add_argument("--execute", action="store_true")
+    model_assets.add_argument("--authorization-reference", default="")
+
     scientific_run = subparsers.add_parser(
         "build-scientific-encoder-run",
         help="freeze a pinned local SPECTER2 or SciNCL prototype score run",
@@ -1184,6 +1197,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "materialize-model-assets":
+            audit = materialize_model_assets(
+                config_path=args.config,
+                output_root=args.output_root,
+                hf_cli=args.hf_cli,
+                execute=args.execute,
+                authorization_reference=args.authorization_reference,
+                selected_assets=tuple(args.asset),
+                max_workers=args.max_workers,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "build-scientific-encoder-run":
             bundle = load_recent_journal_dataset(args.dataset)
             provider = LocalScientificEncoderProvider(
