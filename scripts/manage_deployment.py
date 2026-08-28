@@ -136,6 +136,7 @@ def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
             "PYTHON": python,
             "DATA_DIR": args.data_dir.expanduser().resolve(),
             "CONFIG_PATH": args.api_config.expanduser().resolve(),
+            "ENV_FILE": args.environment_file,
         },
     )
     return _render_result(
@@ -343,6 +344,10 @@ def build_parser() -> argparse.ArgumentParser:
     systemd.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     systemd.add_argument(
         "--api-config", type=Path, default=PROJECT_ROOT / "llmapi.json"
+    )
+    systemd.add_argument(
+        "--environment-file",
+        default="%h/.config/where-papers-go/runtime.env",
     )
     systemd.add_argument("--output", type=Path, required=True)
     systemd.add_argument("--apply", action="store_true")

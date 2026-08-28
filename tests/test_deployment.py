@@ -16,7 +16,7 @@ class DeploymentManifestTests(TestCase):
         required = (
             "Restart=on-failure",
             "WantedBy=default.target",
-            "EnvironmentFile=%h/.config/where-papers-go/runtime.env",
+            "EnvironmentFile=@@ENV_FILE@@",
             "ExecStartPost=",
             "/api/health",
             "NoNewPrivileges=yes",
@@ -32,6 +32,15 @@ class DeploymentManifestTests(TestCase):
             self.assertIn(value, text)
         self.assertNotIn("api_key", text.casefold())
         self.assertNotIn("llmapi.json", text)
+        self.assertNotIn("CapabilityBoundingSet", text)
+        self.assertNotIn("ProtectHostname", text)
+        for incompatible in (
+            "PrivateDevices",
+            "ProtectClock",
+            "ProtectKernelLogs",
+            "ProtectKernelModules",
+        ):
+            self.assertNotIn(incompatible, text)
 
     def test_systemd_render_is_dry_run_then_backs_up_existing_file(self) -> None:
         with TemporaryDirectory() as directory:
@@ -42,6 +51,7 @@ class DeploymentManifestTests(TestCase):
                 python=Path(sys.executable),
                 data_dir=manage_deployment.PROJECT_ROOT / "data",
                 api_config=manage_deployment.PROJECT_ROOT / "llmapi.json",
+                environment_file="%h/.config/where-papers-go/runtime.env",
                 output=output,
                 apply=False,
             )
