@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -81,6 +82,72 @@ def _artifact(path: Path) -> dict[str, Any]:
         "sha256": sha256_file(path),
         "bytes": path.stat().st_size,
     }
+
+
+def _rank_order_fingerprint(
+    path: Path, *, expected_sha256: str
+) -> dict[str, Any]:
+    """Hash only query/rank/candidate order, separately from score bytes."""
+
+    if len(expected_sha256) != 64 or sha256_file(path) != expected_sha256:
+        raise ResearchDataError("frozen ablation run SHA-256 mismatch")
+    digest = hashlib.sha256()
+    row_count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    raise ResearchDataError(
+                        f"{path}:{line_number}: blank frozen-run row"
+                    )
+                try:
+                    row = json.loads(line, parse_constant=_reject_constant)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise ResearchDataError(
+                        f"{path}:{line_number}: invalid frozen-run JSON"
+                    ) from exc
+                if not isinstance(row, Mapping):
+                    raise ResearchDataError(
+                        f"{path}:{line_number}: frozen-run row must be an object"
+                    )
+                query_id = str(row.get("query_id") or "")
+                venue_id = str(row.get("venue_id") or "")
+                rank = row.get("rank")
+                if (
+                    not query_id
+                    or not venue_id
+                    or not isinstance(rank, int)
+                    or isinstance(rank, bool)
+                    or rank < 1
+                ):
+                    raise ResearchDataError(
+                        f"{path}:{line_number}: invalid query/rank/venue identity"
+                    )
+                digest.update(
+                    json.dumps(
+                        [query_id, rank, venue_id],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                digest.update(b"\n")
+                row_count += 1
+    except (OSError, UnicodeError) as exc:
+        raise ResearchDataError(f"cannot read frozen ablation run: {path}") from exc
+    if row_count == 0:
+        raise ResearchDataError("frozen ablation run is empty")
+    return {"sha256": digest.hexdigest(), "row_count": row_count}
+
+
+def _variant_run_path(
+    variant: Mapping[str, Any], *, suite_path: Path, label: str
+) -> tuple[Path, str]:
+    run = _mapping(variant.get("run"), f"{label}.run")
+    raw_path = Path(str(run.get("path") or ""))
+    if not str(raw_path):
+        raise ResearchDataError(f"{label}.run has an empty path")
+    path = raw_path if raw_path.is_absolute() else (suite_path.parent / raw_path).resolve()
+    return path, str(run.get("sha256") or "")
 
 
 def _iter_decisions(path: Path) -> Sequence[Mapping[str, Any]]:
@@ -396,6 +463,30 @@ def evaluate_scope_rank_selective(
             variants.get("scope_rank_ablate_constraint_features"),
             "scope_rank_ablate_constraint_features",
         )
+        full_run_path, full_run_sha = _variant_run_path(
+            full, suite_path=suite_path, label="scope_rank_full"
+        )
+        no_calibration_path, no_calibration_sha = _variant_run_path(
+            no_calibration,
+            suite_path=suite_path,
+            label="scope_rank_ablate_calibration",
+        )
+        no_constraints_path, no_constraints_sha = _variant_run_path(
+            no_constraints,
+            suite_path=suite_path,
+            label="scope_rank_ablate_constraint_features",
+        )
+        rank_order = {
+            "scope_rank_full": _rank_order_fingerprint(
+                full_run_path, expected_sha256=full_run_sha
+            ),
+            "scope_rank_ablate_calibration": _rank_order_fingerprint(
+                no_calibration_path, expected_sha256=no_calibration_sha
+            ),
+            "scope_rank_ablate_constraint_features": _rank_order_fingerprint(
+                no_constraints_path, expected_sha256=no_constraints_sha
+            ),
+        }
         report = {
             "schema_version": 1,
             "artifact_type": "scope_rank_selective_metrics",
@@ -429,15 +520,23 @@ def evaluate_scope_rank_selective(
             },
             "methods": methods,
             "frozen_ablation_checks": {
-                "calibration_ablation_preserves_ranking": (
-                    _mapping(full.get("run"), "full.run").get("sha256")
-                    == _mapping(no_calibration.get("run"), "no_calibration.run").get("sha256")
+                "rank_order_fingerprints": rank_order,
+                "calibration_ablation_exact_score_run_equal": (
+                    full_run_sha == no_calibration_sha
                 ),
-                "constraint_feature_ablation_preserves_ranking": (
-                    _mapping(full.get("run"), "full.run").get("sha256")
-                    == _mapping(no_constraints.get("run"), "no_constraints.run").get("sha256")
+                "calibration_ablation_rank_order_equal": (
+                    rank_order["scope_rank_full"]
+                    == rank_order["scope_rank_ablate_calibration"]
+                ),
+                "constraint_feature_ablation_exact_score_run_equal": (
+                    full_run_sha == no_constraints_sha
+                ),
+                "constraint_feature_ablation_rank_order_equal": (
+                    rank_order["scope_rank_full"]
+                    == rank_order["scope_rank_ablate_constraint_features"]
                 ),
                 "note": (
+                    "Exact score-run equality is distinguished from rank-order equality. "
                     "Calibration is a reject option and cannot alter retrieval order. "
                     "The exposed dataset has no user quartile constraints, so its "
                     "constraint features are pairwise constant while hard filters remain enabled."
