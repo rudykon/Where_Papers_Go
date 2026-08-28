@@ -858,6 +858,8 @@ def _parser() -> argparse.ArgumentParser:
     model_assets.add_argument("--hf-cli", default="hf")
     model_assets.add_argument("--asset", action="append", default=[])
     model_assets.add_argument("--max-workers", type=int, default=4)
+    model_assets.add_argument("--dry-run-timeout-seconds", type=float, default=120.0)
+    model_assets.add_argument("--download-timeout-seconds", type=float, default=21600.0)
     model_assets.add_argument("--execute", action="store_true")
     model_assets.add_argument("--authorization-reference", default="")
 
@@ -1206,6 +1208,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 authorization_reference=args.authorization_reference,
                 selected_assets=tuple(args.asset),
                 max_workers=args.max_workers,
+                dry_run_timeout_seconds=args.dry_run_timeout_seconds,
+                download_timeout_seconds=args.download_timeout_seconds,
                 generation_command=recorded_command,
             )
             print(json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True))

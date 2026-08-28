@@ -257,7 +257,8 @@ python -m research materialize-model-assets \
 写入逐文件 SHA-256 manifest 并原子发布。既有目标只校验和复用，任何身份或
 payload 哈希差异都会失败关闭，绝不覆盖。HF 下载属于准备步骤；下列正式 run
 仍严格 local-files-only、Search-free，缓存指纹同时绑定模型树、revision、
-精度、batch size、设备和确定性设置：
+精度、batch size、设备和确定性设置。metadata dry-run 默认 120 秒硬超时，
+单资产下载默认 21,600 秒硬超时，二者都可由 CLI 显式调整并写入审计：
 
 ```bash
 python -m research build-scientific-encoder-run \

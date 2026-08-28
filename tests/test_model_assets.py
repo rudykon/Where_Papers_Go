@@ -54,6 +54,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 arguments = sys.argv[1:]
 if arguments == ["--version"]:
@@ -62,6 +63,8 @@ if arguments == ["--version"]:
 if not arguments or arguments[0] != "download":
     raise SystemExit(2)
 if "--dry-run" in arguments:
+    if os.environ.get("UNIT_HF_TIMEOUT") == "1":
+        time.sleep(1)
     print(json.dumps([
         {{"filename": "config.json", "file_size": 8, "is_cached": False, "will_download": True}},
         {{"filename": "model.safetensors", "file_size": 12, "is_cached": False, "will_download": True}},
@@ -193,6 +196,31 @@ print(json.dumps({{"local_dir": str(local_dir)}}))
             audit["assets"][0]["dry_run"]["missing_required_files"],
             ["missing.bin"],
         )
+
+    def test_dry_run_timeout_is_bounded_and_audited(self) -> None:
+        output = self.root / "timeout-models"
+        original = os.environ.get("UNIT_HF_TIMEOUT")
+        os.environ["UNIT_HF_TIMEOUT"] = "1"
+        try:
+            with self.assertRaisesRegex(ResearchDataError, "dry-run failed"):
+                materialize_model_assets(
+                    config_path=self.config,
+                    output_root=output,
+                    hf_cli=self.hf,
+                    dry_run_timeout_seconds=0.05,
+                )
+        finally:
+            if original is None:
+                os.environ.pop("UNIT_HF_TIMEOUT", None)
+            else:
+                os.environ["UNIT_HF_TIMEOUT"] = original
+        audits = list((output / "_acquisition_audits").glob("*.json"))
+        self.assertEqual(len(audits), 1)
+        audit = json.loads(audits[0].read_text(encoding="utf-8"))
+        dry_run = audit["assets"][0]["dry_run"]
+        self.assertEqual(dry_run["returncode"], 124)
+        self.assertTrue(dry_run["timed_out"])
+        self.assertIn("timed out", dry_run["stderr"])
 
     def test_config_rejects_unpinned_or_traversing_assets(self) -> None:
         raw = json.loads(self.config.read_text(encoding="utf-8"))
