@@ -128,7 +128,6 @@
       preliminary_count: "初步显示 {shown} / {total}",
       preliminary_announcement: "已返回 {shown} 条初步结果，Search API 与 LLM 正在最终重排。",
       finalizing_results: "已显示初步结果 · 最终重排中",
-      preliminary_failed: "最终重排失败，当前保留初步结果。",
       preliminary_match: "初步匹配",
       elapsed_done: "{elapsed} ms 完成",
       candidate_count: "{count} 个候选",
@@ -298,7 +297,6 @@
       preliminary_count: "Preliminary {shown} / {total}",
       preliminary_announcement: "Showing {shown} preliminary results while Search API and LLM finish reranking.",
       finalizing_results: "Preliminary results shown · final rerank running",
-      preliminary_failed: "Final reranking failed; preliminary results are retained.",
       preliminary_match: "Preliminary match",
       elapsed_done: "Done in {elapsed} ms",
       candidate_count: "{count} candidates",
@@ -801,7 +799,7 @@
     if (state.resultStatus === "loading") $("#elapsed-label").textContent = t("searching");
     else if (state.resultStatus === "partial") $("#elapsed-label").textContent = t("finalizing_results");
     else if (state.resultStatus === "done") $("#elapsed-label").textContent = t("elapsed_done", { elapsed: asNumber(state.elapsedMs, 0) });
-    else if (["error", "partial_error"].includes(state.resultStatus)) $("#elapsed-label").textContent = t("search_incomplete");
+    else if (state.resultStatus === "error") $("#elapsed-label").textContent = t("search_incomplete");
     else $("#elapsed-label").textContent = t("preparing");
   }
 
@@ -827,9 +825,7 @@
     ].filter(Boolean).join("");
     $("#result-summary").hidden = false;
     $("#result-count").textContent = t(preliminary ? "preliminary_count" : "showing_count", { shown: formatNumber(payload.displayed ?? 0), total: formatNumber(payload.total ?? 0) });
-    $("#result-announcement").textContent = state.resultStatus === "partial_error"
-      ? t("preliminary_failed")
-      : t(preliminary ? "preliminary_announcement" : "results_announcement", { total: formatNumber(payload.total ?? 0), shown: formatNumber(payload.displayed ?? 0) });
+    $("#result-announcement").textContent = t(preliminary ? "preliminary_announcement" : "results_announcement", { total: formatNumber(payload.total ?? 0), shown: formatNumber(payload.displayed ?? 0) });
     $("#copy-summary").hidden = preliminary;
     const results = list(payload.results);
     $("#result-list").innerHTML = results.length
@@ -875,7 +871,7 @@
   function renderCurrentResults() {
     renderElapsed();
     if (state.resultStatus === "loading") renderSearchLoading();
-    else if (["partial", "partial_error"].includes(state.resultStatus) && state.payload) renderPayload(state.payload, true);
+    else if (state.resultStatus === "partial" && state.payload) renderPayload(state.payload, true);
     else if (state.resultStatus === "done" && state.payload) renderPayload(state.payload);
     else if (state.resultStatus === "error" && state.lastError) renderError(state.lastError, false);
   }
@@ -946,7 +942,11 @@
       renderCurrentResults();
     } catch (error) {
       state.lastError = error;
-      state.resultStatus = state.resultStatus === "partial" ? "partial_error" : "error";
+      // Preliminary local recall is an in-flight diagnostic only. If mandatory
+      // Search or LLM finalization fails, remove it instead of presenting a
+      // downgraded recommendation after the terminal error.
+      state.payload = null;
+      state.resultStatus = "error";
       window.clearInterval(state.timer);
       setPipeline("error", inferFailureStep(error));
       renderCurrentResults();

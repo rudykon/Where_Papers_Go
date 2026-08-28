@@ -183,7 +183,10 @@ python -m scripts.manage_deployment health
 HTTP 503 when API config, graph, vector, LightRAG manifest, worker, or preloaded
 dependency stamps are unavailable. A failed Search, LLM timeout, exhausted key
 pool, worker protocol failure, or stale index never returns a downgraded final
-recommendation. Audit records include request ID, client IP, method, normalized
+recommendation. The browser may display explicitly labelled local preliminary
+recall while the mandatory remote stages are in flight, but it removes those
+cards if the stream terminates with an error; only a `complete` event is a
+recommendation result. Audit records include request ID, client IP, method, normalized
 path, status, bytes, duration, auth state, and rate-limit state; they omit query
 bodies, Authorization headers, keys, and result evidence.
 
