@@ -31,6 +31,7 @@ from .data import (
     write_run,
 )
 from .fusion import LearnedLinearFusion, rrf_fuse
+from .graph_runs import build_lightrag_mix_run, build_property_graph_run
 from .historical_builder import (
     CachedJsonClient,
     CollectionPolicy,
@@ -763,6 +764,48 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--prototype-chunk-size", type=int, default=4096)
     prototype_run.add_argument("--ignore-prototype-weights", action="store_true")
 
+    graph_run = subparsers.add_parser(
+        "build-property-graph-run",
+        help="freeze an offline score run over real prototype-to-evidence edges",
+    )
+    graph_run.add_argument("--dataset", type=Path, required=True)
+    graph_run.add_argument("--profiles", type=Path, required=True)
+    graph_run.add_argument("--prototypes", type=Path, required=True)
+    graph_run.add_argument("--evidence", type=Path, required=True)
+    graph_run.add_argument("--corpus-manifest", type=Path, required=True)
+    graph_run.add_argument("--reference-manifest", type=Path, required=True)
+    graph_run.add_argument("--output", type=Path, required=True)
+    graph_run.add_argument("--cutoff", default="2026-03-31")
+    graph_run.add_argument(
+        "--query-fields", nargs="+", default=("title", "abstract")
+    )
+    graph_run.add_argument("--top-k", type=int, default=100)
+    graph_run.add_argument("--candidate-pool", type=int, default=1000)
+    graph_run.add_argument("--rrf-k", type=int, default=60)
+    graph_run.add_argument("--prototype-weight", type=float, default=1.0)
+    graph_run.add_argument("--evidence-weight", type=float, default=1.0)
+    graph_run.add_argument("--edge-support-weight", type=float, default=0.15)
+    graph_run.add_argument("--bm25-k1", type=float, default=1.2)
+    graph_run.add_argument("--bm25-b", type=float, default=0.75)
+
+    lightrag_run = subparsers.add_parser(
+        "build-lightrag-mix-run",
+        help="freeze LightRAG mix scores from graph-local and dense-global runs",
+    )
+    lightrag_run.add_argument("--dataset", type=Path, required=True)
+    lightrag_run.add_argument("--profiles", type=Path, required=True)
+    lightrag_run.add_argument("--reference-manifest", type=Path, required=True)
+    lightrag_run.add_argument("--property-graph-run", type=Path, required=True)
+    lightrag_run.add_argument("--vector-run", type=Path, required=True)
+    lightrag_run.add_argument("--output", type=Path, required=True)
+    lightrag_run.add_argument(
+        "--query-fields", nargs="+", default=("title", "abstract")
+    )
+    lightrag_run.add_argument("--top-k", type=int, default=100)
+    lightrag_run.add_argument("--rrf-k", type=int, default=60)
+    lightrag_run.add_argument("--local-weight", type=float, default=1.0)
+    lightrag_run.add_argument("--global-weight", type=float, default=1.0)
+
     clean = subparsers.add_parser(
         "rebuild-clean-corpus",
         help="derive a causal research corpus from stored acquisition shards only",
@@ -963,7 +1006,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
-        else:
+        elif args.command == "build-prototype-vector-run":
             bundle = load_recent_journal_dataset(
                 args.dataset,
                 query_fields=tuple(args.query_fields),
@@ -1008,6 +1051,56 @@ def main(argv: Sequence[str] | None = None) -> int:
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-property-graph-run":
+            bundle = load_recent_journal_dataset(
+                args.dataset,
+                query_fields=tuple(args.query_fields),
+            )
+            manifest = build_property_graph_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                prototypes_path=args.prototypes,
+                evidence_path=args.evidence,
+                corpus_manifest_path=args.corpus_manifest,
+                reference_manifest_path=args.reference_manifest,
+                output_path=args.output,
+                cutoff=args.cutoff,
+                top_k=args.top_k,
+                candidate_pool=args.candidate_pool,
+                rrf_k=args.rrf_k,
+                prototype_weight=args.prototype_weight,
+                evidence_weight=args.evidence_weight,
+                edge_support_weight=args.edge_support_weight,
+                k1=args.bm25_k1,
+                b=args.bm25_b,
+                query_fields=tuple(args.query_fields),
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-lightrag-mix-run":
+            bundle = load_recent_journal_dataset(
+                args.dataset,
+                query_fields=tuple(args.query_fields),
+            )
+            manifest = build_lightrag_mix_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                property_graph_run_path=args.property_graph_run,
+                vector_run_path=args.vector_run,
+                output_path=args.output,
+                top_k=args.top_k,
+                rrf_k=args.rrf_k,
+                local_weight=args.local_weight,
+                global_weight=args.global_weight,
+                query_fields=tuple(args.query_fields),
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        else:  # pragma: no cover - argparse enforces the command choices
+            raise ResearchDataError(f"unsupported command: {args.command!r}")
     except (OSError, ResearchDataError, HistoricalCollectionError, ValueError) as exc:
         print(f"research benchmark error: {exc}", file=sys.stderr)
         return 2
