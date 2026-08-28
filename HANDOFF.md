@@ -11,50 +11,64 @@
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 and refreshed through 2026-08-28.
-The project has moved from foundation work into formal experimental
-validation:
+This checkpoint was prepared on 2026-08-26 and refreshed through source HEAD
+`95f1b4d79e9a3ce26a567b27dd6bce2b49108214` on 2026-08-28. The current
+exit-gate state supersedes the earlier percentage estimates:
 
-- P0-A through P0-C are complete and all exit gates passed;
-- the product/MVP is approximately 85% complete, but the last recorded online
-  500-paper run was still limited by Search API availability;
-- the reproducible offline research platform is approximately 85% complete;
-- SIGIR Full Paper readiness is approximately 50--55% now that four lexical
-  ablations and a bound bge-m3 run are formal, but property-graph/LightRAG,
-  SPECTER2/SciNCL, cross-encoder, SCOPE-Rank, a sealed future test and expert
-  evaluation remain. The overall product-plus-paper goal is approximately 65%
-  complete. These percentages are engineering judgments, not mechanically
-  counted tasks;
-- the active branch is `agent/m3-strong-baselines`, created from `main` at
-  `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. The P0 source branch remains
-  published as `origin/agent/p0-causal-evaluation`; it and `main` were aligned
-  at that commit when M3 began. The M3 branch was first published non-force at
-  `3cd7246` as `origin/agent/m3-strong-baselines` after one transient TLS
-  handshake failure; the local branch tracks it. No PR, merge, tag or direct
-  `main` push was created;
+- P0-A through P0-C remain complete and all exit gates passed;
+- Stage A's repository and unprivileged-host deployment work is complete. The
+  persistent user service is enabled, active, restart-tested and ready with
+  exact graph/vector/LightRAG bindings. Administrator activation of the tracked
+  TLS/authenticated reverse proxy, a literal host reboot, and the authorized
+  live 500-paper Search/LLM acceptance remain external/manual gates, so the
+  overall product must not be called 100% complete;
+- Stage B's formal property-graph and LightRAG-mix runs, unified evaluation,
+  full-family paired corrections, negative-result reporting, pinned local
+  SPECTER2/SciNCL builders, and bge cross-encoder builder are implemented and
+  tested. The official SPECTER2/SciNCL/reranker weights have not been downloaded
+  or scored, so M3 has not passed its exit gate;
+- model acquisition is now repository-auditable: every exact HF revision is
+  dry-run first, cache/disk/cost/quota state is recorded, downloads require a
+  non-secret explicit-authorization reference, failures preserve `.building`,
+  and successful payloads are SHA-256 checked before atomic publication;
+- the active branch `agent/m3-strong-baselines` will be synchronized with
+  `origin/agent/m3-strong-baselines` after this HANDOFF-only refresh; its latest
+  implementation commit is `95f1b4d`. `main`, `origin/main`, and
+  `origin/agent/p0-causal-evaluation` remain protected and aligned at
+  `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. No PR, merge, tag, force push,
+  or direct `main` push was created;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
-  papers, graph/vector files, and LightRAG stores remain local and were not
-  uploaded. Their immutable paths and hashes below are the cross-session
-  contract.
+  papers, graph/vector files, LightRAG stores, predecessors, backups, failures
+  and `.building` directories remain local and were not uploaded or overwritten.
 
-The first M3 tranche is complete. Continue in this order unless the user changes
-the objective:
+Continue in this order unless the user changes the objective:
 
-1. **complete:** update the stale post-P0 wording in `README.md`,
-   `research/README.md`, and the research roadmap without changing claims;
-2. **complete:** run static, paper-concat, deterministic-prototype, and
-   clean-PCL lexical ablations on the exposed 4,791-query development set;
-3. **complete:** build and strictly import the bge-m3 prototype-max frozen run
-   against the exact P0-C binding;
-4. **next eligible work, not yet authorized:** implement offline property-graph
-   and LightRAG score-run builders with real
-   prototype-to-evidence edges;
-5. add SPECTER2/SciNCL and a cross-encoder, then compare all methods with paired
-   statistics before training or claiming gains for SCOPE-Rank;
-6. only after methods and metrics are frozen, create a genuinely unseen future
-   test and organize the 200--300-query, three-expert blind evaluation;
-7. separately build a shadow production graph/vector/LightRAG workspace and
-   switch atomically only after exact/fuzzy regression passes.
+1. **complete:** retain and verify the persistent production service, health,
+   binding, fail-closed and rollback evidence in the deployment checkpoint;
+2. **complete:** retain the formal graph and LightRAG runs plus the unified
+   4,791-query / 20,087-candidate evaluation recorded below;
+3. **complete:** retain the pinned local scientific/cross-encoder builders,
+   acquisition tool/config, timeout/credential protections and real local
+   safetensors integration test;
+4. **blocked external gate:** obtain explicit authorization for approximately
+   3.188 GB of pinned public HF assets and the necessary `adapters` runtime,
+   and restore a working official Hugging Face network path. Do not add
+   `--execute` before both conditions are satisfied;
+5. after a successful all-asset dry-run, download to shadow directories,
+   validate manifests, install `adapters` in an isolated ignored runtime, run a
+   bounded throughput smoke, then build complete SPECTER2, SciNCL and cross-
+   encoder score runs without Search/API calls. Decide ColBERT only from the
+   measured remaining GPU/time budget;
+6. import every strong run through the same binding and recompute complete
+   metrics, strata, failures, latency/cost and corrected paired statistics;
+7. only after the M3 method/data/metric protocol is frozen, implement and
+   validate SCOPE-Rank and all named ablations using allowed train data only;
+8. only after that freeze, create a genuinely future sealed test and the
+   200--300-query, three-expert blind-evaluation package. Never synthesize human
+   labels;
+9. finish the final full validation, documentation and HANDOFF update. Keep
+   administrator TLS activation, real expert labels, and any unapproved live
+   Search/LLM evaluation explicitly pending.
 
 Do not redownload or regenerate the clean PCL corpus merely to begin M3. Do not
 overwrite any v2-v6, canary, failed, `.building`, raw, paper, PCL, or acceptance
@@ -68,8 +82,11 @@ git status --short --branch
 git rev-parse HEAD
 git branch -vv
 python -m research --help
-PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_research_*.py' -v
+PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
+/home/wangrj/.cache/adodas_venv/bin/python -m unittest tests.test_local_model_runtime -v
 PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format json
+systemctl --user is-active where-papers-go.service
+curl --noproxy '*' --fail --silent http://127.0.0.1:8001/api/health
 sha256sum benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/manifest.json
 sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json
 ```
@@ -78,9 +95,10 @@ Suggested next-session prompt:
 
 > Read root `HANDOFF.md` completely with Section 0 as authoritative, verify the
 > current M3 branch/upstream and all recorded artifact hashes, and preserve every
-> ignored/historical artifact. Review the completed lexical and bge-m3 evidence,
-> then ask before beginning the offline property-graph/LightRAG builders. Do not
-> launch live Search, create a sealed test, or rebuild the clean PCL corpus.
+> ignored/historical artifact. Resume at the pinned-model external gate: do not
+> download until explicit authorization and a successful all-asset HF dry-run;
+> do not launch live Search, create a sealed test, start SCOPE-Rank before M3
+> freeze, or rebuild the clean PCL corpus.
 
 ### Deployment checkpoint (2026-08-28)
 
@@ -179,6 +197,108 @@ The persistent-deployment source commits are `15cf827` (worker/binding failure
 handling), `0ddf0cb` (deployment and proxy contract), `6089888` (private env
 renderer), `6783b82` (host-compatible user-unit hardening), `5b783e2`
 (bind-before-listen startup), and `ed644e1` (terminal fail-closed behavior).
+
+### M3 graph/model checkpoint (2026-08-28)
+
+The formal offline graph and LightRAG builders are complete. They bind the same
+4,791 ordered queries (`f17f02d8...155c`) and 20,087 ordered candidates
+(`3edfc9bf...1d4`) as P0-C. The property graph validated 40,198 temporal
+prototypes, 62,696 real prototype-to-evidence edges, 52,993 unique linked
+evidence records and 32,906 paper edges; missing, ambiguous, cross-venue,
+non-temporal or post-cutoff edges fail closed. The LightRAG method is explicitly
+a storage-independent score replay: local graph scores plus the frozen global
+bge run, with no generative call and no claim that it queried the production
+LightRAG store. Both runs have 4,791 complete rankings / 479,100 entries, zero
+empty rankings, zero failed queries and zero external/LLM/embedding calls.
+
+Immutable artifacts:
+
+- `property_graph_edge_bm25_rrf_v1.jsonl`: SHA-256
+  `964f9cd7f51de6e7734564e09e98e05440df7fd4a2f65c17fe86e47c495d9d72`;
+  sidecar SHA-256
+  `0c1eb45aaf623b6b8b00530e3c0c9330c766f88abf8f8a16434c7af82a2f16dc`;
+- `lightrag_mix_edge_rrf_v1.jsonl`: SHA-256
+  `de52907850a4447a1b4a56d8896ffaaa800fcaefd01f20b6890362c2ca78de03`;
+  sidecar SHA-256
+  `46f6552743e08b8edb5ff38aaffe7686888cc20ed9e7b523464c18b96ea7b638`;
+- unified evaluation `graph_lightrag_bge_unified_v1`: manifest SHA-256
+  `7569f5b928a64bee3879c48b793c955599d93008d998ebea5a731f8aa740f424`,
+  metrics SHA-256
+  `c17b0f6ec4a730f98369cf39601c5a926ccac17edf9a699fec9a00f4e188d99d`,
+  leakage SHA-256
+  `7b0450dff725643e52cca84339d272648939d0ce464bbb22c4ca412ce1963196`.
+
+The unified run keeps all 2,161 June development queries in the primary
+denominator and 2,115 only as the separately named identity-safe sensitivity.
+All 86 warnings remain visible and critical leakage is zero. Full-denominator
+results and Holm-corrected comparisons against bge-m3 are:
+
+| Method | Hit@10 | nDCG@10 | nDCG@10 difference vs bge | Holm result |
+| --- | ---: | ---: | ---: | --- |
+| clean-PCL BM25 | 0.0777418 | 0.0443966 | -0.0149457 | significant negative (`p_adj=0.0024988`) |
+| clean-PCL TF-IDF | 0.0920870 | 0.0525465 | -0.0067958 | non-significant (`p_adj=0.1469265`) |
+| bge-m3 prototype max | 0.1096714 | 0.0593423 | 0 | reference |
+| property graph | 0.1226284 | 0.0693752 | +0.0100329 | non-significant (`p_adj=0.0629685`) |
+| LightRAG mix | 0.1499306 | 0.0855318 | +0.0261895 | significant positive (`p_adj=0.0024988`) |
+| BM25+bge RRF | 0.1156872 | 0.0636594 | +0.0043172 | non-significant (`p_adj=0.1469265`) |
+
+These are exposed-development results, not sealed-test evidence. The graph and
+generic RRF improvements must not be called significant; the negative lexical
+results must not be hidden.
+
+Pinned local scientific-model support is implemented but official runs remain
+blocked. `research/configs/m3_official_model_assets.json` has file SHA-256
+`53aed5778be27dc9fd414ab1397b82e0dc9ed68d517f32edd2b1b92f37b4a20a`,
+canonical SHA-256
+`4c85dc6f68929e04eafd7e112a6bc8b8afe43d656c0c13bdeca4808fde98462f`,
+and a 3,187,700,000-byte planning estimate. It pins:
+
+- `allenai/specter2_base@a1319d4410c835ce9033da42ccd6bc31030ee9d1`;
+- `allenai/specter2@2081559630a80fc5851d8f798a05ba81e9468089`
+  for the proximity adapter;
+- `malteos/scincl@ebc5348d184ba2fc9beee69b4e394263fce57b2e`;
+- `BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`.
+
+Three dry-run-only acquisition attempts are preserved; no weight, target or
+`.building` directory was created:
+
+- sandbox network denial audit
+  `model-assets-20260828T101949.983050Z-4c85dc6f6892.json`, SHA-256
+  `372151b3cfa0a7f799c2f63f7fce6e9dba598e0590c46ed19abed00514a53e44`;
+- host proxy TLS EOF audit
+  `model-assets-20260828T102019.720001Z-4c85dc6f6892.json`, SHA-256
+  `6d232a267efe2ce107d0c8c60f8862c43a6e180eb91291a9d93a254b7e20b98a`;
+- proxy-bypassed direct-connect 60-second timeout audit
+  `model-assets-20260828T102151.223164Z-4c85dc6f6892.json`, SHA-256
+  `18372471c78de013117733d3f28ac5784c56f87ef711bdea41c185503be85c64`.
+
+The local inference interface itself is verified without network using tiny
+temporary safetensors. In the existing Python 3.12.3 / Torch 2.11.0 /
+Transformers 5.7.0 runtime, `tests.test_local_model_runtime` passed 2/2: CLS
+vectors were finite and unit-normalized, and the sequence classifier returned
+finite logits. The default Python lacks Torch, so those same two optional tests
+skip explicitly. SPECTER2's actual `adapters` path and every official model run
+remain unverified and must not be reported complete.
+
+New source commits, all non-force pushed only to
+`origin/agent/m3-strong-baselines`:
+
+- `71de313`: audited graph and LightRAG score builders;
+- `60e36fe`: frozen-schema evidence-date correction;
+- `a437c09`: full-family paired comparison correction;
+- `3cfefe4`: unified graph/LightRAG/bge evaluation config;
+- `4e6ff31`: pinned scientific encoder and cross-encoder run builders;
+- `6cc8a7e`: audited HF model acquisition;
+- `a0dddea`: bounded external model-asset operations;
+- `95f1b4d`: real local safetensors runtime integration test.
+
+Final verification at this checkpoint: default full suite `270` tests passed in
+`58.626s` with five explicit optional/socket skips; the model runtime suite
+passed `2/2` in `0.078s`; `git diff --check` passed before this documentation
+update. The service recheck at 16:47 CST reported `enabled`, `active`, PID
+`4095486`, `NRestarts=0`, `Result=success`, and `/api/health` returned
+`ready=true` with all six checks true and the exact production bindings above.
+No `/api/search`, Search, LLM, embedding API or sealed-test action occurred.
 
 ### M3 strong-baseline checkpoint (2026-08-28)
 
@@ -402,10 +522,12 @@ but unindexed catalog overlaps remain visible warnings. A regression test also
 proves that a DOI embedded in an active `paper:...:doi:...` source ID still
 fails closed.
 
-All P0 exit gates remain satisfied. The authorized M3 work through bge-m3 is
-recorded above; Section 10 is historical context for the remaining follow-on
-work. Do not start those larger experiments or publish artifacts without a new
-explicit request.
+All P0 exit gates remain satisfied. The bge-era subsection immediately above is
+retained as immutable history; the newer graph/model checkpoint is the current
+M3 authority. The user's expanded objective authorizes local implementation,
+testing, documentation and agent-branch publication, but still explicitly
+requires separate authorization before large external model/runtime downloads
+or live Search/LLM evaluation. Section 10 remains historical context only.
 
 ## 1. Current objective
 
