@@ -806,6 +806,14 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--query-batch-size", type=int, default=16)
     prototype_run.add_argument("--prototype-chunk-size", type=int, default=4096)
     prototype_run.add_argument("--ignore-prototype-weights", action="store_true")
+    prototype_run.add_argument(
+        "--cache-only",
+        action="store_true",
+        help=(
+            "fail closed unless every prepared text already exists in the cache; "
+            "never call the embedding API"
+        ),
+    )
 
     graph_run = subparsers.add_parser(
         "build-property-graph-run",
@@ -1149,6 +1157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 query_fields=tuple(args.query_fields),
                 reference_manifest_path=args.reference_manifest,
                 embedding_progress=report_embedding_progress,
+                cache_only=args.cache_only,
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))

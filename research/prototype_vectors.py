@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 import urllib.parse
 
@@ -206,6 +207,7 @@ def build_prototype_vector_run(
     query_fields: Sequence[str] = ("title", "abstract"),
     reference_manifest_path: Path | None = None,
     embedding_progress: Callable[[int, int], None] | None = None,
+    cache_only: bool = False,
     generation_command: Sequence[str],
 ) -> dict[str, Any]:
     """Embed profiles/queries, max-pool prototypes, and freeze a reusable run."""
@@ -221,7 +223,7 @@ def build_prototype_vector_run(
         provider, [query.text for query in bundle.queries]
     )
     generation_config = {
-        "builder": "prototype-vector-max-pooling-v2",
+        "builder": "prototype-vector-max-pooling-v3",
         "query_fields": list(query_fields),
         "top_k": top_k,
         "query_batch_size": query_batch_size,
@@ -229,6 +231,7 @@ def build_prototype_vector_run(
         "apply_prototype_weights": apply_prototype_weights,
         "model": provider.model,
         "provider_fingerprint": provider.fingerprint,
+        "cache_only": cache_only,
     }
     binding = build_run_binding(
         dataset_path=dataset_path,
@@ -244,18 +247,41 @@ def build_prototype_vector_run(
     )
     all_texts = dict(prototype_texts)
     all_texts.update(query_texts)
+    embedding_started = perf_counter()
     with FileEmbeddingCache(cache_path) as cache:
-        dimensions, embedded_count, cached_count = ensure_cached_embeddings(
-            provider, all_texts, cache, progress=embedding_progress
-        )
+        if cache_only:
+            cached_rows = cache.get_many(provider.fingerprint, list(all_texts))
+            missing_count = len(all_texts) - len(cached_rows)
+            if missing_count:
+                raise ResearchDataError(
+                    "cache-only vector run refuses external embedding calls: "
+                    f"{missing_count} prepared texts are missing"
+                )
+            cached_dimensions = {
+                dimension for dimension, _vector in cached_rows.values()
+            }
+            if len(cached_dimensions) != 1:
+                raise ResearchDataError(
+                    "cache-only embedding dimensions are inconsistent: "
+                    f"{sorted(cached_dimensions)}"
+                )
+            dimensions = next(iter(cached_dimensions))
+            embedded_count = 0
+            cached_count = len(cached_rows)
+        else:
+            dimensions, embedded_count, cached_count = ensure_cached_embeddings(
+                provider, all_texts, cache, progress=embedding_progress
+            )
         prototype_vectors = _vectors_from_cache(cache, provider, prototype_hashes)
         query_vectors = _vectors_from_cache(cache, provider, query_hashes)
+    embedding_total_ms = (perf_counter() - embedding_started) * 1000.0
 
     unit_venues = np.asarray([venue_index[unit.venue_id] for unit in units], dtype=np.int32)
     unit_weights = np.asarray([unit.weight for unit in units], dtype=np.float32)
     run: Run = {}
     candidate_count = len(venue_ids)
     keep = min(top_k, candidate_count)
+    scoring_started = perf_counter()
     for query_offset in range(0, len(bundle.queries), query_batch_size):
         query_chunk = query_vectors[query_offset : query_offset + query_batch_size]
         pooled = np.full((len(query_chunk), candidate_count), -np.inf, dtype=np.float32)
@@ -283,11 +309,16 @@ def build_prototype_vector_run(
                 ScoredDocument(doc_id=venue_id, score=score)
                 for venue_id, score in ranked
             ]
+    scoring_total_ms = (perf_counter() - scoring_started) * 1000.0
     runtime = runtime_provenance()
+    implementation_revision = (
+        "prototype-vector-max-pooling-v3@" + sha256_file(Path(__file__))
+    )
     method = {
         "name": "prototype_vector_max_pool",
         "kind": "vector",
         "implementation": "research.prototype_vectors.build_prototype_vector_run",
+        "implementation_revision": implementation_revision,
         "provider_fingerprint": provider.fingerprint,
         "model": provider.model,
         "configuration_sha256": canonical_json_sha256(generation_config),
@@ -316,6 +347,17 @@ def build_prototype_vector_run(
             "embedding_cache": str(cache_path),
             "embedded_text_count": embedded_count,
             "cached_text_count": cached_count,
+            "execution": {
+                "cache_only": cache_only,
+                "embedding_total_ms": embedding_total_ms,
+                "scoring_total_ms": scoring_total_ms,
+                "mean_scoring_ms_per_query": scoring_total_ms / len(bundle.queries),
+                "external_api_calls": 0 if cache_only else None,
+                "estimated_external_cost_usd": 0.0 if cache_only else None,
+                "failed_query_count": 0,
+                "offline_only": cache_only,
+                "search_free": True,
+            },
             **(
                 {"reference_binding_manifest": reference_binding}
                 if reference_binding is not None
