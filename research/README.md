@@ -192,6 +192,101 @@ prototype-max 的 June-slice Hit@10 / nDCG@10 为 `0.1096714484 /
 scope 若采集时间晚于 cutoff，会保存在 production 画像中，但自动排除在
 论文主榜画像之外。
 
+## 5. 正式 graph、LightRAG 与科学模型强基线
+
+property-graph run 只读取 P0-C 冻结画像、原型和 evidence，并验证原型到
+真实 evidence 的边、时间边界和 manifest 哈希；LightRAG mix 只融合已冻结
+的 local graph run 与 global bge run。两者都不调用 LLM、Search 或 embedding
+API，也不会用生成文本替代真实边：
+
+```bash
+python -m research build-property-graph-run \
+  --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
+  --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --prototypes benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/prototypes.jsonl \
+  --evidence benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/research_evidence.jsonl \
+  --corpus-manifest benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/manifest.json \
+  --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/property_graph_edge_bm25_rrf_v1.jsonl \
+  --cutoff 2026-03-31 --top-k 100 --candidate-pool 1000 --rrf-k 60 \
+  --prototype-weight 1.0 --evidence-weight 1.0 --edge-support-weight 0.15
+
+python -m research build-lightrag-mix-run \
+  --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
+  --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
+  --property-graph-run benchmark_artifacts/m3_strong_baselines_20260827/property_graph_edge_bm25_rrf_v1.jsonl \
+  --vector-run benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/lightrag_mix_edge_rrf_v1.jsonl \
+  --top-k 100 --rrf-k 60 --local-weight 1.0 --global-weight 1.0
+```
+
+统一中期评测配置是
+`research/configs/m3_graph_lightrag_bge_unified.json`。当前完整 June-test
+分母为 2,161；LightRAG mix 相对 bge-m3 的 nDCG@10 差值为正且经 Holm
+校正显著，property graph 与通用 BM25+bge RRF 的差值在 Holm 校正后均不显著，
+TF-IDF 和 BM25 相对 bge-m3 为负结果。这里只是已暴露 development set 结果，
+不能作为 sealed test 或论文最终有效性结论。
+
+SPECTER2、SciNCL 和 bge-reranker-v2-m3 必须先从精确 commit 获取到忽略目录。
+仓库配置 `research/configs/m3_official_model_assets.json` 固定 repo、40 位
+revision、最小推理文件集合及约 3.188 GB 的规划估计。以下命令始终先对全部
+缺失资产执行 HF CLI dry-run，记录缓存覆盖、磁盘、已知 API 成本和配额边界；
+不带 `--execute` 时绝不下载：
+
+```bash
+python -m research materialize-model-assets \
+  --config research/configs/m3_official_model_assets.json \
+  --output-root benchmark_artifacts/m3_model_assets_20260828 \
+  --hf-cli /home/wangrj/.cache/adodas_venv/bin/hf
+```
+
+只有收到明确下载授权后，才可在同一命令追加：
+
+```bash
+python -m research materialize-model-assets \
+  --config research/configs/m3_official_model_assets.json \
+  --output-root benchmark_artifacts/m3_model_assets_20260828 \
+  --hf-cli /home/wangrj/.cache/adodas_venv/bin/hf \
+  --execute \
+  --authorization-reference '<non-secret authorization audit ID>'
+```
+
+执行模式不接受空授权引用，也不接受 branch/tag revision。每个资产先进入唯一
+`.building-*` 目录；下载或结构校验失败时保留该目录和脱敏失败记录，成功后才
+写入逐文件 SHA-256 manifest 并原子发布。既有目标只校验和复用，任何身份或
+payload 哈希差异都会失败关闭，绝不覆盖。HF 下载属于准备步骤；下列正式 run
+仍严格 local-files-only、Search-free，缓存指纹同时绑定模型树、revision、
+精度、batch size、设备和确定性设置：
+
+```bash
+python -m research build-scientific-encoder-run \
+  --protocol scincl \
+  --model-dir benchmark_artifacts/m3_model_assets_20260828/scincl__ebc5348d184b \
+  --model-repo malteos/scincl \
+  --model-revision ebc5348d184ba2fc9beee69b4e394263fce57b2e \
+  --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
+  --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
+  --cache benchmark_artifacts/m3_strong_baselines_20260827/scincl_embeddings.sqlite3 \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/scincl_prototype_max.jsonl
+
+python -m research build-cross-encoder-run \
+  --model-dir benchmark_artifacts/m3_model_assets_20260828/bge_reranker_v2_m3__953dc6f6f85a \
+  --model-repo BAAI/bge-reranker-v2-m3 \
+  --model-revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e \
+  --dataset benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl \
+  --profiles benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl \
+  --reference-manifest benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json \
+  --first-stage-run benchmark_artifacts/m3_strong_baselines_20260827/lightrag_mix_edge_rrf_v1.jsonl \
+  --cache benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_pairs.sqlite3 \
+  --output benchmark_artifacts/m3_strong_baselines_20260827/bge_reranker_v2_m3_prototype_max.jsonl
+```
+
+SPECTER2 使用相同命令并增加精确 proximity adapter 目录、repo 和 revision；
+其运行环境还必须固定并记录 `adapters` 包。模型尚未实际下载和运行时，只能称
+“构建器、配置与获取审计完成”，不能填入指标或宣称该基线完成。
+
 ## 泄漏规则
 
 以下任一项默认中止实验：

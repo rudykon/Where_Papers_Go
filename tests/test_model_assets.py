@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+from research.data import ResearchDataError, sha256_file
+from research.model_assets import (
+    ASSET_MANIFEST_NAME,
+    load_model_asset_config,
+    materialize_model_assets,
+)
+
+
+class ModelAssetAcquisitionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.config = self.root / "assets.json"
+        revision = "0123456789abcdef0123456789abcdef01234567"
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "assets": [
+                        {
+                            "name": "unit_model",
+                            "repo_id": "unit/model",
+                            "revision": revision,
+                            "source_url": (
+                                "https://huggingface.co/unit/model/tree/" + revision
+                            ),
+                            "include": ["config.json", "model.safetensors"],
+                            "required_files": [
+                                "config.json",
+                                "model.safetensors",
+                            ],
+                            "estimated_download_bytes": 20,
+                        }
+                    ],
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.hf = self.root / "hf"
+        self.hf.write_text(
+            f"""#!{sys.executable}
+import json
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+if arguments == ["--version"]:
+    print("hf version 1.12.2")
+    raise SystemExit(0)
+if not arguments or arguments[0] != "download":
+    raise SystemExit(2)
+if "--dry-run" in arguments:
+    print(json.dumps([
+        {{"filename": "config.json", "file_size": 8, "is_cached": False, "will_download": True}},
+        {{"filename": "model.safetensors", "file_size": 12, "is_cached": False, "will_download": True}},
+    ]))
+    raise SystemExit(0)
+if os.environ.get("UNIT_HF_FAIL_DOWNLOAD") == "1":
+    print("deliberate failure hf_abcdefghijklmnopqrstuv", file=sys.stderr)
+    raise SystemExit(9)
+local_dir = Path(arguments[arguments.index("--local-dir") + 1])
+local_dir.mkdir(parents=True, exist_ok=True)
+(local_dir / "config.json").write_text("{{}}\\n", encoding="utf-8")
+(local_dir / "model.safetensors").write_bytes(b"unit-weights")
+print(json.dumps({{"local_dir": str(local_dir)}}))
+""",
+            encoding="utf-8",
+        )
+        self.hf.chmod(0o755)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_dry_run_records_cache_cost_and_disk_without_downloading(self) -> None:
+        output = self.root / "models"
+        audit = materialize_model_assets(
+            config_path=self.config,
+            output_root=output,
+            hf_cli=self.hf,
+            generation_command=("python", "-m", "research", "unit-plan"),
+        )
+        self.assertEqual(audit["status"], "dry_run_complete")
+        self.assertEqual(audit["preflight"]["planned_download_bytes"], 20)
+        self.assertEqual(audit["preflight"]["cache_coverage_bytes"], 0)
+        self.assertEqual(audit["cost_and_quota"]["known_provider_api_cost_usd"], 0.0)
+        self.assertTrue(Path(audit["audit_path"]).is_file())
+        self.assertEqual(sha256_file(Path(audit["audit_path"])), audit["audit_sha256"])
+        specs, _record = load_model_asset_config(self.config)
+        self.assertFalse((output / specs[0].directory_name).exists())
+
+    def test_execute_requires_authorization_and_atomically_publishes(self) -> None:
+        output = self.root / "models"
+        with self.assertRaisesRegex(ResearchDataError, "authorization"):
+            materialize_model_assets(
+                config_path=self.config,
+                output_root=output,
+                hf_cli=self.hf,
+                execute=True,
+            )
+        audit = materialize_model_assets(
+            config_path=self.config,
+            output_root=output,
+            hf_cli=self.hf,
+            execute=True,
+            authorization_reference="unit-test-explicit-authorization",
+            generation_command=("python", "-m", "research", "unit-fetch"),
+        )
+        self.assertEqual(audit["status"], "complete")
+        specs, _record = load_model_asset_config(self.config)
+        target = output / specs[0].directory_name
+        self.assertTrue((target / "model.safetensors").is_file())
+        self.assertTrue((target / ASSET_MANIFEST_NAME).is_file())
+        self.assertFalse(list(output.glob(".*.building-*")))
+
+        reused = materialize_model_assets(
+            config_path=self.config,
+            output_root=output,
+            hf_cli=self.hf,
+        )
+        self.assertEqual(reused["preflight"]["validated_existing_asset_count"], 1)
+        self.assertEqual(reused["assets"][0]["status"], "validated_existing")
+        self.assertEqual(reused["preflight"]["planned_download_bytes"], 0)
+
+        (target / "model.safetensors").write_bytes(b"corrupted")
+        with self.assertRaisesRegex(ResearchDataError, "payload hash mismatch"):
+            materialize_model_assets(
+                config_path=self.config,
+                output_root=output,
+                hf_cli=self.hf,
+            )
+        self.assertEqual((target / "model.safetensors").read_bytes(), b"corrupted")
+
+    def test_failed_download_preserves_shadow_and_audit(self) -> None:
+        output = self.root / "failed-models"
+        original = os.environ.get("UNIT_HF_FAIL_DOWNLOAD")
+        os.environ["UNIT_HF_FAIL_DOWNLOAD"] = "1"
+        try:
+            with self.assertRaisesRegex(ResearchDataError, "shadow preserved"):
+                materialize_model_assets(
+                    config_path=self.config,
+                    output_root=output,
+                    hf_cli=self.hf,
+                    execute=True,
+                    authorization_reference="unit-test-explicit-authorization",
+                )
+        finally:
+            if original is None:
+                os.environ.pop("UNIT_HF_FAIL_DOWNLOAD", None)
+            else:
+                os.environ["UNIT_HF_FAIL_DOWNLOAD"] = original
+        shadows = list(output.glob(".*.building-*"))
+        self.assertEqual(len(shadows), 1)
+        self.assertTrue((shadows[0] / "DOWNLOAD_FAILED.json").is_file())
+        audits = list((output / "_acquisition_audits").glob("*.json"))
+        self.assertEqual(len(audits), 1)
+        combined_records = (
+            (shadows[0] / "DOWNLOAD_FAILED.json").read_text(encoding="utf-8")
+            + audits[0].read_text(encoding="utf-8")
+        )
+        self.assertNotIn("hf_abcdefghijklmnopqrstuv", combined_records)
+        self.assertIn("[REDACTED]", combined_records)
+
+    def test_dry_run_missing_required_file_fails_before_download(self) -> None:
+        raw = json.loads(self.config.read_text(encoding="utf-8"))
+        raw["assets"][0]["include"].append("missing.bin")
+        raw["assets"][0]["required_files"].append("missing.bin")
+        self.config.write_text(json.dumps(raw), encoding="utf-8")
+        output = self.root / "missing-models"
+        with self.assertRaisesRegex(ResearchDataError, "omitted required files"):
+            materialize_model_assets(
+                config_path=self.config,
+                output_root=output,
+                hf_cli=self.hf,
+            )
+        self.assertFalse(list(output.glob(".*.building-*")))
+        audits = list((output / "_acquisition_audits").glob("*.json"))
+        self.assertEqual(len(audits), 1)
+        audit = json.loads(audits[0].read_text(encoding="utf-8"))
+        self.assertEqual(audit["status"], "failed_before_download")
+        self.assertEqual(
+            audit["assets"][0]["dry_run"]["missing_required_files"],
+            ["missing.bin"],
+        )
+
+    def test_config_rejects_unpinned_or_traversing_assets(self) -> None:
+        raw = json.loads(self.config.read_text(encoding="utf-8"))
+        raw["assets"][0]["revision"] = "main"
+        self.config.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaisesRegex(ResearchDataError, "exactly pinned"):
+            load_model_asset_config(self.config)
+
+
+if __name__ == "__main__":
+    unittest.main()
