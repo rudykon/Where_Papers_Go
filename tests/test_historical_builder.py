@@ -1921,6 +1921,50 @@ class PrototypeRetrievalTests(unittest.TestCase):
             self.assertEqual(manifest["prototype_count"], 3)
             self.assertEqual(manifest["venue_count"], 2)
 
+            class CacheOnlyProvider(FakeEmbeddingProvider):
+                def embed(self, texts):
+                    del texts
+                    raise AssertionError("cache-only mode called the provider")
+
+            cached_manifest = build_prototype_vector_run(
+                provider=CacheOnlyProvider(),
+                bundle=bundle,
+                dataset_path=dataset,
+                profiles_path=profiles,
+                cache_path=root / "vectors.json.gz",
+                output_path=root / "cached-run.jsonl",
+                top_k=2,
+                query_batch_size=1,
+                prototype_chunk_size=2,
+                cache_only=True,
+                generation_command=("python", "-m", "research", "test-vector"),
+            )
+            self.assertEqual(cached_manifest["embedded_text_count"], 0)
+            self.assertEqual(cached_manifest["cached_text_count"], 3)
+            self.assertTrue(cached_manifest["execution"]["cache_only"])
+            self.assertEqual(cached_manifest["execution"]["external_api_calls"], 0)
+
+            with self.assertRaisesRegex(
+                ResearchDataError, "refuses external embedding calls"
+            ):
+                build_prototype_vector_run(
+                    provider=CacheOnlyProvider(),
+                    bundle=bundle,
+                    dataset_path=dataset,
+                    profiles_path=profiles,
+                    cache_path=root / "empty-vectors.json.gz",
+                    output_path=root / "must-not-exist.jsonl",
+                    top_k=2,
+                    cache_only=True,
+                    generation_command=(
+                        "python",
+                        "-m",
+                        "research",
+                        "test-vector",
+                    ),
+                )
+            self.assertFalse((root / "must-not-exist.jsonl").exists())
+
     def test_vector_reference_binding_requires_exact_p0_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
