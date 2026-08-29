@@ -3,14 +3,17 @@
 ## Current state
 
 The July 2026 future-test protocol is frozen and its bounded Crossref
-acquisition is explicitly authorized, but acquisition is not yet complete. No
-future query, prediction, label access, sealed
-metric, expert annotation, or effectiveness result exists at this state.
+acquisition is explicitly authorized, but acquisition is not yet complete.
+Authorized provider-response caches and three failed-attempt audits exist. No
+formal sealed dataset/query set, prediction, label-vault access, sealed metric,
+expert annotation, or effectiveness result exists at this state.
 
 The authoritative tracked freeze is
 `research/configs/future_sealed_test_v1.json` (SHA-256
-`4383c47d77195df47347794bc0d56105cacbbd0d15755f503d1c1826dad0c819`).
-It binds the following before any future data is fetched:
+`34b5561b53abade17ac75f203d2462d546a0a8d692091687095e8ba04090d6b8`).
+The method, candidate, metric and statistics entries were bound before the
+first future-data request; later entries are acquisition-safety fixes that do
+not alter those scientific choices. It verifies:
 
 - SCOPE-Rank method commit
   `9a1f3deeafa0f2b907d186b0c1ba80dc82908363`;
@@ -24,6 +27,8 @@ It binds the following before any future data is fetched:
   `71d48aa0529260f839935a39ebc8ef01a95e51bc`;
 - truncated-response retry fix
   `7aca22bf3dd5f4e233423cb2a2f42c46bfa2838c`;
+- failed-partial preservation and permanent-error cache fix
+  `f3e3343f69453869d4e9ca395c8785f707125c2b`;
 - 20,087 candidates with ordered-ID fingerprint
   `3edfc9bff161c6dc67c7c88092266e48e05a3359caa9c5812eeb1335ad48e1d4`;
 - candidate profile SHA-256
@@ -47,20 +52,24 @@ python -m research plan-sealed-test \
   --config research/configs/future_sealed_test_v1.json
 ```
 
-Recorded dry-run facts:
+The current post-underfill dry-run records:
 
 - closed future window: 2026-07-01 through 2026-07-31, strictly after the
   2026-06-30 development cutoff;
 - target: exactly 300 papers over 36 field/quartile strata, at most one paper
   per journal;
 - eligible frozen catalog: 20,087 journals, zero ambiguous ISSNs;
-- stable cache: directory not yet created, 0 JSON responses, 0/901 known URL
-  hits (0%);
-- logical upper bound: 8 bulk requests plus 900 journal fallbacks = 908;
-- retry-inclusive theoretical upper bound without a hard cap: 4,540 HTTP
+- stable cache: 110 successful JSON responses, zero permanent-error cache
+  records, and 103/3,601 currently knowable URL hits (later cursor URLs cannot
+  be derived without reading their preceding cached response);
+- logical upper bound: 8 bulk requests plus 3,600 journal fallbacks = 3,608;
+- retry-inclusive theoretical upper bound without a hard cap: 18,040 HTTP
   attempts;
 - enforced cumulative hard cap: 1,000 HTTP attempts, append-only reservation
   before every socket open;
+- actual cumulative ledger before this retry: 128/1,000 attempts used and 872
+  remaining, SHA-256
+  `d159538c36a2e781dd858f34b62e4651f5139bbe765dd26b8a81409f2075d5b8`;
 - expected charge: USD 0.00 because this stage uses only the official Crossref
   REST API and no paid key, Search, LLM or embedding provider;
 - output directory did not exist and no acquisition artifact was written.
@@ -91,11 +100,32 @@ directory is
 its `failure.json` confirms no formal output and no partial denominator.
 Commit `7aca22b` added this standard-library `IncompleteRead` condition to the
 existing bounded retry policy and made the CLI error fail closed without a raw
-traceback. The current zero-network plan verifies 3/1,000 attempts used, 997
-remaining, ledger SHA-256
-`f1d98d3c48afa9a5b3966d41f20a728858540fc4052a7bc9b82491a30457b228`.
-The amended freeze section SHA-256 is
-`5b9574b337a2b78aae13734e475df236322295ada12eeb8bd70fd60419eb9468`;
+traceback.
+
+The third authorized build completed all eight bulk pages and most strata, but
+failed closed at 286/300 instead of reducing the denominator. Its preserved
+directory is
+`future_sealed_test_202607_v1.failed-20260829T042338.072392Z-e4f32687`.
+The aggregate underfilled strata were arts/humanities Q1 `8/9`, Q2 `5/9`, Q3
+`7/8`, Q4 `3/8`, mathematics/statistics Q4 `7/8`, and
+multidisciplinary/other Q4 `6/8`; every other stratum was full. The run ended
+at 128 cumulative attempts, published no formal output, and did not accept a
+partial denominator. Because the old failure path raised before persisting its
+partial dataset/manifest and did not cache permanent 404s, commit `f3e3343`
+now persists and hashes partial failure evidence before raising, restricts any
+partial labeled dataset to mode `0600`, and atomically caches permanent HTTP
+statuses by URL hash without storing full URLs or credentials. Its regression
+suite passed as part of 298 tests (five skips).
+
+Only the deterministic fallback candidate-pool multiplier was amended from 3
+to 12 after inspecting aggregate stratum completion, not individual future
+queries or labels. The 300 denominator, July window, one-paper-per-journal cap,
+minimum abstract length, seed, candidate universe, methods, metrics,
+statistics, USD 0 cost and cumulative 1,000-attempt cap are unchanged. The
+current theoretical bound exceeds the hard cap, so the append-only ledger—not
+the theoretical pool—remains the enforceable ceiling. The amended freeze
+section SHA-256 is
+`edf2aeb8bcea118cac97dd76b0037ed2cc94e1c110d44eecc4f610a50e6eac2c`;
 method hyperparameters remain
 `c5b691a63b1b32db918c030facd3370f95cf19728bf877de927d019493bd2005`
 and the source protocol remains
@@ -103,10 +133,10 @@ and the source protocol remains
 
 ## Execution and exit gates
 
-After the controlled pre-data compatibility and transient-read fixes, the method, source,
-candidate, metric and statistics values stay frozen. Acquisition must use the
-same cumulative request ledger and build in a unique `.building-*` shadow
-directory. Success requires exactly 300
+After the controlled acquisition-only compatibility, retry and evidence fixes,
+the method, source, candidate, metric and statistics values stay frozen.
+Acquisition must use the same cumulative request ledger and build in a unique
+`.building-*` shadow directory. Success requires exactly 300
 accepted records; underfill is a failure and must not reduce the denominator.
 Failed staging directories are retained under a `.failed-*` name.
 

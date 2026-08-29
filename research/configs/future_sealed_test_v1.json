@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "offline_scoring_search_free": true,
-  "evaluation_status": "method_frozen_acquisition_authorized_transient_retry_pending",
+  "evaluation_status": "method_frozen_acquisition_authorized_underfill_retry_prepared",
   "output_dir": "../../benchmark_artifacts/future_sealed_test_202607_v1",
   "development_cutoff": "2026-06-30",
   "method_freeze": {
@@ -12,7 +12,8 @@
       "selective_evaluation_protocol": "4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5",
       "sealed_workflow_implementation": "92d1929621eb3754a2a4219aaf4342591f3374a8",
       "resumable_acquisition_fix": "71d48aa0529260f839935a39ebc8ef01a95e51bc",
-      "truncated_response_retry_fix": "7aca22bf3dd5f4e233423cb2a2f42c46bfa2838c"
+      "truncated_response_retry_fix": "7aca22bf3dd5f4e233423cb2a2f42c46bfa2838c",
+      "failed_partial_and_permanent_error_cache_fix": "f3e3343f69453869d4e9ca395c8785f707125c2b"
     },
     "artifacts": [
       {
@@ -23,7 +24,7 @@
       {
         "name": "sealed_acquisition_implementation",
         "path": "../sealed_test.py",
-        "sha256": "d453f57e8624d422d388919971eaf1911e72ac7f973d96f81e2fded659a7d6af"
+        "sha256": "134eb1f8600758dcf32882638228df43b96619f7cd04b081e4c6e563df0d989e"
       },
       {
         "name": "sealed_source_implementation",
@@ -53,7 +54,7 @@
       {
         "name": "crossref_builder_implementation",
         "path": "../../scripts/build_recent_journal_benchmark.py",
-        "sha256": "21e6e47b09b5d47d6e98cb5d99316ceacf865c63dddeeec67eaac3fd2bb36e49"
+        "sha256": "60476a306143640d092ff55ae6bd862b0436fcdbf6f510a764d3756da0e55151"
       },
       {
         "name": "scope_rank_development_config",
@@ -291,7 +292,14 @@
     ],
     "sample_size": 300,
     "max_papers_per_journal": 1,
-    "journal_attempt_multiplier": 3,
+    "journal_attempt_multiplier": 12,
+    "journal_attempt_multiplier_amendment": {
+      "previous": 3,
+      "current": 12,
+      "basis": "aggregate stratum underfill after 128 cumulative attempts; no individual future query or label was inspected and no method, candidate, metric, statistic, date, quality filter, seed, denominator, or hard cap changed",
+      "ledger_attempts_before_amendment": 128,
+      "hard_cap_unchanged": 1000
+    },
     "journal_workers": 8,
     "bulk_pages": 8,
     "bulk_rows": 1000,
@@ -307,5 +315,5 @@
     "estimated_external_cost_usd": 0.0,
     "authorization_reference": "user-message-2026-08-29-crossref-july-2026-300-max-1000-usd-0"
   },
-  "claim_boundary": "This freezes methods and protocol only. No future data, prediction, label access, metric, expert result, or effectiveness claim exists."
+  "claim_boundary": "Methods remain frozen. Authorized Crossref response caches and failed-attempt audits exist, but no formal sealed dataset, prediction, label-vault access, sealed metric, expert result, or effectiveness claim exists."
 }
