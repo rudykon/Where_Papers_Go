@@ -1,6 +1,6 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-28 (Asia/Shanghai)
+> Updated: 2026-08-29 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Start with the next-session checkpoint in Section 0. The remainder of Section
 > 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
@@ -11,9 +11,10 @@
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 and refreshed through the last
-formal artifact-producing source HEAD
-`4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5` on 2026-08-28. The current
+This checkpoint was prepared on 2026-08-26 and refreshed through source/data HEAD
+`5cc5cccbb7973f13c28b1285a450a9221a06bd21` on 2026-08-29. The last formal
+method-result source HEAD remains
+`4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5`. The current
 exit-gate state supersedes the earlier percentage estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
@@ -34,14 +35,21 @@ exit-gate state supersedes the earlier percentage estimates:
   full method is a significant negative result; fixed linear/RRF alternatives
   are not significantly better than LightRAG. Engineering completion must not
   be rewritten as a method-effectiveness claim;
+- Stage D's freeze, physically separated label-vault workflow, one-time
+  prediction commitment/evaluation path and three-expert tooling are complete.
+  The authorized July 2026 Crossref acquisition is not complete: three failed
+  attempts are preserved, the last failed closed at 286/300, the cumulative
+  append-only ledger is 128/1,000, and no formal sealed output exists;
 - model acquisition remains repository-auditable: every exact HF revision was
   dry-run first, cache/disk/cost/quota state was recorded, failures preserve
   `.building`, and successful payloads were SHA-256 checked before atomic
   publication. The ignored isolated runtime contains `adapters==1.3.0` and its
   official-model test suite passed 6/6;
-- the active branch `agent/m3-strong-baselines` is synchronized with
-  `origin/agent/m3-strong-baselines` through formal evidence commit `4946fde`.
-  `main`, `origin/main`, and
+- the active branch `agent/m3-strong-baselines` contains local ordinary commits
+  beyond `origin/agent/m3-strong-baselines` at `09281ee`, including `f3e3343`,
+  `5cc5ccc` and this Section 0 refresh. The four commits explicitly named by the
+  user were non-force pushed through `09281ee`; the newer commits have not yet
+  been pushed. `main`, `origin/main`, and
   `origin/agent/p0-causal-evaluation` remain protected and aligned at
   `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. No PR, merge, tag, force push,
   or direct `main` push was created;
@@ -62,12 +70,13 @@ Continue in this order unless the user changes the objective:
    isolated `adapters` runtime and the complete M3 unified freeze;
 5. **complete:** retain the SCOPE-Rank method/config freeze, all 11 ablations,
    78-pair statistics, selective v2 report and explicit negative conclusion;
-6. **next:** with method, hyperparameters, candidates, metrics, statistics and
-   commits now frozen, create a genuinely future sealed test without inspecting
-   its labels or retuning the method;
-7. build and validate the
-   200--300-query, three-expert blind-evaluation package. Never synthesize human
-   labels;
+6. **next:** resume the already authorized bounded Crossref acquisition from
+   the immutable 128/1,000 ledger and publish only if all 300 future records are
+   present. A host-approval broker disconnect blocked the latest retry before
+   process creation; do not bypass it or start a new ledger;
+7. after frozen predictions exist, use the already implemented tooling to build
+   and validate the 200--300-query, three-expert blind-evaluation package.
+   Never synthesize human labels;
 8. finish the final full validation, documentation and HANDOFF update. Keep
    administrator TLS activation, real expert labels, and any unapproved live
    Search/LLM evaluation explicitly pending.
@@ -643,6 +652,93 @@ boundary are in `docs/scope-rank-results.md`. Stage C is complete as an
 engineering/reproducibility delivery, but its scientific success gate failed.
 No paper claim of SCOPE-Rank effectiveness, improvement, calibration quality or
 state of the art is permitted from this evidence.
+
+### Future sealed-test acquisition checkpoint (2026-08-29)
+
+The method, candidate universe, source revisions, metrics and paired-statistics
+protocol were frozen before the first future-data request. The current tracked
+configuration is `research/configs/future_sealed_test_v1.json`, SHA-256
+`34b5561b53abade17ac75f203d2462d546a0a8d692091687095e8ba04090d6b8`.
+The method-hyperparameter and scoring-source hashes remain respectively
+`c5b691a63b1b32db918c030facd3370f95cf19728bf877de927d019493bd2005`
+and `62658dcc866552de5b2a1897c0b5e5bc765ca09d4e5dd1828dce3aa31026c14e`.
+The later acquisition-only safety entries do not alter the frozen methods.
+
+The user authorized the official Crossref July 2026 acquisition for exactly
+300 records, cumulative maximum 1,000 HTTP attempts, USD 0 and no Search, LLM
+or embedding calls. Three attempts are preserved without a formal publication:
+
+- `future_sealed_test_202607_v1.failed-20260829T030459.102475Z-dd3c7ac5`:
+  Crossref rejected cursor pagination combined with `sort=published`;
+- `future_sealed_test_202607_v1.failed-20260829T034203.579243Z-b7323fe1`:
+  the valid response stream ended with `IncompleteRead` after 6,538,628 bytes;
+- `future_sealed_test_202607_v1.failed-20260829T042338.072392Z-e4f32687`:
+  all bulk pages completed, but the result failed closed at 286/300.
+
+The third run's aggregate deficits were arts/humanities Q1 `8/9`, Q2 `5/9`,
+Q3 `7/8`, Q4 `3/8`, mathematics/statistics Q4 `7/8`, and
+multidisciplinary/other Q4 `6/8`; every other stratum was full. No individual
+future query or label was inspected and the denominator was not reduced. The
+stable append-only ledger is
+`benchmark_artifacts/.future_sealed_test_202607_v1.acquisition-state/request_ledger.jsonl`,
+128 records, SHA-256
+`d159538c36a2e781dd858f34b62e4651f5139bbe765dd26b8a81409f2075d5b8`.
+The formal `benchmark_artifacts/future_sealed_test_202607_v1` directory does not
+exist.
+
+Local commit `f3e3343f69453869d4e9ca395c8785f707125c2b` makes future underfill
+attempts write and hash their partial dataset/manifest before raising, changes
+partial labeled data to mode `0600`, inventories it in `failure.json`, and
+atomically caches permanent HTTP errors by URL hash without persisting full URLs
+or credentials. Local commit `5cc5cccbb7973f13c28b1285a450a9221a06bd21`
+records the third failure and changes only the deterministic fallback journal
+candidate multiplier from 3 to 12. The July window, 300 denominator,
+one-paper-per-journal rule, 300-character abstract floor, seed, method,
+candidates, metrics, statistics, USD 0 and cumulative 1,000-attempt cap are
+unchanged. This operational amendment used aggregate stratum completion only.
+
+The post-amendment zero-network plan reports 128 used / 872 remaining attempts,
+110 successful cached responses, zero permanent-error cache records and
+103/3,601 currently knowable request URLs covered. Its retry-inclusive
+theoretical pool is 18,040 attempts, but reservation happens before every socket
+open and the append-only 1,000-attempt ledger remains the effective hard limit.
+The next host command is still:
+
+```bash
+python -m research build-sealed-test \
+  --config research/configs/future_sealed_test_v1.json
+```
+
+The latest attempt to launch that already authorized command was rejected
+before process creation because the host approval broker disconnected. The
+ledger remained byte-identical at 128 records, no new `.building`/failure/formal
+directory appeared, and no workaround was attempted. A subsequent read-only
+systemd status request hit the same broker failure. Resume only after a fresh
+explicit confirmation makes the host operation approvable; never create a new
+ledger or bypass the broker.
+
+Current offline verification after the acquisition safety fix:
+
+- full suite: 298 tests passed in 63.377 seconds, five explicit skips;
+- Crossref/sealed targeted suite: 20/20; research/SCOPE/sealed/expert suite:
+  60/60; deployment/security/Web suite: 30 passed with three sandbox socket
+  skips;
+- deterministic retrieval: 7/7, micro Recall@K `1.0`;
+- graph is fresh; the exact configured provider binds 23,454 bge-m3 1,024-d
+  vectors and the LightRAG mix store with 23,714 chunks/entities and 2,007
+  relationships;
+- 87 manifest-listed P0/M3/SCOPE run, sidecar, metric and four-model payload
+  artifacts were independently rehashed with zero byte/hash mismatches;
+- tracked credential-pattern matches outside synthetic test fixtures: zero;
+  ignored `llmapi.json` remains mode `0600`, and paper, PCL, benchmark, vector,
+  LightRAG, failed, backup and `.building` artifacts remain present.
+
+After a successful 300-record atomic publication, do not read the label vault.
+First run the label-blind reference and cache-coverage plans. New bge-m3 query
+embeddings still require their own exact payload/cost/quota report and explicit
+authorization. Expert tooling is implemented, but its material package requires
+committed frozen predictions; real three-rater annotations remain manual and
+must never be synthesized.
 
 All P0 exit gates remain satisfied. The bge-era subsection immediately above is
 retained as immutable history; the newer graph/model checkpoint is the current
