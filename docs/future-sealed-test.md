@@ -9,7 +9,7 @@ metric, expert annotation, or effectiveness result exists at this state.
 
 The authoritative tracked freeze is
 `research/configs/future_sealed_test_v1.json` (SHA-256
-`49c0b55b28cce35343597d72e7030217474ded0997e506614c4690afb8cfbf7f`).
+`77a8152e0f0d697658e6418490877a3959677f68431c07079fddaae1d9dac511`).
 It binds the following before any future data is fetched:
 
 - SCOPE-Rank method commit
@@ -20,6 +20,8 @@ It binds the following before any future data is fetched:
   `4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5`;
 - sealed workflow commit
   `92d1929621eb3754a2a4219aaf4342591f3374a8`;
+- pre-data resumable acquisition fix
+  `71d48aa0529260f839935a39ebc8ef01a95e51bc`;
 - 20,087 candidates with ordered-ID fingerprint
   `3edfc9bff161c6dc67c7c88092266e48e05a3359caa9c5812eeb1335ad48e1d4`;
 - candidate profile SHA-256
@@ -50,11 +52,13 @@ Recorded dry-run facts:
 - target: exactly 300 papers over 36 field/quartile strata, at most one paper
   per journal;
 - eligible frozen catalog: 20,087 journals, zero ambiguous ISSNs;
-- cache: directory absent, 0 JSON responses, 0/901 known URL hits (0%);
+- stable cache: directory not yet created, 0 JSON responses, 0/901 known URL
+  hits (0%);
 - logical upper bound: 8 bulk requests plus 900 journal fallbacks = 908;
 - retry-inclusive theoretical upper bound without a hard cap: 4,540 HTTP
   attempts;
-- enforced hard cap: 1,000 HTTP attempts, counted before every attempt;
+- enforced cumulative hard cap: 1,000 HTTP attempts, append-only reservation
+  before every socket open;
 - expected charge: USD 0.00 because this stage uses only the official Crossref
   REST API and no paid key, Search, LLM or embedding provider;
 - output directory did not exist and no acquisition artifact was written.
@@ -63,16 +67,37 @@ Commit `32d6393` preserved the authorization reference as deliberately empty.
 A build invocation was regression-tested to fail before creating the output directory with
 `bounded Crossref acquisition requires an explicit authorization reference`.
 The user then explicitly authorized the exact bounded operation on 2026-08-29;
-only the top-level execution status and authorization reference were changed.
-The frozen method section retained canonical SHA-256
+commit `f92944b` changed only the top-level execution status, authorization
+reference and corresponding documentation. The frozen method section retained
+canonical SHA-256
 `155f4350d391338860238f3e7c76943a58e4fc3f96f499125621c7e7d0dc3edb`.
+
+The first authorized build preserved
+`future_sealed_test_202607_v1.failed-20260829T030459.102475Z-dd3c7ac5` and
+published no formal output. Crossref rejected the initial cursor request with
+HTTP 400 because `sort=published` is incompatible with cursor pagination. One
+additional official diagnostic request confirmed that exact validation error.
+No query was accepted and no label was exposed.
+
+Before a successful acquisition, commit `71d48aa` removed only the invalid
+cursor sort and added a stable cache, append-only cumulative request ledger and
+failure audit. The two prior attempts were recorded after the fact with their
+evidence and URL hash. The current zero-network plan verifies 2/1,000 attempts
+used, 998 remaining, ledger SHA-256
+`e1a1bf77b11f4de3a0ee14377f9ae3397dd28552e9969e1db2f7166fdba26a60`.
+The amended freeze section SHA-256 is
+`15f870f0208d9e969bfb09a33e976b127b0060440c88f356795339cd6147b298`;
+method hyperparameters remain
+`c5b691a63b1b32db918c030facd3370f95cf19728bf877de927d019493bd2005`
+and the source protocol remains
+`62658dcc866552de5b2a1897c0b5e5bc765ca09d4e5dd1828dce3aa31026c14e`.
 
 ## Execution and exit gates
 
-After explicit authorization, only the authorization-reference field may
-change. The method, source, candidate, metric and statistics sections stay
-byte-for-byte equivalent. Acquisition must use the fixed request cap and build
-in a unique `.building-*` shadow directory. Success requires exactly 300
+After the controlled pre-data compatibility fix, the method, source,
+candidate, metric and statistics values stay frozen. Acquisition must use the
+same cumulative request ledger and build in a unique `.building-*` shadow
+directory. Success requires exactly 300
 accepted records; underfill is a failure and must not reduce the denominator.
 Failed staging directories are retained under a `.failed-*` name.
 

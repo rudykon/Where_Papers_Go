@@ -377,8 +377,12 @@ python -m research plan-sealed-test \
 ```
 
 当前 hard cap 为 1,000 次 HTTP 尝试，授权前缓存覆盖为 0/901，预计收费 USD 0；
-授权前配置和 fail-closed 拒绝证据保存在 commit `32d6393`，当前配置只新增用户授权
-引用。采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
+授权前配置和 fail-closed 拒绝证据保存在 commit `32d6393`，授权记录 commit
+`f92944b` 只新增用户授权引用。首次授权执行因 Crossref cursor 不兼容
+`sort=published` 返回 HTTP 400，失败目录
+完整保留且未发布数据；commit `71d48aa` 在成功取数前移除该无效参数，并加入跨失败
+重跑的稳定 cache 和 append-only 累计请求账本。当前账本为 2/1,000，剩余 998。
+采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
 单独 dry-run，并取得相应授权，才能生成冻结 score runs。预测 commitment 创建前
 不得读取 labels，sealed evaluation 后不得重复解封。
 
