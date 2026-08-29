@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import html
+import http.client
 import json
 import os
 import re
@@ -851,7 +852,12 @@ class CrossrefClient:
                 except (TypeError, ValueError):
                     delay = min(30.0, 2.0**attempt)
                 time.sleep(delay)
-            except (urllib.error.URLError, socket.timeout, TimeoutError):
+            except (
+                urllib.error.URLError,
+                socket.timeout,
+                TimeoutError,
+                http.client.IncompleteRead,
+            ):
                 if attempt >= self.retries:
                     raise
                 time.sleep(min(30.0, 2.0**attempt))

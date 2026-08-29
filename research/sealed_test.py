@@ -570,7 +570,11 @@ def build_sealed_test(
             except Exception:
                 pass
             os.replace(staging, failed)
-        raise
+        if isinstance(error, ResearchDataError):
+            raise
+        raise ResearchDataError(
+            f"sealed-test acquisition failed: {type(error).__name__}: {error}"
+        ) from error
 
 
 __all__ = [
