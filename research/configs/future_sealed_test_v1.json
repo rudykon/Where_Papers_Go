@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "offline_scoring_search_free": true,
-  "evaluation_status": "method_frozen_acquisition_authorized_retry_pending",
+  "evaluation_status": "method_frozen_acquisition_authorized_transient_retry_pending",
   "output_dir": "../../benchmark_artifacts/future_sealed_test_202607_v1",
   "development_cutoff": "2026-06-30",
   "method_freeze": {
@@ -11,7 +11,8 @@
       "unified_evaluation_protocol": "e30a1d76f4eb4b3e699ffafb54bf81e54b0f2b80",
       "selective_evaluation_protocol": "4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5",
       "sealed_workflow_implementation": "92d1929621eb3754a2a4219aaf4342591f3374a8",
-      "resumable_acquisition_fix": "71d48aa0529260f839935a39ebc8ef01a95e51bc"
+      "resumable_acquisition_fix": "71d48aa0529260f839935a39ebc8ef01a95e51bc",
+      "truncated_response_retry_fix": "7aca22bf3dd5f4e233423cb2a2f42c46bfa2838c"
     },
     "artifacts": [
       {
@@ -22,7 +23,7 @@
       {
         "name": "sealed_acquisition_implementation",
         "path": "../sealed_test.py",
-        "sha256": "e67a132d4d73983e04da1cc005fd67b08ea6f7fe3c9230ab00ef7c9c007e5e1a"
+        "sha256": "d453f57e8624d422d388919971eaf1911e72ac7f973d96f81e2fded659a7d6af"
       },
       {
         "name": "sealed_source_implementation",
@@ -52,7 +53,7 @@
       {
         "name": "crossref_builder_implementation",
         "path": "../../scripts/build_recent_journal_benchmark.py",
-        "sha256": "7593f5ac2ba12d4b3b05eb4e81b16e6f7057203a284bdb507a7d35139a310e4e"
+        "sha256": "21e6e47b09b5d47d6e98cb5d99316ceacf865c63dddeeec67eaac3fd2bb36e49"
       },
       {
         "name": "scope_rank_development_config",

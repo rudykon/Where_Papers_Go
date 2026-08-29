@@ -9,7 +9,7 @@ metric, expert annotation, or effectiveness result exists at this state.
 
 The authoritative tracked freeze is
 `research/configs/future_sealed_test_v1.json` (SHA-256
-`77a8152e0f0d697658e6418490877a3959677f68431c07079fddaae1d9dac511`).
+`4383c47d77195df47347794bc0d56105cacbbd0d15755f503d1c1826dad0c819`).
 It binds the following before any future data is fetched:
 
 - SCOPE-Rank method commit
@@ -22,6 +22,8 @@ It binds the following before any future data is fetched:
   `92d1929621eb3754a2a4219aaf4342591f3374a8`;
 - pre-data resumable acquisition fix
   `71d48aa0529260f839935a39ebc8ef01a95e51bc`;
+- truncated-response retry fix
+  `7aca22bf3dd5f4e233423cb2a2f42c46bfa2838c`;
 - 20,087 candidates with ordered-ID fingerprint
   `3edfc9bff161c6dc67c7c88092266e48e05a3359caa9c5812eeb1335ad48e1d4`;
 - candidate profile SHA-256
@@ -82,11 +84,18 @@ No query was accepted and no label was exposed.
 Before a successful acquisition, commit `71d48aa` removed only the invalid
 cursor sort and added a stable cache, append-only cumulative request ledger and
 failure audit. The two prior attempts were recorded after the fact with their
-evidence and URL hash. The current zero-network plan verifies 2/1,000 attempts
-used, 998 remaining, ledger SHA-256
-`e1a1bf77b11f4de3a0ee14377f9ae3397dd28552e9969e1db2f7166fdba26a60`.
+evidence and URL hash. The next attempt reached the valid cursor response, but
+the remote chunked stream ended after 6,538,628 bytes. The preserved failure
+directory is
+`future_sealed_test_202607_v1.failed-20260829T034203.579243Z-b7323fe1`;
+its `failure.json` confirms no formal output and no partial denominator.
+Commit `7aca22b` added this standard-library `IncompleteRead` condition to the
+existing bounded retry policy and made the CLI error fail closed without a raw
+traceback. The current zero-network plan verifies 3/1,000 attempts used, 997
+remaining, ledger SHA-256
+`f1d98d3c48afa9a5b3966d41f20a728858540fc4052a7bc9b82491a30457b228`.
 The amended freeze section SHA-256 is
-`15f870f0208d9e969bfb09a33e976b127b0060440c88f356795339cd6147b298`;
+`5b9574b337a2b78aae13734e475df236322295ada12eeb8bd70fd60419eb9468`;
 method hyperparameters remain
 `c5b691a63b1b32db918c030facd3370f95cf19728bf877de927d019493bd2005`
 and the source protocol remains
@@ -94,7 +103,7 @@ and the source protocol remains
 
 ## Execution and exit gates
 
-After the controlled pre-data compatibility fix, the method, source,
+After the controlled pre-data compatibility and transient-read fixes, the method, source,
 candidate, metric and statistics values stay frozen. Acquisition must use the
 same cumulative request ledger and build in a unique `.building-*` shadow
 directory. Success requires exactly 300

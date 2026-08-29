@@ -381,7 +381,10 @@ python -m research plan-sealed-test \
 `f92944b` 只新增用户授权引用。首次授权执行因 Crossref cursor 不兼容
 `sort=published` 返回 HTTP 400，失败目录
 完整保留且未发布数据；commit `71d48aa` 在成功取数前移除该无效参数，并加入跨失败
-重跑的稳定 cache 和 append-only 累计请求账本。当前账本为 2/1,000，剩余 998。
+重跑的稳定 cache 和 append-only 累计请求账本。随后有效 cursor 响应在读取
+6,538,628 bytes 后发生 `IncompleteRead`；第二个失败目录同样记录未发布正式输出、
+未接受部分分母。commit `7aca22b` 将这一瞬态截断纳入既有有界重试策略。当前账本为
+3/1,000，剩余 997。
 采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
 单独 dry-run，并取得相应授权，才能生成冻结 score runs。预测 commitment 创建前
 不得读取 labels，sealed evaluation 后不得重复解封。
