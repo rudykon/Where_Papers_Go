@@ -366,8 +366,9 @@ Top-1 正确数为 0，因而 fail-closed 并对全部 query 拒答。
 
 ## 7. 未来 sealed test 与专家盲评
 
-2026 年 7 月未来集的方法、候选、模型 revision、指标和统计协议已冻结，但
-Crossref 采集尚未授权。以下命令只做本地 hash/cache/request/cost 核验，不发起
+2026 年 7 月未来集的方法、候选、模型 revision、指标和统计协议已冻结；
+Crossref 有界采集已于 2026-08-29 获得明确授权。以下命令只做本地
+hash/cache/request/cost 核验，不发起
 网络请求：
 
 ```bash
@@ -375,9 +376,9 @@ python -m research plan-sealed-test \
   --config research/configs/future_sealed_test_v1.json
 ```
 
-当前 hard cap 为 1,000 次 HTTP 尝试，缓存覆盖 0/901，预计收费 USD 0；配置中的
-`authorization_reference` 故意留空，所以 `build-sealed-test` 会在创建输出目录前
-fail closed。采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
+当前 hard cap 为 1,000 次 HTTP 尝试，授权前缓存覆盖为 0/901，预计收费 USD 0；
+授权前配置和 fail-closed 拒绝证据保存在 commit `32d6393`，当前配置只新增用户授权
+引用。采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
 单独 dry-run，并取得相应授权，才能生成冻结 score runs。预测 commitment 创建前
 不得读取 labels，sealed evaluation 后不得重复解封。
 

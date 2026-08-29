@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "offline_scoring_search_free": true,
-  "evaluation_status": "method_frozen_acquisition_not_authorized",
+  "evaluation_status": "method_frozen_acquisition_authorized_pending",
   "output_dir": "../../benchmark_artifacts/future_sealed_test_202607_v1",
   "development_cutoff": "2026-06-30",
   "method_freeze": {
@@ -302,7 +302,7 @@
     "request_interval": 0.12,
     "max_network_requests": 1000,
     "estimated_external_cost_usd": 0.0,
-    "authorization_reference": ""
+    "authorization_reference": "user-message-2026-08-29-crossref-july-2026-300-max-1000-usd-0"
   },
   "claim_boundary": "This freezes methods and protocol only. No future data, prediction, label access, metric, expert result, or effectiveness claim exists."
 }

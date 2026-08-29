@@ -2,13 +2,14 @@
 
 ## Current state
 
-The July 2026 future-test protocol is frozen, but data acquisition is not
-authorized or complete. No future query, prediction, label access, sealed
+The July 2026 future-test protocol is frozen and its bounded Crossref
+acquisition is explicitly authorized, but acquisition is not yet complete. No
+future query, prediction, label access, sealed
 metric, expert annotation, or effectiveness result exists at this state.
 
 The authoritative tracked freeze is
 `research/configs/future_sealed_test_v1.json` (SHA-256
-`ca89ea3f3f13c37e490431dac1c3d3108ecc99abe819e80b15c839b3207b40e7`).
+`49c0b55b28cce35343597d72e7030217474ded0997e506614c4690afb8cfbf7f`).
 It binds the following before any future data is fetched:
 
 - SCOPE-Rank method commit
@@ -58,11 +59,13 @@ Recorded dry-run facts:
   REST API and no paid key, Search, LLM or embedding provider;
 - output directory did not exist and no acquisition artifact was written.
 
-The tracked authorization reference is deliberately empty. A build invocation
-was regression-tested to fail before creating the output directory with
+Commit `32d6393` preserved the authorization reference as deliberately empty.
+A build invocation was regression-tested to fail before creating the output directory with
 `bounded Crossref acquisition requires an explicit authorization reference`.
-It must remain empty until the user explicitly authorizes this bounded Crossref
-operation.
+The user then explicitly authorized the exact bounded operation on 2026-08-29;
+only the top-level execution status and authorization reference were changed.
+The frozen method section retained canonical SHA-256
+`155f4350d391338860238f3e7c76943a58e4fc3f96f499125621c7e7d0dc3edb`.
 
 ## Execution and exit gates
 
@@ -96,7 +99,7 @@ materials complete; human evaluation pending**.
 
 ## Commands after the relevant authorization gate
 
-Acquisition is intentionally blocked at present:
+The authorized acquisition command is:
 
 ```bash
 python -m research build-sealed-test \
