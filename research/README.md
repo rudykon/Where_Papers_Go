@@ -364,6 +364,27 @@ Top-1 正确数为 0，因而 fail-closed 并对全部 query 拒答。
 [`docs/scope-rank-results.md`](../docs/scope-rank-results.md)。这是可复现平台交付与科学负结果，
 不是 sealed-test 或论文方法有效性证据。
 
+## 7. 未来 sealed test 与专家盲评
+
+2026 年 7 月未来集的方法、候选、模型 revision、指标和统计协议已冻结，但
+Crossref 采集尚未授权。以下命令只做本地 hash/cache/request/cost 核验，不发起
+网络请求：
+
+```bash
+python -m research plan-sealed-test \
+  --config research/configs/future_sealed_test_v1.json
+```
+
+当前 hard cap 为 1,000 次 HTTP 尝试，缓存覆盖 0/901，预计收费 USD 0；配置中的
+`authorization_reference` 故意留空，所以 `build-sealed-test` 会在创建输出目录前
+fail closed。采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
+单独 dry-run，并取得相应授权，才能生成冻结 score runs。预测 commitment 创建前
+不得读取 labels，sealed evaluation 后不得重复解封。
+
+完整冻结 hash、阶段退出门槛、标签物理隔离、原子发布/失败保留，以及 250-query、
+三专家盲评流程见 [`docs/future-sealed-test.md`](../docs/future-sealed-test.md)。专家未提交
+真实标注前，状态只能是“工具与材料完成，人工评测待执行”。
+
 ## 泄漏规则
 
 以下任一项默认中止实验：
