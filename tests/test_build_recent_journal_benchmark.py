@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import http.client
 import json
 import unittest
 from datetime import date
@@ -322,6 +323,42 @@ class CrossrefRequestSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cumulative.*exhausted"):
                 resumed.get_json("/works", {"cursor": "third", "rows": "1"})
             self.assertEqual(resumed.network_requests, 0)
+            self.assertEqual(len(ledger.read_text().splitlines()), 2)
+
+    def test_incomplete_chunked_response_is_retried_and_counted(self) -> None:
+        class TransientOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, _request, *, timeout):
+                self.calls += 1
+                self.timeout = timeout
+                if self.calls == 1:
+                    raise http.client.IncompleteRead(b"partial")
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+            client = CrossrefClient(
+                cache_dir=root / "cache",
+                mailto="test@example.org",
+                timeout=5.0,
+                retries=1,
+                request_interval=0.0,
+                use_environment_proxy=False,
+                refresh_cache=False,
+                max_network_requests=3,
+                request_ledger=ledger,
+                request_budget_id="transient-budget",
+            )
+            opener = TransientOpener()
+            client.opener = opener
+            payload = client.get_json("/works", {"cursor": "first", "rows": "1"})
+            self.assertEqual(payload, {"message": {"items": []}})
+            self.assertEqual(opener.calls, 2)
+            self.assertEqual(client.network_requests, 2)
+            self.assertEqual(client.cumulative_network_requests, 2)
             self.assertEqual(len(ledger.read_text().splitlines()), 2)
 
 
