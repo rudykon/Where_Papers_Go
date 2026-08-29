@@ -12,7 +12,11 @@ from research.data import (
     canonical_json_sha256,
     load_blind_query_dataset,
 )
-from research.sealed_test import split_labeled_dataset, verify_method_freeze
+from research.sealed_test import (
+    _failed_partial_output,
+    split_labeled_dataset,
+    verify_method_freeze,
+)
 
 
 def _labeled_row(identifier: str, day: int) -> dict[str, object]:
@@ -39,6 +43,37 @@ def _labeled_row(identifier: str, day: int) -> dict[str, object]:
 
 
 class SealedDatasetTests(unittest.TestCase):
+    def test_failed_partial_dataset_is_restricted_and_inventoried(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / ".future.building"
+            failed = root / "future.failed-audit"
+            staging.mkdir()
+            dataset = staging / "dataset.jsonl"
+            dataset.write_text(json.dumps(_labeled_row("doi:10.1/a", 1)) + "\n")
+            os.chmod(dataset, 0o644)
+            manifest = {
+                "dataset": {
+                    "record_count": 1,
+                    "complete": False,
+                    "sha256": "a" * 64,
+                }
+            }
+            (staging / "manifest.json").write_text(
+                json.dumps(manifest) + "\n", encoding="utf-8"
+            )
+
+            report = _failed_partial_output(staging, failed)
+
+            self.assertTrue(report["present"])
+            self.assertFalse(report["accepted_as_formal_denominator"])
+            self.assertEqual(report["dataset_summary"]["record_count"], 1)
+            self.assertEqual(os.stat(dataset).st_mode & 0o777, 0o600)
+            self.assertEqual(
+                report["artifacts"]["dataset.jsonl"]["path"],
+                str((failed / "dataset.jsonl").resolve()),
+            )
+
     def test_split_physically_removes_every_label_field(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

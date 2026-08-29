@@ -112,6 +112,49 @@ def _artifact(path: Path, *, published_path: Path | None = None) -> dict[str, An
     }
 
 
+def _failed_partial_output(staging: Path, failed: Path) -> dict[str, Any]:
+    """Inventory partial evidence without parsing or exposing sealed labels."""
+
+    for sensitive_name in ("dataset.jsonl", "labels.sealed.jsonl"):
+        sensitive_path = staging / sensitive_name
+        if sensitive_path.is_file():
+            os.chmod(sensitive_path, 0o600)
+    artifacts: dict[str, Any] = {}
+    for name in (
+        "dataset.jsonl",
+        "manifest.json",
+        "crossref_acquisition_manifest.json",
+        "queries.blind.jsonl",
+        "labels.sealed.jsonl",
+    ):
+        path = staging / name
+        if path.is_file():
+            artifacts[name] = _artifact(path, published_path=failed / name)
+    dataset_summary: dict[str, Any] | None = None
+    for manifest_name in ("manifest.json", "crossref_acquisition_manifest.json"):
+        manifest_path = staging / manifest_name
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = _read_object(manifest_path, "partial acquisition manifest")
+            dataset = manifest.get("dataset")
+            if isinstance(dataset, Mapping):
+                dataset_summary = {
+                    "record_count": dataset.get("record_count"),
+                    "complete": dataset.get("complete"),
+                    "sha256": dataset.get("sha256"),
+                }
+            break
+        except ResearchDataError:
+            continue
+    return {
+        "present": bool(artifacts),
+        "accepted_as_formal_denominator": False,
+        "artifacts": artifacts,
+        "dataset_summary": dataset_summary,
+    }
+
+
 def _git_object_exists(commit: str) -> bool:
     try:
         subprocess.run(
@@ -533,6 +576,7 @@ def build_sealed_test(
         )
         if staging.exists():
             try:
+                partial_output = _failed_partial_output(staging, failed)
                 ledger_record = plan["crossref"].get("request_ledger", {})
                 ledger_path_value = ledger_record.get("path")
                 ledger_path = (
@@ -563,6 +607,7 @@ def build_sealed_test(
                         "error": str(error),
                         "formal_output_published": False,
                         "partial_denominator_accepted": False,
+                        "partial_output": partial_output,
                         "request_ledger": current_ledger,
                         "config": _artifact(config_path),
                     },

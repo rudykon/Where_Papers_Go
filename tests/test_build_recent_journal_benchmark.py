@@ -4,6 +4,7 @@ import io
 import http.client
 import json
 import unittest
+import urllib.error
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +14,7 @@ from scripts.build_recent_journal_benchmark import (
     CrossrefClient,
     JournalVenue,
     allocate_stratum_targets,
+    _finalize_benchmark_outputs,
     build_issn_index,
     classify_broad_field,
     jats_to_text,
@@ -360,6 +362,89 @@ class CrossrefRequestSafetyTests(unittest.TestCase):
             self.assertEqual(client.network_requests, 2)
             self.assertEqual(client.cumulative_network_requests, 2)
             self.assertEqual(len(ledger.read_text().splitlines()), 2)
+
+    def test_permanent_http_error_is_cached_without_spending_again(self) -> None:
+        class NotFoundOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, request, *, timeout):
+                self.calls += 1
+                raise urllib.error.HTTPError(
+                    request.full_url, 404, "Not Found", None, None
+                )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+
+            def make_client() -> CrossrefClient:
+                return CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=4,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=3,
+                    request_ledger=ledger,
+                    request_budget_id="permanent-error-budget",
+                )
+
+            first = make_client()
+            opener = NotFoundOpener()
+            first.opener = opener
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                first.get_json("/journals/0000-0000/works", {"rows": "1"})
+            self.assertEqual(raised.exception.code, 404)
+            raised.exception.close()
+            self.assertEqual(opener.calls, 1)
+            self.assertEqual(len(ledger.read_text().splitlines()), 1)
+            error_files = list((root / "cache").glob("*.error.json"))
+            self.assertEqual(len(error_files), 1)
+            error_record = json.loads(error_files[0].read_text(encoding="utf-8"))
+            self.assertNotIn("url", error_record)
+            self.assertEqual(error_record["status"], 404)
+
+            resumed = make_client()
+            resumed.opener = NotFoundOpener()
+            with self.assertRaises(urllib.error.HTTPError) as cached:
+                resumed.get_json("/journals/0000-0000/works", {"rows": "1"})
+            self.assertEqual(cached.exception.code, 404)
+            cached.exception.close()
+            self.assertEqual(resumed.opener.calls, 0)
+            self.assertEqual(resumed.permanent_error_cache_hits, 1)
+            self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+
+class FailedBuildEvidenceTests(unittest.TestCase):
+    def test_incomplete_build_is_persisted_before_failure(self) -> None:
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            records = [{"paper_id": "doi:10.1/partial", "title": "Partial"}]
+            manifest = {
+                "dataset": {
+                    "path": "dataset.jsonl",
+                    "record_count": 1,
+                    "sha256": "pending",
+                    "complete": False,
+                }
+            }
+            with self.assertRaisesRegex(ValueError, "benchmark is incomplete"):
+                _finalize_benchmark_outputs(
+                    output,
+                    records,
+                    manifest,
+                    allow_incomplete=False,
+                )
+            dataset = output / "dataset.jsonl"
+            manifest_path = output / "manifest.json"
+            self.assertTrue(dataset.is_file())
+            self.assertTrue(manifest_path.is_file())
+            persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertFalse(persisted["dataset"]["complete"])
+            self.assertNotEqual(persisted["dataset"]["sha256"], "pending")
 
 
 if __name__ == "__main__":
