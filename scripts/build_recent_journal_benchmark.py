@@ -57,6 +57,7 @@ from where_paper_go.recommender import (
 
 
 CROSSREF_API = "https://api.crossref.org"
+PERMANENT_HTTP_ERROR_STATUSES = frozenset({400, 404, 405, 410, 422})
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "benchmark_artifacts" / "recent_journals"
 DEFAULT_CONTACT = "rudykon@users.noreply.github.com"
 DEFAULT_SEED = "where-papers-go-recent-journals-v1"
@@ -738,10 +739,35 @@ class CrossrefClient:
         self.network_requests = 0
         self.cumulative_network_requests = len(ledger_rows)
         self.cache_hits = 0
+        self.response_cache_hits = 0
+        self.permanent_error_cache_hits = 0
         self._request_lock = threading.Lock()
 
     def _cache_path(self, url: str) -> Path:
         return self.cache_dir / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.json"
+
+    def _permanent_error_cache_path(self, url: str) -> Path:
+        return self._cache_path(url).with_suffix(".error.json")
+
+    @staticmethod
+    def _write_cache_object(path: Path, payload: Mapping[str, Any]) -> None:
+        temporary = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+                handle.write("\n")
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def _reserve_network_request(self, url: str) -> None:
         """Consume one cumulative attempt before opening the network socket."""
@@ -806,14 +832,43 @@ class CrossrefClient:
         query["mailto"] = self.mailto
         url = CROSSREF_API + path + "?" + urllib.parse.urlencode(query)
         cache_path = self._cache_path(url)
+        permanent_error_cache_path = self._permanent_error_cache_path(url)
         if cache_path.exists() and not self.refresh_cache:
             with self._request_lock:
                 self.cache_hits += 1
+                self.response_cache_hits += 1
             with cache_path.open(encoding="utf-8") as handle:
                 cached = json.load(handle)
             if not isinstance(cached, dict):
                 raise ValueError(f"invalid cached Crossref response: {cache_path}")
             return cached
+        if permanent_error_cache_path.exists() and not self.refresh_cache:
+            with permanent_error_cache_path.open(encoding="utf-8") as handle:
+                cached_error = json.load(handle)
+            expected_url_sha256 = hashlib.sha256(url.encode("utf-8")).hexdigest()
+            if (
+                not isinstance(cached_error, dict)
+                or cached_error.get("schema_version") != 1
+                or cached_error.get("artifact_type")
+                != "crossref_permanent_http_error"
+                or cached_error.get("request_url_sha256") != expected_url_sha256
+                or cached_error.get("status") not in PERMANENT_HTTP_ERROR_STATUSES
+                or not isinstance(cached_error.get("reason"), str)
+            ):
+                raise ValueError(
+                    "invalid cached permanent Crossref error: "
+                    f"{permanent_error_cache_path}"
+                )
+            with self._request_lock:
+                self.cache_hits += 1
+                self.permanent_error_cache_hits += 1
+            raise urllib.error.HTTPError(
+                url,
+                int(cached_error["status"]),
+                str(cached_error["reason"]),
+                None,
+                None,
+            )
 
         retryable = {429, 500, 502, 503, 504}
         for attempt in range(self.retries + 1):
@@ -838,12 +893,24 @@ class CrossrefClient:
                     payload = json.load(response)
                 if not isinstance(payload, dict):
                     raise ValueError("Crossref returned a non-object JSON response")
-                temporary = cache_path.with_suffix(".tmp")
-                with temporary.open("w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
-                temporary.replace(cache_path)
+                self._write_cache_object(cache_path, payload)
                 return payload
             except urllib.error.HTTPError as error:
+                if error.code in PERMANENT_HTTP_ERROR_STATUSES:
+                    self._write_cache_object(
+                        permanent_error_cache_path,
+                        {
+                            "schema_version": 1,
+                            "artifact_type": "crossref_permanent_http_error",
+                            "recorded_at": datetime.now(timezone.utc).isoformat(),
+                            "request_url_sha256": hashlib.sha256(
+                                url.encode("utf-8")
+                            ).hexdigest(),
+                            "status": error.code,
+                            "reason": str(error.reason or "HTTP error"),
+                        },
+                    )
+                    raise
                 if error.code not in retryable or attempt >= self.retries:
                     raise
                 retry_after = error.headers.get("Retry-After") if error.headers else None
@@ -1084,11 +1151,23 @@ def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     mailto=args.mailto,
                 )
             )
-    cache_paths = [
+    response_cache_paths = [
         cache_dir / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.json"
         for url in known_urls
     ]
-    known_cache_hits = sum(path.is_file() for path in cache_paths)
+    permanent_error_cache_paths = [
+        path.with_suffix(".error.json") for path in response_cache_paths
+    ]
+    known_response_cache_hits = sum(path.is_file() for path in response_cache_paths)
+    known_permanent_error_cache_hits = sum(
+        path.is_file() for path in permanent_error_cache_paths
+    )
+    known_cache_hits = sum(
+        response_path.is_file() or error_path.is_file()
+        for response_path, error_path in zip(
+            response_cache_paths, permanent_error_cache_paths, strict=True
+        )
+    )
     ledger_rows = _read_request_ledger(
         args.request_ledger,
         budget_id=args.request_budget_id,
@@ -1151,13 +1230,30 @@ def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "cache": {
             "path": str(cache_dir.resolve()),
             "directory_exists": cache_dir.is_dir(),
-            "existing_json_files": (
-                sum(1 for path in cache_dir.glob("*.json") if path.is_file())
+            "existing_response_files": (
+                sum(
+                    1
+                    for path in cache_dir.glob("*.json")
+                    if path.is_file() and not path.name.endswith(".error.json")
+                )
+                if cache_dir.is_dir()
+                else 0
+            ),
+            "existing_permanent_error_files": (
+                sum(
+                    1
+                    for path in cache_dir.glob("*.error.json")
+                    if path.is_file()
+                )
                 if cache_dir.is_dir()
                 else 0
             ),
             "known_request_url_count": len(known_urls),
             "known_cache_hit_count": known_cache_hits,
+            "known_response_cache_hit_count": known_response_cache_hits,
+            "known_permanent_error_cache_hit_count": (
+                known_permanent_error_cache_hits
+            ),
             "known_cache_coverage": known_cache_hits / len(known_urls),
             "note": (
                 "Only the first global cursor URL is knowable without reading a "
@@ -1204,6 +1300,29 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     temporary.replace(path)
+
+
+def _finalize_benchmark_outputs(
+    output_dir: Path,
+    records: Sequence[Mapping[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    allow_incomplete: bool,
+) -> dict[str, Any]:
+    """Persist even an incomplete build before enforcing its publication gate."""
+
+    dataset_path = output_dir / "dataset.jsonl"
+    dataset_sha256 = _write_jsonl(dataset_path, records)
+    manifest["dataset"]["sha256"] = dataset_sha256
+    _write_json(output_dir / "manifest.json", manifest)
+    if not manifest["dataset"]["complete"] and not allow_incomplete:
+        raise ValueError(
+            "benchmark is incomplete; increase --journal-attempt-multiplier or "
+            "pass --allow-incomplete to keep a partial dataset"
+        )
+    if not records:
+        raise ValueError("benchmark contains no accepted records")
+    return manifest
 
 
 def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
@@ -1469,6 +1588,8 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "cache_dir": str(client.cache_dir.resolve()),
             "cache_hits": client.cache_hits,
+            "response_cache_hits": client.response_cache_hits,
+            "permanent_error_cache_hits": client.permanent_error_cache_hits,
             "permanent_request_failures": request_failures,
             "bulk_scan": {
                 "endpoint": "/works",
@@ -1545,17 +1666,12 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "rightsholder. Check applicable terms before redistributing dataset.jsonl."
         ),
     }
-    if records and not manifest["dataset"]["complete"] and not args.allow_incomplete:
-        raise ValueError(
-            "benchmark is incomplete; increase --journal-attempt-multiplier or "
-            "pass --allow-incomplete to keep a partial dataset"
-        )
-    if not records:
-        raise ValueError("benchmark contains no accepted records")
-    dataset_sha256 = _write_jsonl(dataset_path, records)
-    manifest["dataset"]["sha256"] = dataset_sha256
-    _write_json(args.output_dir / "manifest.json", manifest)
-    return manifest
+    return _finalize_benchmark_outputs(
+        args.output_dir,
+        records,
+        manifest,
+        allow_incomplete=args.allow_incomplete,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
