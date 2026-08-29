@@ -300,13 +300,17 @@ def _crossref_args(
     output_dir: Path,
 ) -> argparse.Namespace:
     acquisition = _mapping(config.get("acquisition"), "acquisition")
+    published_output_dir = _resolve(config_path, config.get("output_dir"))
+    acquisition_state_dir = published_output_dir.parent / (
+        "." + published_output_dir.name + ".acquisition-state"
+    )
     argv = [
         "--data-dir",
         str(_resolve(config_path, acquisition.get("data_dir"))),
         "--output-dir",
         str(output_dir),
         "--cache-dir",
-        str(output_dir / "crossref_cache"),
+        str(acquisition_state_dir / "crossref_cache"),
         "--from-date",
         str(acquisition.get("from_date") or ""),
         "--until-date",
@@ -343,6 +347,13 @@ def _crossref_args(
         str(float(acquisition.get("request_interval", 0.12))),
         "--max-network-requests",
         str(int(acquisition.get("max_network_requests", 1000))),
+        "--request-ledger",
+        str(acquisition_state_dir / "request_ledger.jsonl"),
+        "--request-budget-id",
+        str(
+            acquisition.get("request_budget_id")
+            or "future-sealed-crossref-v1"
+        ),
     ]
     return build_crossref_parser().parse_args(argv)
 
@@ -466,6 +477,19 @@ def build_sealed_test(
                     published_path=output_dir / acquisition_manifest_path.name,
                 ),
                 "network_requests": crossref_manifest["source"]["network_requests"],
+                "network_requests_this_run": crossref_manifest["source"][
+                    "network_requests_this_run"
+                ],
+                "network_requests_cumulative": crossref_manifest["source"][
+                    "network_requests_cumulative"
+                ],
+                "network_request_budget_remaining": crossref_manifest["source"][
+                    "network_request_budget_remaining"
+                ],
+                "request_ledger": crossref_manifest["source"][
+                    "network_request_ledger"
+                ],
+                "cache_dir": crossref_manifest["source"]["cache_dir"],
                 "cache_hits": crossref_manifest["source"]["cache_hits"],
                 "request_budget": args.max_network_requests,
                 "estimated_external_cost_usd": 0.0,
@@ -502,12 +526,49 @@ def build_sealed_test(
         os.replace(staging, output_dir)
         final_manifest = output_dir / "manifest.json"
         return {**manifest, "manifest": _artifact(final_manifest)}
-    except Exception:
+    except Exception as error:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         failed = output_dir.with_name(
             output_dir.name + f".failed-{timestamp}-{uuid.uuid4().hex[:8]}"
         )
         if staging.exists():
+            try:
+                ledger_record = plan["crossref"].get("request_ledger", {})
+                ledger_path_value = ledger_record.get("path")
+                ledger_path = (
+                    Path(str(ledger_path_value)) if ledger_path_value else None
+                )
+                current_ledger = (
+                    {
+                        "path": str(ledger_path.resolve()),
+                        "sha256": sha256_file(ledger_path),
+                        "attempt_records": sum(
+                            1
+                            for line in ledger_path.read_text(
+                                encoding="utf-8"
+                            ).splitlines()
+                            if line.strip()
+                        ),
+                    }
+                    if ledger_path is not None and ledger_path.is_file()
+                    else None
+                )
+                _atomic_json(
+                    staging / "failure.json",
+                    {
+                        "schema_version": 1,
+                        "artifact_type": "future_sealed_test_failed_attempt",
+                        "failed_at": datetime.now(timezone.utc).isoformat(),
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "formal_output_published": False,
+                        "partial_denominator_accepted": False,
+                        "request_ledger": current_ledger,
+                        "config": _artifact(config_path),
+                    },
+                )
+            except Exception:
+                pass
             os.replace(staging, failed)
         raise
 
