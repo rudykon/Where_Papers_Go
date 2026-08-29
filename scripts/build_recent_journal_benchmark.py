@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import hashlib
 import html
 import json
@@ -642,6 +643,58 @@ def select_records_for_journal(
     return ordered[:limit]
 
 
+def _parse_request_ledger_lines(
+    lines: Iterable[str],
+    *,
+    path: Path,
+    budget_id: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid Crossref request ledger JSON: {path}:{line_number}"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"invalid Crossref request ledger record: {path}:{line_number}"
+            )
+        expected_sequence = len(rows) + 1
+        if (
+            record.get("schema_version") != 1
+            or record.get("event") != "attempt_reserved"
+            or record.get("sequence") != expected_sequence
+            or record.get("budget_id") != budget_id
+            or len(str(record.get("request_url_sha256") or "")) != 64
+        ):
+            raise ValueError(
+                f"Crossref request ledger continuity mismatch: {path}:{line_number}"
+            )
+        rows.append(record)
+    return rows
+
+
+def _read_request_ledger(
+    path: Path | None,
+    *,
+    budget_id: str,
+) -> list[dict[str, Any]]:
+    if path is None or not path.exists():
+        return []
+    if not path.is_file():
+        raise ValueError(f"Crossref request ledger is not a file: {path}")
+    with path.open(encoding="utf-8") as handle:
+        return _parse_request_ledger_lines(
+            handle,
+            path=path,
+            budget_id=budget_id,
+        )
+
+
 class CrossrefClient:
     def __init__(
         self,
@@ -654,6 +707,8 @@ class CrossrefClient:
         use_environment_proxy: bool,
         refresh_cache: bool,
         max_network_requests: int,
+        request_ledger: Path | None = None,
+        request_budget_id: str = "",
     ) -> None:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -663,15 +718,87 @@ class CrossrefClient:
         self.request_interval = request_interval
         self.refresh_cache = refresh_cache
         self.max_network_requests = max_network_requests
+        self.request_ledger = request_ledger
+        self.request_budget_id = request_budget_id
+        if self.request_ledger is not None and not self.request_budget_id:
+            raise ValueError("Crossref request ledger requires a budget ID")
+        ledger_rows = _read_request_ledger(
+            self.request_ledger,
+            budget_id=self.request_budget_id,
+        )
+        if len(ledger_rows) > self.max_network_requests:
+            raise ValueError(
+                "Crossref request ledger already exceeds its budget: "
+                f"{len(ledger_rows)}/{self.max_network_requests}"
+            )
         handlers: list[Any] = [] if use_environment_proxy else [urllib.request.ProxyHandler({})]
         self.opener = urllib.request.build_opener(*handlers)
         self.last_request_at = 0.0
         self.network_requests = 0
+        self.cumulative_network_requests = len(ledger_rows)
         self.cache_hits = 0
         self._request_lock = threading.Lock()
 
     def _cache_path(self, url: str) -> Path:
         return self.cache_dir / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.json"
+
+    def _reserve_network_request(self, url: str) -> None:
+        """Consume one cumulative attempt before opening the network socket."""
+
+        if self.request_ledger is None:
+            if self.network_requests >= self.max_network_requests:
+                raise ValueError(
+                    "Crossref network request budget exhausted before request: "
+                    f"{self.network_requests}/{self.max_network_requests}"
+                )
+            self.network_requests += 1
+            self.cumulative_network_requests = self.network_requests
+            return
+
+        self.request_ledger.parent.mkdir(parents=True, exist_ok=True)
+        with self.request_ledger.open("a+", encoding="utf-8", newline="\n") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                handle.seek(0)
+                rows = _parse_request_ledger_lines(
+                    handle,
+                    path=self.request_ledger,
+                    budget_id=self.request_budget_id,
+                )
+                used = len(rows)
+                if used >= self.max_network_requests:
+                    raise ValueError(
+                        "Crossref cumulative network request budget exhausted before "
+                        f"request: {used}/{self.max_network_requests}"
+                    )
+                sequence = used + 1
+                record = {
+                    "schema_version": 1,
+                    "event": "attempt_reserved",
+                    "sequence": sequence,
+                    "budget_id": self.request_budget_id,
+                    "reserved_at": datetime.now(timezone.utc).isoformat(),
+                    "request_url_sha256": hashlib.sha256(
+                        url.encode("utf-8")
+                    ).hexdigest(),
+                    "recorded_after_fact": False,
+                }
+                handle.seek(0, os.SEEK_END)
+                handle.write(
+                    json.dumps(
+                        record,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                    + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+                self.network_requests += 1
+                self.cumulative_network_requests = sequence
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def get_json(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
         query = dict(params)
@@ -690,16 +817,11 @@ class CrossrefClient:
         retryable = {429, 500, 502, 503, 504}
         for attempt in range(self.retries + 1):
             with self._request_lock:
-                if self.network_requests >= self.max_network_requests:
-                    raise ValueError(
-                        "Crossref network request budget exhausted before request: "
-                        f"{self.network_requests}/{self.max_network_requests}"
-                    )
                 elapsed = time.monotonic() - self.last_request_at
                 if elapsed < self.request_interval:
                     time.sleep(self.request_interval - elapsed)
                 self.last_request_at = time.monotonic()
-                self.network_requests += 1
+                self._reserve_network_request(url)
             request = urllib.request.Request(
                 url,
                 headers={
@@ -785,8 +907,6 @@ class CrossrefClient:
             {
                 "filter": filters,
                 "rows": str(rows),
-                "sort": "published",
-                "order": "desc",
                 "cursor": cursor,
             },
         )
@@ -924,8 +1044,6 @@ def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             {
                 "filter": _crossref_filters(window),
                 "rows": str(args.bulk_rows),
-                "sort": "published",
-                "order": "desc",
                 "cursor": "*",
             },
             mailto=args.mailto,
@@ -965,6 +1083,16 @@ def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         for url in known_urls
     ]
     known_cache_hits = sum(path.is_file() for path in cache_paths)
+    ledger_rows = _read_request_ledger(
+        args.request_ledger,
+        budget_id=args.request_budget_id,
+    )
+    attempts_used = len(ledger_rows)
+    if attempts_used > args.max_network_requests:
+        raise ValueError(
+            "Crossref request ledger already exceeds its budget: "
+            f"{attempts_used}/{args.max_network_requests}"
+        )
     maximum_logical_requests = args.bulk_pages + fallback_request_cap
     uncapped_http_attempts = maximum_logical_requests * (args.retries + 1)
     return {
@@ -989,8 +1117,30 @@ def plan_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "maximum_logical_requests": maximum_logical_requests,
             "maximum_http_attempts_without_budget_cap": uncapped_http_attempts,
             "configured_http_attempt_cap": args.max_network_requests,
+            "cumulative_http_attempts_already_used": attempts_used,
+            "cumulative_http_attempts_remaining": (
+                args.max_network_requests - attempts_used
+            ),
             "retries_per_logical_request": args.retries,
             "unknown_cursor_urls_after_first_page": max(0, args.bulk_pages - 1),
+        },
+        "request_ledger": {
+            "path": (
+                str(args.request_ledger.resolve())
+                if args.request_ledger is not None
+                else None
+            ),
+            "budget_id": args.request_budget_id or None,
+            "exists": bool(
+                args.request_ledger is not None and args.request_ledger.is_file()
+            ),
+            "attempt_records": attempts_used,
+            "append_only": args.request_ledger is not None,
+            "sha256": (
+                _sha256_file(args.request_ledger)
+                if args.request_ledger is not None and args.request_ledger.is_file()
+                else None
+            ),
         },
         "cache": {
             "path": str(cache_dir.resolve()),
@@ -1081,6 +1231,8 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         use_environment_proxy=args.use_environment_proxy,
         refresh_cache=args.refresh_cache,
         max_network_requests=args.max_network_requests,
+        request_ledger=args.request_ledger,
+        request_budget_id=args.request_budget_id,
     )
     rejection_counts: Counter[str] = Counter()
     request_failures: list[dict[str, Any]] = []
@@ -1292,7 +1444,24 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "not a uniform sample of all papers in the date window"
             ),
             "network_requests": client.network_requests,
+            "network_requests_this_run": client.network_requests,
+            "network_requests_cumulative": client.cumulative_network_requests,
+            "network_request_budget_remaining": (
+                args.max_network_requests - client.cumulative_network_requests
+            ),
             "network_request_budget": args.max_network_requests,
+            "network_request_ledger": (
+                {
+                    "path": str(args.request_ledger.resolve()),
+                    "sha256": _sha256_file(args.request_ledger),
+                    "attempt_records": client.cumulative_network_requests,
+                    "budget_id": args.request_budget_id,
+                    "append_only": True,
+                }
+                if args.request_ledger is not None
+                else None
+            ),
+            "cache_dir": str(client.cache_dir.resolve()),
             "cache_hits": client.cache_hits,
             "permanent_request_failures": request_failures,
             "bulk_scan": {
@@ -1327,6 +1496,7 @@ def build_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "seed": args.seed,
             "environment_proxy_used": args.use_environment_proxy,
             "max_network_requests": args.max_network_requests,
+            "request_budget_id": args.request_budget_id or None,
             "mailto": args.mailto,
         },
         "dataset": {
@@ -1425,6 +1595,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--request-ledger",
+        type=Path,
+        default=None,
+        help=(
+            "Optional append-only JSONL ledger that makes the HTTP-attempt cap "
+            "cumulative across failed or resumed builds."
+        ),
+    )
+    parser.add_argument(
+        "--request-budget-id",
+        default="",
+        help="Stable identifier required when --request-ledger is used.",
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Print a zero-network cache/request/cost plan and do not create outputs.",
@@ -1465,6 +1649,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("retry, timeout, and request interval values are invalid")
     if args.max_network_requests <= 0:
         raise ValueError("--max-network-requests must be positive")
+    if args.request_ledger is not None and not args.request_budget_id.strip():
+        raise ValueError("--request-ledger requires --request-budget-id")
     if "@" not in args.mailto:
         raise ValueError("--mailto must be a valid contact email address")
 

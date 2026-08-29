@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 import unittest
 from datetime import date
 from pathlib import Path
@@ -7,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 from scripts.build_recent_journal_benchmark import (
     BuildWindow,
+    CrossrefClient,
     JournalVenue,
     allocate_stratum_targets,
     build_issn_index,
@@ -251,6 +254,75 @@ class PlanningTests(unittest.TestCase):
             self.assertEqual(plan["request_bound"]["configured_http_attempt_cap"], 40)
             self.assertEqual(plan["external_cost"]["estimated_charge_usd"], 0.0)
             self.assertFalse(output.exists())
+
+
+class CrossrefRequestSafetyTests(unittest.TestCase):
+    def test_cursor_page_omits_crossref_incompatible_published_sort(self) -> None:
+        captured: dict[str, object] = {}
+        client = object.__new__(CrossrefClient)
+
+        def fake_get_json(path: str, params: dict[str, str]):
+            captured["path"] = path
+            captured["params"] = params
+            return {"message": {"items": [], "next-cursor": "next"}}
+
+        client.get_json = fake_get_json
+        items, cursor = CrossrefClient.works_page(
+            client,
+            window=BuildWindow(date(2026, 7, 1), date(2026, 7, 31)),
+            rows=1000,
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(cursor, "next")
+        self.assertEqual(captured["path"], "/works")
+        params = captured["params"]
+        self.assertIsInstance(params, dict)
+        self.assertNotIn("sort", params)
+        self.assertNotIn("order", params)
+        self.assertEqual(params["cursor"], "*")
+
+    def test_append_only_ledger_enforces_cap_across_clients(self) -> None:
+        class FakeOpener:
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+
+            def make_client() -> CrossrefClient:
+                client = CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=2,
+                    request_ledger=ledger,
+                    request_budget_id="fixed-budget",
+                )
+                client.opener = FakeOpener()
+                return client
+
+            first = make_client()
+            first.get_json("/works", {"cursor": "first", "rows": "1"})
+            first.get_json("/works", {"cursor": "second", "rows": "1"})
+            self.assertEqual(first.network_requests, 2)
+            self.assertEqual(first.cumulative_network_requests, 2)
+
+            rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+            self.assertEqual([row["sequence"] for row in rows], [1, 2])
+            self.assertTrue(all(not row["recorded_after_fact"] for row in rows))
+
+            resumed = make_client()
+            self.assertEqual(resumed.cumulative_network_requests, 2)
+            with self.assertRaisesRegex(ValueError, "cumulative.*exhausted"):
+                resumed.get_json("/works", {"cursor": "third", "rows": "1"})
+            self.assertEqual(resumed.network_requests, 0)
+            self.assertEqual(len(ledger.read_text().splitlines()), 2)
 
 
 if __name__ == "__main__":
