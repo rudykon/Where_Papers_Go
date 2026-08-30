@@ -7,7 +7,8 @@ log_format wpg_json escape=json
   '{"time":"$time_iso8601","request_id":"$request_id",'
   '"remote_addr":"$remote_addr","method":"$request_method",'
   '"path":"$uri","status":$status,"bytes":$body_bytes_sent,'
-  '"request_time":$request_time,"upstream_time":"$upstream_response_time"}';
+  '"request_time":$request_time,"upstream_time":"$upstream_response_time",'
+  '"upstream_request_id":"$upstream_http_x_request_id"}';
 
 upstream where_papers_go_backend {
     server 127.0.0.1:@@UPSTREAM_PORT@@;
@@ -18,7 +19,8 @@ server {
     listen 80;
     listen [::]:80;
     server_name @@SERVER_NAME@@;
-    return 301 https://$host$request_uri;
+    # Never redirect to a client-controlled Host header.
+    return 301 https://@@SERVER_NAME@@$request_uri;
 }
 
 server {
@@ -58,7 +60,9 @@ server {
         proxy_send_timeout 30s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # This Nginx instance is the trust boundary. Overwrite, rather than
+        # append to, any client-supplied forwarding chain.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Request-ID $request_id;
         # Never forward the proxy's Basic credential into application logs.
@@ -72,7 +76,7 @@ server {
         proxy_read_timeout 30s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Request-ID $request_id;
         proxy_set_header Authorization "";

@@ -13,16 +13,32 @@ Environment=WPG_HOST=127.0.0.1
 Environment=WPG_PORT=8001
 Environment=WPG_DATA_DIR=@@DATA_DIR@@
 Environment=WPG_API_CONFIG=@@CONFIG_PATH@@
+Environment=WPG_API_CACHE_DIR=@@RUNTIME_DIR@@/api_cache
+Environment=WPG_RESULT_CACHE_DIR=@@RUNTIME_DIR@@/api_cache/result
+Environment=WPG_QUERY_EMBEDDING_CACHE=@@RUNTIME_DIR@@/query_embedding_cache.json.gz
+Environment=WPG_LIGHTRAG_EMBEDDING_CACHE=@@RUNTIME_DIR@@/lightrag_embedding_cache.json.gz
+Environment=WPG_LIGHTRAG_WORKING_DIR=@@RUNTIME_DIR@@/lightrag_storage
+Environment=WPG_GRAPH_PATH=@@DATA_DIR@@/venue_graph.json.gz
+Environment=WPG_TAVILY_STATE_FILE=@@SHARED_STATE_DIR@@/.tavily_key_pool_state.json
+Environment=WPG_RUNTIME_GENERATION=@@RUNTIME_DIR@@
+Environment=WPG_RUNTIME_MANIFEST=@@RUNTIME_DIR@@/runtime-shadow-manifest.json
+Environment=WPG_RUNTIME_MANIFEST_SHA256=@@RUNTIME_MANIFEST_SHA256@@
+Environment=WPG_STRICT_GRAPH_READ_ONLY=1
+Environment=WPG_REQUIRE_RUNTIME_SHADOW=1
 Environment=WPG_RATE_LIMIT_REQUESTS=6
 Environment=WPG_RATE_LIMIT_WINDOW_SECONDS=60
+Environment=WPG_MAX_CONCURRENT_CONNECTIONS=64
 Environment=WPG_MAX_CONCURRENT_SEARCHES=2
 Environment=WPG_REQUEST_BODY_LIMIT=200000
 Environment=WPG_REQUEST_READ_TIMEOUT=30
+Environment=WPG_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,::1/128
 Environment=WPG_TRUST_PROXY_HEADERS=0
 Environment=WPG_AUDIT_LOG=1
 EnvironmentFile=@@ENV_FILE@@
 ExecStart=@@PYTHON@@ -m where_paper_go.web_app
-ExecStartPost=@@PYTHON@@ -m scripts.manage_deployment health --url http://127.0.0.1:${WPG_PORT}/api/health --attempts 120 --interval 1 --timeout 2
+# The deployment renderer deliberately accepts only IPv4/localhost WPG_HOST,
+# so this loopback startup gate cannot disagree with the listener family.
+ExecStartPost=@@PYTHON@@ -m scripts.manage_deployment health --url http://127.0.0.1:${WPG_PORT}/api/health --attempts 120 --interval 1 --timeout 2 --expect-sha256 @@RUNTIME_DIR@@/runtime-shadow-manifest.json=@@RUNTIME_MANIFEST_SHA256@@
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=240
@@ -44,7 +60,13 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ReadOnlyPaths=@@PROJECT_ROOT@@
-ReadWritePaths=@@DATA_DIR@@
+ReadOnlyPaths=@@DATA_DIR@@
+ReadWritePaths=@@RUNTIME_DIR@@
+ReadWritePaths=@@SHARED_STATE_DIR@@
+# The generation contains mutable caches, but its identity contract itself is
+# kernel-mounted read-only for the service. Health also verifies its 0400 mode
+# and exact pre-approved SHA-256.
+ReadOnlyPaths=@@RUNTIME_DIR@@/runtime-shadow-manifest.json
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=where-papers-go
