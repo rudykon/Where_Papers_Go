@@ -1,6 +1,6 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-30 (Asia/Shanghai)
+> Updated: 2026-08-31 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Start with the next-session checkpoint in Section 0. The remainder of Section
 > 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
@@ -14,16 +14,19 @@
 This checkpoint was prepared on 2026-08-26 and refreshed through the sealed
 repair executable/config freeze at
 `f416f1f6348fc3bf25aa23b0254de2b1904d6e68` on 2026-08-30. That exact clean
-commit produced the formal post-access repaired future result. The current
-exit-gate state supersedes the earlier percentage estimates:
+commit produced the formal audited post-access namespace-repaired future
+evaluation. The current exit-gate state supersedes the earlier percentage
+estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
-- Stage A's repository and unprivileged-host deployment work is complete. The
-  persistent user service is enabled, active, restart-tested and ready with
-  exact graph/vector/LightRAG bindings. Administrator activation of the tracked
-  TLS/authenticated reverse proxy, a literal host reboot, and the authorized
-  live 500-paper Search/LLM acceptance remain external/manual gates, so the
-  overall product must not be called 100% complete;
+- Stage A's machine-executable repository and unprivileged-host deployment work
+  is complete. The persistent user service is enabled, active, loopback-only at
+  `127.0.0.1:8001`, restart-tested, forced-process-termination recovery-tested
+  and ready with exact graph/vector/LightRAG/runtime bindings. Administrator
+  activation of the tracked TLS/authenticated reverse proxy, a literal host
+  reboot, and a separately authorized live 500-paper Search/LLM acceptance
+  remain external/manual gates, so the overall product must not be called 100%
+  complete;
 - Stage B/M3 is complete on the exposed development set. The four authorized
   official Hugging Face revisions, including the active SPECTER2 proximity
   adapter, were downloaded into ignored shadow-managed assets, validated and
@@ -56,13 +59,26 @@ exit-gate state supersedes the earlier percentage estimates:
   `.building`, and successful payloads were SHA-256 checked before atomic
   publication. The ignored isolated runtime contains `adapters==1.3.0` and its
   official-model test suite passed 6/6;
-- the sealed-repair runtime branch `agent/m3-strong-baselines` and its upstream
-  were aligned at `f416f1f` before this documentation closeout; all research
-  commits through that freeze were ordinary non-force pushes under the user's
-  explicit authorization. `main`, `origin/main`, and
-  `origin/agent/p0-causal-evaluation` remain protected and aligned at
-  `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. No PR, merge, tag, force push,
-  or direct `main` push was created;
+- the final machine closeout on `agent/m3-strong-baselines` adds
+  `0b45a0f` (external-call budgets and runtime isolation), `b09cc3c`
+  (audited two-phase user-service deployment) and `ca6bb95` (formal recent500
+  evidence gates) after the already-pushed research history. These commits and
+  the documentation-only successor containing this checkpoint use ordinary
+  non-force history under the user's explicit authorization; verify the
+  branch/upstream alignment from the current `git rev-parse HEAD` after push
+  instead of relying on a self-referential documentation hash. The local
+  `main`, local remote-tracking
+  `origin/main`, and local `origin/agent/p0-causal-evaluation` snapshots remain
+  deliberately protected at the P0 baseline
+  `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`; these local snapshots are not a
+  claim about the live remote. A read-only `git ls-remote` audit on 2026-08-30
+  found live `refs/heads/main` at
+  `b789117dc8a148398f150b59985ef4fe9f2738aa`, exactly seven linear,
+  documentation/logo-only commits after `ef12a0e`. The isolated checkout passed
+  217/217 tests, `git diff --check`, `git fsck` and SVG XML/security checks.
+  That remote series was not merged or cherry-picked because it deletes the
+  protected P0 PNG blob and embeds a different half-resolution raster inside
+  the SVG. No PR, merge, tag, force push, or direct `main` push was created;
 - ignored credentials, API state, 48 GB source evidence, benchmark artifacts,
   papers, graph/vector files, LightRAG stores, predecessors, backups, failures
   and `.building` directories remain local and were not uploaded or overwritten.
@@ -90,10 +106,15 @@ Continue in this order unless the user changes the objective:
 8. **complete:** retain the 250-query, three-expert blind-evaluation package,
    deterministic randomization, sealed method mapping, audit/export tooling and
    explicit `tools_and_materials_complete_human_evaluation_pending` status;
-9. **human/manual next gates:** three real experts must complete the blinded
-   annotations. Administrator TLS activation, a literal host reboot and any
-   live 500-paper Search/LLM acceptance also remain external/manual. Never
-   synthesize human labels or infer those gates from offline completion.
+9. **complete infrastructure, not executed:** retain the formal future
+   500-paper builder/evaluator and their strict acquisition-evidence, immutable
+   source, authorization, full-denominator and resume/closeout gates. No new
+   live 500-paper run is authorized; the legacy mode-`0664` files are formally
+   inadmissible and must not be relabeled;
+10. **human/manual next gates:** three real experts must complete the blinded
+    annotations. Administrator TLS activation, a literal host reboot and any
+    live 500-paper Search/LLM acceptance also remain external/manual. Never
+    synthesize human labels or infer those gates from offline completion.
 
 Do not redownload or regenerate the clean PCL corpus merely to begin M3. Do not
 overwrite any v2-v6, canary, failed, `.building`, raw, paper, PCL, or acceptance
@@ -106,15 +127,21 @@ Safe opening sequence:
 git status --short --branch
 git rev-parse HEAD
 git branch -vv
+git ls-remote --exit-code origin refs/heads/main
 python -m research --help
 PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
-benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest tests.test_local_model_runtime -v
+benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest tests.test_model_runs tests.test_local_model_runtime -v
 PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format json
 systemctl --user is-active where-papers-go.service
 curl --noproxy '*' --fail --silent http://127.0.0.1:8001/api/health
 sha256sum benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/manifest.json
 sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json
 ```
+
+The expected live `refs/heads/main` value for this checkpoint is
+`b789117dc8a148398f150b59985ef4fe9f2738aa`. Treat a different value as a new
+remote state requiring another isolated read-only audit; do not fetch it into,
+merge it with, or use it to rewrite the protected local P0 snapshots.
 
 Suggested next-session prompt:
 
@@ -126,40 +153,66 @@ Suggested next-session prompt:
 > or rebuild the clean PCL corpus. The next research dependency is execution by
 > three real blinded experts, not more automated metric fitting.
 
-### Deployment checkpoint (2026-08-28)
+### Deployment checkpoint (2026-08-30; current)
 
-The product was upgraded from the earlier transient deployment to the audited
-persistent user unit at source HEAD `ed644e1`. The active unit is
-`~/.config/systemd/user/where-papers-go.service`, listens on `0.0.0.0:8001`,
-is `enabled`, uses `Restart=on-failure`, and runs under a user manager with
-`Linger=yes`. It serves <http://172.22.13.155:8001/> on `enp4s0` (loopback
-remains available at <http://127.0.0.1:8001/>). A direct, proxy-bypassed LAN
-request returned HTTP 200. Port `8000` remains owned by an unrelated Docker
-container and was not stopped or modified. The former transient recovery unit
-is stopped; the shadow unit and private shadow environment are stopped but
-preserved.
+The audited production user unit is
+`~/.config/systemd/user/where-papers-go.service`. It is `enabled`, `active`,
+uses `Restart=on-failure`, runs under the lingering user manager and now binds
+only <http://127.0.0.1:8001/>. It is not reachable directly from the LAN. Port
+`8000` remains owned by an unrelated Docker container and was not stopped or
+modified. An explicit unit restart and a forced `SIGKILL` process failure both
+returned to `ready=true` with current bindings; these checks establish service
+and worker recovery, not a literal physical-host reboot.
 
 The installed unit SHA-256 is
-`2ad4619abff7677e1b54960ab55ea891eed233841caa619c90cfa6fbff680b7c`.
-Its private `0600` runtime environment SHA-256 is
-`8a465904ce88b602c7c786b3d104878543fd745b707fbc131c5571a555723280`.
-The incompatible predecessor was recoverably renamed to
-`where-papers-go.service.backup-20260828T084402.672194Z`, SHA-256
-`7c5aaca8ef2523d3aba8a19e144c39ece3d35532eeb1f3796046fc348a19f76c`;
-nothing was deleted. `systemd-analyze --user verify` passed before installation.
-The formal service then passed its initial health gate and an explicit restart:
-the PID changed, the second preload was 18,719 ms, bindings remained current,
-and `NRestarts=0`, `Result=success`. `enabled` plus `Linger=yes` proves the
-configured user-manager boot recovery path; a literal host reboot was not
-performed and must not be claimed.
+`c96a77e197d509cfe970fea7e9768ea5463ce39ef106121d31fc04e988ad8eaa`.
+Immediately after installation and the authorized restart, the unit reported
+`NeedDaemonReload=no`, `active/running`, PID `3328201`, preload `18,746` ms and
+`ready=true`. The final enhanced `SIGKILL` host regression passed 1/1; systemd
+recovered to MainPID `3379788`, `NRestarts=1`, `Result=success`, preload
+`19,564` ms, `active/running/enabled` and `NeedDaemonReload=no`. Its first
+post-recovery health poll was ready and matched the bound runtime manifest.
 
-The listener remains plain HTTP without front-door authentication and is only
-appropriate on the documented trusted LAN. The repository now contains an
-audited Nginx TLS/Basic-Auth/rate-limit/path-only-audit template plus exact
-activation commands, but Nginx is absent and no hostname/certificate was
-provided, so activation remains an administrator task. UFW's public
-configuration previously reported `ENABLED=no`; privileged live firewall rules
-were not changed.
+The private mode-`0600` runtime environment SHA-256 is
+`35ffd5a6c3ffd375ba1263204aa3c3b07f8d9c8d5fa8f42deedbe06b2c32753b`.
+It binds immutable private generation
+`generation-20260830T143743.590991Z-1c0479cf71da`; that generation's mode-`0400`
+runtime-shadow manifest SHA-256 is
+`181977926b9b6c6d4900eebf4e19ee388d7b394114041f8f0263124e05385597`
+and its source binding is
+`1c0479cf71da57771d63642ea87013e02c23ba0b213833c3c928225c57764bd0`.
+The repository and formal `data/` sources are read-only to the service; mutable
+API/result/query/LightRAG caches live only inside this recoverable generation.
+The pre-activation check used a real worker and the complete health validator
+without opening a network listener; no unexecuted shadow-listener check is
+claimed.
+
+Tavily quota/cursor state is shared across generations rather than reset on an
+upgrade or rollback. Both private state copies are valid at revision `0` and
+have SHA-256
+`eaeed431ed064ce4f833fd575ef3490abc6be8073c0394ebb9a61557cf148583`.
+The two legacy `data/.tavily_key_pool_state.json*` files remain byte-identical
+at that same hash and were not altered or deleted. No quota was consumed during
+deployment validation.
+
+The repository contains the Nginx TLS/Basic-Auth/rate-limit/path-only-audit
+template and activation procedure, but Nginx is not installed and no
+hostname/certificate was provided. LAN exposure, HTTPS/auth proxy activation
+and any privileged firewall changes therefore remain administrator work. The
+loopback listener must not be described as LAN- or Internet-facing.
+
+Final code/deployment verification ran 441 default-environment tests with zero
+failures and 27 explained skips. The 23 loopback skips then passed as host-only
+socket/security 25/25 and redirect/budget 10/10 groups; the two base-runtime
+model skips passed in the ignored isolated runtime as part of the complete 6/6
+official-model suite; the opt-in systemd recovery test passed 1/1. The sole
+remaining skipped check is Nginx integration because Nginx is not installed.
+Deterministic retrieval passed 7/7 with micro Recall@K 1.0. These checks made
+no live Search, LLM or embedding request.
+
+The remaining 2026-08-28 paragraphs preserve graph/index provenance and
+historical acceptance evidence. Their earlier LAN acceptance does not describe
+the current loopback-only listener.
 
 The first prewarm failed closed because the production vector file was stale
 for the current graph.  The vector CLI also exposed an obsolete top-level
@@ -809,8 +862,8 @@ and BH corrections, LightRAG, linear and RRF each significantly exceed full.
 Linear versus LightRAG, RRF versus LightRAG and RRF versus linear are all
 non-significant; the largest point estimate is not a significant winner. This
 is a corroborating negative result for learned full, not evidence that
-SCOPE-Rank is effective. It must always be called an **audited post-access,
-deterministic namespace-repaired future evaluation** with
+SCOPE-Rank is effective. It must always be called an **audited post-access
+namespace-repaired future evaluation** with a deterministic repair and
 `pristine_single_pass_sealed_test=false`.
 
 Post-publication integrity audit found no artifact blocker: all 20 direct and
@@ -824,6 +877,27 @@ per-query dictionary key identifiers. No per-query metric values were printed,
 no method/output was changed, no refit or selection followed, and all later
 checks were aggregate-only. This process deviation must remain disclosed; it
 does not convert the already non-pristine result into pristine evidence.
+
+Separate from that 300-query July result, the repository now contains the
+machine-complete builder and evaluator protocol for a future formal 500-paper
+full-denominator product acceptance. A qualifying run must start a **new**
+Crossref acquisition with the pre-attempt request ledger, independent
+high-water/global usage anchors, stable budget binding, replayable accepted-row
+provenance and used successful-response evidence. Admission then requires the
+new dataset and builder manifest to be owned regular mode-`0444` files and the
+complete acquisition-evidence bundle to pass offline replay before any grant or
+live socket claim. The legacy files remain unchanged:
+
+- `benchmark_artifacts/recent_journals/dataset.jsonl`, mode `0664`, SHA-256
+  `4c4d59dcdbf330f5703f7b3ea1ffabbd2459cef231506b8901cb16582cbf65f1`;
+- `benchmark_artifacts/recent_journals/manifest.json`, mode `0664`, SHA-256
+  `99abb8754f42b2ec278be9aa5582bc38204c433aec02100a53b0092ae4e0026c`.
+
+Those legacy files lack the acquisition bundle and are intentionally rejected
+by formal dry-run preflight. They were not chmodded, overwritten or
+retroactively bound. No new 500-paper Crossref acquisition and no live
+500-paper Search/LLM evaluation has been authorized or executed. Infrastructure
+completion is not evaluation completion.
 
 The three-expert package is complete at
 `benchmark_artifacts/future_sealed_expert_review_202607_v1/`, manifest
@@ -866,13 +940,13 @@ Final machine validation was run from clean source/docs commit `9c6ed9b`:
   `0444`, 6,862 bytes, SHA-256
   `02bf056f663ae2d3578e7295fa7248fc358f2047e5ad88a0526084ab34182e57`.
 
-The user authorized another final host service restart. The ready PID changed
-from `2212637` to `84517`; the post-restart preload was 18,927 ms and health
-reported `ready=true`, `bindings_current=true`, persistent worker ready, exact
-vector/LightRAG hashes, `NRestarts=0` and `Result=success`. The unit remains
-`active/running`, `enabled`, and `Linger=yes`. No `/api/search`, Search, LLM or
-embedding call was made by validation. This verifies a service restart, not a
-physical host reboot.
+The 2026-08-30 private-generation deployment subsequently passed an authorized
+host unit restart and forced-process-termination recovery with `ready=true`,
+`bindings_current=true`, the persistent worker ready and the exact runtime,
+vector and LightRAG bindings recorded above. The unit remains `active/running`,
+`enabled`, and under the lingering user manager. No `/api/search`, Search, LLM
+or embedding call was made by deployment validation. This verifies process
+recovery, not a physical host reboot.
 
 Expert tooling and materials are implemented and frozen; real three-rater
 annotations remain manual and must never be synthesized.

@@ -412,8 +412,8 @@ leakage。正式 evaluation manifest、metrics、leakage audit 和 namespace aud
 - `54cb5246cca70decb8b5383da650670dc0630c07e8b4f3b31fb9cc4b74e7e725`;
 - `e42d787a4a595ed2e8effefe3e91c0fbb0be544f95bde66ee522f95842248c71`.
 
-该运行必须表述为 **audited post-access deterministic namespace-repaired future
-evaluation**，且 `pristine_single_pass_sealed_test=false`。不得称为 pristine sealed-test
+该运行必须表述为 **audited post-access namespace-repaired future
+evaluation**；其修复是 deterministic，且 `pristine_single_pass_sealed_test=false`。不得称为 pristine sealed-test
 success，也不得删除 null/负结果或将工程完成改写为 SCOPE-Rank 有效性。
 
 三专家盲评 manifest
