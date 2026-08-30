@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import http.client
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -47,10 +48,30 @@ MANIFEST_FILE = "venue_import_manifest.json"
 LIGHTRAG_WORKSPACE = ""
 VENUE_ID_RE = re.compile(r"(?i)VENUE::(\d+)::")
 IMPORT_EVENT_LOOP_HEARTBEAT_SECONDS = 0.25
+_LIGHTRAG_LOGGING_LOCK = threading.Lock()
 
 
 class LightRAGRuntimeError(RuntimeError):
     """Raised when mandatory LightRAG storage or retrieval is unavailable."""
+
+
+def _configure_lightrag_logging() -> None:
+    """Keep third-party LightRAG query content out of production logs.
+
+    LightRAG 1.5.6 logs raw node, edge, and vector queries at ``INFO`` on the
+    process-global ``lightrag`` logger.  A per-request context manager would
+    race with concurrent requests, so enforce a process-level floor instead.
+    Existing namespace loggers and handlers are covered because propagated
+    child records are filtered by handler level, while warnings and errors
+    remain observable.
+    """
+
+    with _LIGHTRAG_LOGGING_LOCK:
+        logger = logging.getLogger("lightrag")
+        logger.setLevel(logging.WARNING)
+        logger.propagate = False
+        for handler in logger.handlers:
+            handler.setLevel(logging.WARNING)
 
 
 class _UnicodeCodepointTokenizer:
@@ -331,6 +352,7 @@ def _runtime_components(
         raise LightRAGRuntimeError(
             "未安装 LightRAG；请运行 python3 -m pip install -e ."
         ) from exc
+    _configure_lightrag_logging()
 
     try:
         root = load_api_assistant_config(config_path)
@@ -559,6 +581,7 @@ async def _query_async(
         low_keywords = [query]
     await rag.initialize_storages()
     try:
+        _configure_lightrag_logging()
         result = await rag.aquery_data(
             query,
             QueryParam(
@@ -640,6 +663,7 @@ class _PersistentLightRAGRuntime:
         if not high_keywords and not low_keywords:
             low_keywords = [query]
         assert self.rag is not None
+        _configure_lightrag_logging()
         return await self.rag.aquery_data(
             query,
             QueryParam(
