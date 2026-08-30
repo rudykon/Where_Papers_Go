@@ -3,8 +3,11 @@ from __future__ import annotations
 import io
 import http.client
 import json
+import os
+import stat
 import unittest
 import urllib.error
+import urllib.request
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,9 +15,16 @@ from tempfile import TemporaryDirectory
 from scripts.build_recent_journal_benchmark import (
     BuildWindow,
     CrossrefClient,
+    CrossrefItemEvidence,
+    CrossrefResponseEvidence,
     JournalVenue,
+    _RejectCrossrefRedirects,
     allocate_stratum_targets,
     _finalize_benchmark_outputs,
+    _parse_request_ledger_lines,
+    _record_with_item_evidence,
+    _sha256_file,
+    _verify_acquisition_evidence,
     build_issn_index,
     classify_broad_field,
     jats_to_text,
@@ -256,10 +266,90 @@ class PlanningTests(unittest.TestCase):
             self.assertEqual(plan["request_bound"]["bulk_logical_requests"], 2)
             self.assertEqual(plan["request_bound"]["configured_http_attempt_cap"], 40)
             self.assertEqual(plan["external_cost"]["estimated_charge_usd"], 0.0)
+            self.assertFalse(plan["acquisition_evidence"]["required"])
             self.assertFalse(output.exists())
 
 
 class CrossrefRequestSafetyTests(unittest.TestCase):
+    def test_ledger_parser_rejects_retroactive_malformed_records(self) -> None:
+        malformed = {
+            "schema_version": 1,
+            "event": "attempt_reserved",
+            "sequence": 1,
+            "budget_id": "strict-budget",
+            "reserved_at": "not-a-date",
+            "request_url_sha256": "Z" * 64,
+            "recorded_after_fact": True,
+            "unexpected": "field",
+        }
+        with self.assertRaisesRegex(ValueError, "continuity mismatch"):
+            _parse_request_ledger_lines(
+                [json.dumps(malformed) + "\n"],
+                path=Path("malformed-ledger.jsonl"),
+                budget_id="strict-budget",
+            )
+
+    def test_socket_is_opened_only_after_durable_reservation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+
+            class InspectingOpener:
+                def open(self, _request, *, timeout):
+                    self.timeout = timeout
+                    rows = [
+                        json.loads(line)
+                        for line in ledger.read_text(encoding="utf-8").splitlines()
+                    ]
+                    if len(rows) != 1 or rows[0]["event"] != "attempt_reserved":
+                        raise AssertionError("socket observed before reservation")
+                    return io.BytesIO(b'{"message":{"items":[]}}')
+
+            client = CrossrefClient(
+                cache_dir=root / "cache",
+                mailto="test@example.org",
+                timeout=5.0,
+                retries=0,
+                request_interval=0.0,
+                use_environment_proxy=False,
+                refresh_cache=False,
+                max_network_requests=1,
+                request_ledger=ledger,
+                request_budget_id="pre-socket-budget",
+            )
+            client.opener = InspectingOpener()
+            client.get_json("/works", {"cursor": "first", "rows": "1"})
+
+    def test_default_opener_rejects_redirect_hops(self) -> None:
+        with TemporaryDirectory() as temporary:
+            client = CrossrefClient(
+                cache_dir=Path(temporary) / "cache",
+                mailto="test@example.org",
+                timeout=5.0,
+                retries=0,
+                request_interval=0.0,
+                use_environment_proxy=False,
+                refresh_cache=False,
+                max_network_requests=1,
+            )
+            handlers = [
+                handler
+                for handler in client.opener.handlers
+                if isinstance(handler, _RejectCrossrefRedirects)
+            ]
+            self.assertEqual(len(handlers), 1)
+            self.assertEqual(
+                sum(
+                    isinstance(handler, urllib.request.HTTPRedirectHandler)
+                    for handler in client.opener.handlers
+                ),
+                1,
+            )
+            with self.assertRaisesRegex(ValueError, "redirect refused"):
+                handlers[0].redirect_request(
+                    None, None, 302, "Found", {}, "https://example.invalid/next"
+                )
+
     def test_cursor_page_omits_crossref_incompatible_published_sort(self) -> None:
         captured: dict[str, object] = {}
         client = object.__new__(CrossrefClient)
@@ -276,6 +366,55 @@ class CrossrefRequestSafetyTests(unittest.TestCase):
             rows=1000,
         )
         self.assertEqual(items, [])
+        self.assertEqual(cursor, "next")
+        self.assertEqual(captured["path"], "/works")
+        params = captured["params"]
+        self.assertIsInstance(params, dict)
+        self.assertNotIn("sort", params)
+        self.assertNotIn("order", params)
+        self.assertEqual(params["cursor"], "*")
+
+    def test_evidence_cursor_page_uses_the_same_fixed_protocol(self) -> None:
+        captured: dict[str, object] = {}
+        client = object.__new__(CrossrefClient)
+
+        def fake_get_json_with_evidence(path: str, params: dict[str, str]):
+            captured["path"] = path
+            captured["params"] = params
+            return (
+                {"message": {"items": [make_item()], "next-cursor": "next"}},
+                CrossrefResponseEvidence(
+                    request_url_sha256="a" * 64,
+                    cache_relative_path=("a" * 64) + ".json",
+                    response_sha256="b" * 64,
+                    response_bytes=123,
+                    observed_via="cache",
+                    request_descriptor={
+                        "schema_version": 1,
+                        "base_url": "https://api.crossref.org",
+                        "path": "/works",
+                        "query": {
+                            "cursor": "*",
+                            "filter": (
+                                "from-pub-date:2026-07-01,"
+                                "until-pub-date:2026-07-31,"
+                                "type:journal-article,has-abstract:true"
+                            ),
+                            "mailto": "test@example.org",
+                            "rows": "1000",
+                        },
+                    },
+                ),
+            )
+
+        client.get_json_with_evidence = fake_get_json_with_evidence
+        items, cursor = CrossrefClient.works_page_with_evidence(
+            client,
+            window=BuildWindow(date(2026, 7, 1), date(2026, 7, 31)),
+            rows=1000,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].item_index, 0)
         self.assertEqual(cursor, "next")
         self.assertEqual(captured["path"], "/works")
         params = captured["params"]
@@ -326,6 +465,315 @@ class CrossrefRequestSafetyTests(unittest.TestCase):
                 resumed.get_json("/works", {"cursor": "third", "rows": "1"})
             self.assertEqual(resumed.network_requests, 0)
             self.assertEqual(len(ledger.read_text().splitlines()), 2)
+
+    def test_same_inode_ledger_truncation_cannot_restore_spent_allowance(self) -> None:
+        class CountingOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                self.calls += 1
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+            registry = root / "registry"
+            opener = CountingOpener()
+
+            def make_client() -> CrossrefClient:
+                client = CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=2,
+                    request_ledger=ledger,
+                    request_budget_id="truncate-budget",
+                    require_private_storage=True,
+                    budget_registry_dir=registry,
+                )
+                client.opener = opener
+                return client
+
+            client = make_client()
+            client.get_json("/works", {"cursor": "first", "rows": "1"})
+            client.get_json("/works", {"cursor": "second", "rows": "1"})
+            original_inode = ledger.stat().st_ino
+            with ledger.open("w", encoding="utf-8") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+            self.assertEqual(ledger.stat().st_ino, original_inode)
+            with self.assertRaisesRegex(ValueError, "rolled back|diverged"):
+                make_client()
+            self.assertEqual(opener.calls, 2)
+            self.assertEqual(
+                len(client.request_highwater_path.read_text().splitlines()), 2
+            )
+            self.assertEqual(len(client.global_usage_path.read_text().splitlines()), 2)
+
+    def test_active_client_rejects_ledger_inode_replacement_before_socket(self) -> None:
+        class CountingOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                self.calls += 1
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+            client = CrossrefClient(
+                cache_dir=root / "cache",
+                mailto="test@example.org",
+                timeout=5.0,
+                retries=0,
+                request_interval=0.0,
+                use_environment_proxy=False,
+                refresh_cache=False,
+                max_network_requests=2,
+                request_ledger=ledger,
+                request_budget_id="replace-budget",
+            )
+            opener = CountingOpener()
+            client.opener = opener
+            client.get_json("/works", {"cursor": "first", "rows": "1"})
+            replacement = root / "replacement.jsonl"
+            replacement.write_bytes(ledger.read_bytes())
+            os.chmod(replacement, 0o600)
+            os.replace(replacement, ledger)
+            with self.assertRaisesRegex(ValueError, "budget binding mismatch"):
+                client.get_json("/works", {"cursor": "second", "rows": "1"})
+            self.assertEqual(opener.calls, 1)
+
+    def test_crash_between_reservation_anchors_is_permanently_fail_closed(self) -> None:
+        class CountingOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                self.calls += 1
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        for fault_after in (1, 2):
+            with self.subTest(fault_after=fault_after), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                ledger = root / "request-ledger.jsonl"
+                registry = root / "registry"
+                opener = CountingOpener()
+
+                def make_client() -> CrossrefClient:
+                    client = CrossrefClient(
+                        cache_dir=root / "cache",
+                        mailto="test@example.org",
+                        timeout=5.0,
+                        retries=0,
+                        request_interval=0.0,
+                        use_environment_proxy=False,
+                        refresh_cache=False,
+                        max_network_requests=2,
+                        request_ledger=ledger,
+                        request_budget_id=f"crash-budget-{fault_after}",
+                        require_private_storage=True,
+                        budget_registry_dir=registry,
+                    )
+                    client.opener = opener
+                    return client
+
+                client = make_client()
+                client._reservation_fault_after_writes = fault_after
+                with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                    client.get_json("/works", {"cursor": "first", "rows": "1"})
+                self.assertEqual(opener.calls, 0)
+                self.assertEqual(len(client.global_usage_path.read_text().splitlines()), 1)
+                self.assertEqual(
+                    len(client.request_highwater_path.read_text().splitlines()),
+                    1 if fault_after == 2 else 0,
+                )
+                self.assertEqual(len(ledger.read_text().splitlines()), 0)
+                with self.assertRaisesRegex(ValueError, "rolled back|diverged"):
+                    make_client()
+                self.assertEqual(opener.calls, 0)
+
+    def test_immutable_budget_binding_rejects_ceiling_expansion_or_change(self) -> None:
+        class FakeOpener:
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+
+            def make_client(ceiling: int) -> CrossrefClient:
+                client = CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=ceiling,
+                    request_ledger=ledger,
+                    request_budget_id="immutable-budget",
+                )
+                client.opener = FakeOpener()
+                return client
+
+            first = make_client(2)
+            first.get_json("/works", {"cursor": "first", "rows": "1"})
+            self.assertEqual(make_client(2).cumulative_network_requests, 1)
+            for changed_ceiling in (1, 3, 1000):
+                with self.subTest(changed_ceiling=changed_ceiling):
+                    with self.assertRaisesRegex(ValueError, "budget binding mismatch"):
+                        make_client(changed_ceiling)
+            binding = ledger.with_name(ledger.name + ".budget.json")
+            self.assertEqual(stat.S_IMODE(binding.stat().st_mode), 0o400)
+            persisted = json.loads(binding.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["hard_http_attempt_ceiling"], 2)
+            replacement = root / "replacement-ledger.jsonl"
+            replacement.write_bytes(b"")
+            os.chmod(replacement, 0o600)
+            os.replace(replacement, ledger)
+            with self.assertRaisesRegex(ValueError, "ledger identity"):
+                make_client(2)
+
+    def test_nonempty_legacy_ledger_cannot_be_retroactively_bound(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "legacy.jsonl"
+            ledger.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "event": "attempt_reserved",
+                        "sequence": 1,
+                        "budget_id": "legacy-budget",
+                        "reserved_at": "2026-08-30T00:00:00+00:00",
+                        "request_url_sha256": "a" * 64,
+                        "recorded_after_fact": False,
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "cannot be adopted retroactively"):
+                CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=1000,
+                    request_ledger=ledger,
+                    request_budget_id="legacy-budget",
+                )
+
+    def test_global_budget_claim_rejects_new_ledger_and_missing_ledger_reset(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            registry = root / "registry"
+            first_ledger = root / "first" / "requests.jsonl"
+            CrossrefClient(
+                cache_dir=root / "cache-one",
+                mailto="test@example.org",
+                timeout=5.0,
+                retries=0,
+                request_interval=0.0,
+                use_environment_proxy=False,
+                refresh_cache=False,
+                max_network_requests=2,
+                request_ledger=first_ledger,
+                request_budget_id="global-budget",
+                require_private_storage=True,
+                budget_registry_dir=registry,
+            )
+            with self.assertRaisesRegex(
+                ValueError, "missing behind an immutable budget|budget binding mismatch"
+            ):
+                CrossrefClient(
+                    cache_dir=root / "cache-two",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=2,
+                    request_ledger=root / "second" / "requests.jsonl",
+                    request_budget_id="global-budget",
+                    require_private_storage=True,
+                    budget_registry_dir=registry,
+                )
+            first_ledger.unlink()
+            with self.assertRaisesRegex(ValueError, "missing behind an immutable budget"):
+                CrossrefClient(
+                    cache_dir=root / "cache-three",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=2,
+                    request_ledger=first_ledger,
+                    request_budget_id="global-budget",
+                    require_private_storage=True,
+                    budget_registry_dir=registry,
+                )
+
+    def test_missing_global_claim_cannot_be_recreated_after_binding(self) -> None:
+        class CountingOpener:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                self.calls += 1
+                return io.BytesIO(b'{"message":{"items":[]}}')
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = root / "request-ledger.jsonl"
+            registry = root / "registry"
+            opener = CountingOpener()
+
+            def make_client() -> CrossrefClient:
+                client = CrossrefClient(
+                    cache_dir=root / "cache",
+                    mailto="test@example.org",
+                    timeout=5.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=2,
+                    request_ledger=ledger,
+                    request_budget_id="missing-claim-budget",
+                    require_private_storage=True,
+                    budget_registry_dir=registry,
+                )
+                client.opener = opener
+                return client
+
+            client = make_client()
+            client.get_json("/works", {"cursor": "first", "rows": "1"})
+            missing_claim_backup = root / "missing-claim-backup.json"
+            os.replace(client.budget_registry_claim_path, missing_claim_backup)
+            with self.assertRaisesRegex(ValueError, "refusing to recreate"):
+                make_client()
+            self.assertEqual(opener.calls, 1)
 
     def test_incomplete_chunked_response_is_retried_and_counted(self) -> None:
         class TransientOpener:
@@ -403,6 +851,8 @@ class CrossrefRequestSafetyTests(unittest.TestCase):
             self.assertEqual(len(ledger.read_text().splitlines()), 1)
             error_files = list((root / "cache").glob("*.error.json"))
             self.assertEqual(len(error_files), 1)
+            self.assertEqual(stat.S_IMODE(error_files[0].stat().st_mode), 0o400)
+            self.assertEqual(stat.S_IMODE((root / "cache").stat().st_mode), 0o700)
             error_record = json.loads(error_files[0].read_text(encoding="utf-8"))
             self.assertNotIn("url", error_record)
             self.assertEqual(error_record["status"], 404)
@@ -445,6 +895,358 @@ class FailedBuildEvidenceTests(unittest.TestCase):
             persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertFalse(persisted["dataset"]["complete"])
             self.assertNotEqual(persisted["dataset"]["sha256"], "pending")
+
+    def test_final_outputs_are_exclusive_and_never_overwritten(self) -> None:
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            first = [{"paper_id": "doi:10.1/first", "title": "First"}]
+            manifest = {
+                "dataset": {
+                    "path": "dataset.jsonl",
+                    "record_count": 1,
+                    "sha256": "pending",
+                    "complete": True,
+                }
+            }
+            _finalize_benchmark_outputs(
+                output, first, manifest, allow_incomplete=False
+            )
+            original_dataset = (output / "dataset.jsonl").read_bytes()
+            original_manifest = (output / "manifest.json").read_bytes()
+            with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
+                _finalize_benchmark_outputs(
+                    output,
+                    [{"paper_id": "doi:10.1/second", "title": "Second"}],
+                    {
+                        "dataset": {
+                            "path": "dataset.jsonl",
+                            "record_count": 1,
+                            "sha256": "pending",
+                            "complete": True,
+                        }
+                    },
+                    allow_incomplete=False,
+                )
+            self.assertEqual((output / "dataset.jsonl").read_bytes(), original_dataset)
+            self.assertEqual((output / "manifest.json").read_bytes(), original_manifest)
+
+
+class AcquisitionEvidenceTests(unittest.TestCase):
+    def _make_evidence_fixture(self, root: Path):
+        venue = make_venue("known", "0007-9235")
+        issn_index = build_issn_index([venue])
+        window = BuildWindow(date(2026, 1, 1), date(2026, 4, 30))
+        item = make_item()
+        raw = json.dumps(
+            {"message": {"items": [item]}},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        class FakeOpener:
+            def open(self, _request, *, timeout):
+                self.timeout = timeout
+                return io.BytesIO(raw)
+
+        ledger = root / "request-ledger.jsonl"
+        client = CrossrefClient(
+            cache_dir=root / "cache",
+            mailto="test@example.org",
+            timeout=5.0,
+            retries=0,
+            request_interval=0.0,
+            use_environment_proxy=False,
+            refresh_cache=False,
+            max_network_requests=2,
+            request_ledger=ledger,
+            request_budget_id="evidence-budget",
+            require_private_storage=True,
+            budget_registry_dir=root / "budget-registry",
+        )
+        client.opener = FakeOpener()
+        payload, response_evidence = client.get_json_with_evidence(
+            "/works",
+            {
+                "cursor": "*",
+                "filter": (
+                    "from-pub-date:2026-01-01,until-pub-date:2026-04-30,"
+                    "type:journal-article,has-abstract:true"
+                ),
+                "rows": "1",
+            },
+        )
+        cached_item = payload["message"]["items"][0]
+        record, status = prepare_crossref_record(
+            cached_item,
+            issn_index=issn_index,
+            expected_venue=venue,
+            window=window,
+            min_abstract_chars=100,
+        )
+        self.assertEqual(status, "ok")
+        assert record is not None
+        record = _record_with_item_evidence(
+            record,
+            CrossrefItemEvidence(cached_item, 0, response_evidence),
+        )
+        return client, ledger, venue, issn_index, window, record
+
+    def test_cache_tamper_is_detected_before_evidence_publication(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client, ledger, venue, issn_index, window, record = (
+                self._make_evidence_fixture(root)
+            )
+            cache_path = next(client.cache_dir.glob("*.json"))
+            tampered = json.loads(cache_path.read_text(encoding="utf-8"))
+            tampered["message"]["items"][0]["title"] = ["Tampered title"]
+            os.chmod(cache_path, 0o600)
+            cache_path.write_text(
+                json.dumps(tampered, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "cache hash/size mismatch"):
+                _verify_acquisition_evidence(
+                    [record],
+                    cache_dir=client.cache_dir,
+                    venues=[venue],
+                    issn_index=issn_index,
+                    window=window,
+                    min_abstract_chars=100,
+                    request_ledger=ledger,
+                    request_budget_id="evidence-budget",
+                    hard_http_attempt_ceiling=2,
+                    budget_binding_path=client.budget_binding_path,
+                    budget_registry_claim_path=client.budget_registry_claim_path,
+                    request_highwater_path=client.request_highwater_path,
+                    global_usage_path=client.global_usage_path,
+                    mailto="test@example.org",
+                    bulk_rows=1,
+                    rows_per_journal=1,
+                    require_complete=True,
+                )
+
+    def test_request_descriptor_cannot_claim_a_non_crossref_origin(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client, ledger, venue, issn_index, window, record = (
+                self._make_evidence_fixture(root)
+            )
+            record["_crossref_acquisition_evidence"]["request_descriptor"][
+                "base_url"
+            ] = "https://example.invalid"
+            with self.assertRaisesRegex(ValueError, "fixed official protocol"):
+                _verify_acquisition_evidence(
+                    [record],
+                    cache_dir=client.cache_dir,
+                    venues=[venue],
+                    issn_index=issn_index,
+                    window=window,
+                    min_abstract_chars=100,
+                    request_ledger=ledger,
+                    request_budget_id="evidence-budget",
+                    hard_http_attempt_ceiling=2,
+                    budget_binding_path=client.budget_binding_path,
+                    budget_registry_claim_path=client.budget_registry_claim_path,
+                    request_highwater_path=client.request_highwater_path,
+                    global_usage_path=client.global_usage_path,
+                    mailto="test@example.org",
+                    bulk_rows=1,
+                    rows_per_journal=1,
+                    require_complete=True,
+                )
+
+    def test_replay_bundle_binds_dataset_cache_ledger_and_builder_hashes(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client, ledger, venue, issn_index, window, record = (
+                self._make_evidence_fixture(root)
+            )
+            records, provenance, leaves, tree = _verify_acquisition_evidence(
+                [record],
+                cache_dir=client.cache_dir,
+                venues=[venue],
+                issn_index=issn_index,
+                window=window,
+                min_abstract_chars=100,
+                request_ledger=ledger,
+                request_budget_id="evidence-budget",
+                hard_http_attempt_ceiling=2,
+                budget_binding_path=client.budget_binding_path,
+                budget_registry_claim_path=client.budget_registry_claim_path,
+                request_highwater_path=client.request_highwater_path,
+                global_usage_path=client.global_usage_path,
+                mailto="test@example.org",
+                bulk_rows=1,
+                rows_per_journal=1,
+                require_complete=True,
+            )
+            self.assertTrue(tree["complete"])
+            self.assertEqual(provenance[0]["ledger_sequences"], [1])
+            self.assertEqual(leaves[0]["ledger_sequences"], [1])
+            output = root / "final"
+            manifest = {
+                "schema_version": 1,
+                "builder": "scripts/build_recent_journal_benchmark.py",
+                "dataset": {
+                    "path": "dataset.jsonl",
+                    "record_count": 1,
+                    "sha256": "pending",
+                    "complete": True,
+                },
+            }
+            _finalize_benchmark_outputs(
+                output,
+                records,
+                manifest,
+                allow_incomplete=False,
+                provenance_rows=provenance,
+                cache_evidence_leaves=leaves,
+                cache_evidence_tree=tree,
+            )
+            persisted = json.loads((output / "manifest.json").read_text())
+            evidence = persisted["acquisition_evidence"]
+            self.assertTrue(evidence["complete"])
+            self.assertEqual(evidence["ledger"]["hard_http_attempt_ceiling"], 2)
+            self.assertEqual(
+                evidence["ledger"]["budget_binding"]["artifact_type"],
+                "crossref_http_attempt_budget_binding",
+            )
+            self.assertEqual(
+                evidence["ledger"]["global_budget_claim"]["artifact_type"],
+                "crossref_global_http_attempt_budget_claim",
+            )
+            self.assertFalse(Path(evidence["ledger"]["path"]).is_absolute())
+            self.assertIn("not cryptographic attestation", evidence["assurance_scope"])
+            self.assertEqual(
+                leaves[0]["request_descriptor"]["base_url"],
+                "https://api.crossref.org",
+            )
+            self.assertTrue(
+                provenance[0]["cache_relative_path"].startswith("raw_cache/")
+            )
+            self.assertEqual(
+                evidence["provenance"]["sha256"],
+                _sha256_file(output / "provenance.jsonl"),
+            )
+            self.assertEqual(
+                evidence["cache_leaves"]["sha256"],
+                _sha256_file(output / "cache_evidence.jsonl"),
+            )
+            self.assertEqual(
+                evidence["cache_tree"]["sha256"],
+                _sha256_file(output / "cache_evidence_manifest.json"),
+            )
+            self.assertEqual(
+                evidence["ledger"]["sha256"],
+                _sha256_file(output / "request-ledger-prefix.jsonl"),
+            )
+            self.assertEqual(
+                evidence["ledger"]["highwater"]["sha256"],
+                _sha256_file(output / "request-ledger-highwater-prefix.jsonl"),
+            )
+            self.assertEqual(
+                evidence["ledger"]["global_usage"]["sha256"],
+                _sha256_file(output / "request-ledger-global-prefix.jsonl"),
+            )
+            self.assertEqual(evidence["ledger"]["sha256"], _sha256_file(ledger))
+            self.assertEqual(
+                (output / "request-ledger-prefix.jsonl").read_bytes(),
+                (output / "request-ledger-highwater-prefix.jsonl").read_bytes(),
+            )
+            self.assertEqual(
+                (output / "request-ledger-prefix.jsonl").read_bytes(),
+                (output / "request-ledger-global-prefix.jsonl").read_bytes(),
+            )
+            self.assertEqual(
+                evidence["builder_source"]["sha256"],
+                _sha256_file(Path("scripts/build_recent_journal_benchmark.py")),
+            )
+            for name in (
+                "dataset.jsonl",
+                "provenance.jsonl",
+                "cache_evidence.jsonl",
+                "cache_evidence_manifest.json",
+                "manifest.json",
+            ):
+                self.assertEqual(
+                    stat.S_IMODE((output / name).stat().st_mode), 0o444
+                )
+            self.assertEqual(
+                stat.S_IMODE(next(client.cache_dir.glob("*.json")).stat().st_mode),
+                0o400,
+            )
+            self.assertEqual(stat.S_IMODE(ledger.stat().st_mode), 0o600)
+            raw_snapshot = output / leaves[0]["cache_relative_path"]
+            self.assertTrue(raw_snapshot.is_file())
+            self.assertEqual(stat.S_IMODE(raw_snapshot.stat().st_mode), 0o400)
+            for name in (
+                "request-ledger-prefix.jsonl",
+                "request-ledger-highwater-prefix.jsonl",
+                "request-ledger-global-prefix.jsonl",
+                "request-budget-binding.json",
+                "request-budget-global-claim.json",
+            ):
+                self.assertEqual(stat.S_IMODE((output / name).stat().st_mode), 0o444)
+            self.assertEqual(stat.S_IMODE((output / "raw_cache").stat().st_mode), 0o700)
+            tree_text = (output / "cache_evidence_manifest.json").read_text()
+            self.assertNotIn(str(root), tree_text)
+            snapshot_sha = _sha256_file(output / "request-ledger-prefix.jsonl")
+            with ledger.open("a", encoding="utf-8") as handle:
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self.assertEqual(
+                _sha256_file(output / "request-ledger-prefix.jsonl"), snapshot_sha
+            )
+
+    def test_ledger_tamper_between_replay_and_publish_is_rejected(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client, ledger, venue, issn_index, window, record = (
+                self._make_evidence_fixture(root)
+            )
+            records, provenance, leaves, tree = _verify_acquisition_evidence(
+                [record],
+                cache_dir=client.cache_dir,
+                venues=[venue],
+                issn_index=issn_index,
+                window=window,
+                min_abstract_chars=100,
+                request_ledger=ledger,
+                request_budget_id="evidence-budget",
+                hard_http_attempt_ceiling=2,
+                budget_binding_path=client.budget_binding_path,
+                budget_registry_claim_path=client.budget_registry_claim_path,
+                request_highwater_path=client.request_highwater_path,
+                global_usage_path=client.global_usage_path,
+                mailto="test@example.org",
+                bulk_rows=1,
+                rows_per_journal=1,
+                require_complete=True,
+            )
+            with ledger.open("a", encoding="utf-8") as handle:
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            with self.assertRaisesRegex(ValueError, "ledger changed"):
+                _finalize_benchmark_outputs(
+                    root / "final",
+                    records,
+                    {
+                        "dataset": {
+                            "path": "dataset.jsonl",
+                            "record_count": 1,
+                            "sha256": "pending",
+                            "complete": True,
+                        }
+                    },
+                    allow_incomplete=False,
+                    provenance_rows=provenance,
+                    cache_evidence_leaves=leaves,
+                    cache_evidence_tree=tree,
+                )
+            self.assertFalse((root / "final").exists())
 
 
 if __name__ == "__main__":
