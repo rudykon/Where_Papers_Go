@@ -11,10 +11,10 @@
 
 ### Next-session checkpoint
 
-This checkpoint was prepared on 2026-08-26 and refreshed through source/data HEAD
-`3b2e7cc90716ca2923c5d82adbc860e9c08dcab5` on 2026-08-30. The last formal
-method-result source HEAD remains
-`4946fde4bd4e32b726aa99a6f3e8ec1c72d2cbf5`. The current
+This checkpoint was prepared on 2026-08-26 and refreshed through the sealed
+repair executable/config freeze at
+`f416f1f6348fc3bf25aa23b0254de2b1904d6e68` on 2026-08-30. That exact clean
+commit produced the formal post-access repaired future result. The current
 exit-gate state supersedes the earlier percentage estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
@@ -35,22 +35,31 @@ exit-gate state supersedes the earlier percentage estimates:
   full method is a significant negative result; fixed linear/RRF alternatives
   are not significantly better than LightRAG. Engineering completion must not
   be rewritten as a method-effectiveness claim;
-- Stage D's freeze, physically separated label-vault workflow, one-time
-  prediction commitment/evaluation path and three-expert tooling are complete.
-  The authorized July 2026 Crossref acquisition is also complete at exactly
-  300/300: the full denominator was atomically published, the label vault
-  remains unopened, and the cumulative append-only ledger stopped at
-  234/1,000. Five label-blind Search-free score runs are complete; the remaining
-  bge-m3/LightRAG/cross-encoder and SCOPE prediction chain is waiting on the
-  separate exact bge-m3 query-embedding authorization recorded below;
+- Stage D's freeze, physically separated label-vault workflow, prediction
+  commitment, automated evaluation and three-expert tooling are complete. The
+  authorized July 2026 Crossref acquisition retained exactly 300/300 and the
+  append-only ledger stopped at 234/1,000. Eight blind source runs, three
+  frozen SCOPE variants and commitment `8a2732e1...875a` were created before
+  label access. The intended pristine one-pass evaluator then failed closed after its
+  only first label access and before metrics because the acquisition and
+  candidate catalogs used different venue-ID namespaces. A catalog-wide,
+  label-free exact-ISSN bijection was frozen before any metric computation;
+  after a new explicit authorization, the globally one-shot deterministic
+  repair retained all 300 queries and completed 4-method/6-pair evaluation.
+  This is an audited post-access namespace-repaired future evaluation, not a
+  pristine single-pass sealed test. The learned full method remains a
+  significant negative result; the simple linear/RRF variants do not
+  significantly beat LightRAG. The 250-query/6,129-item expert materials are
+  complete, but zero real expert annotations have been received;
 - model acquisition remains repository-auditable: every exact HF revision was
   dry-run first, cache/disk/cost/quota state was recorded, failures preserve
   `.building`, and successful payloads were SHA-256 checked before atomic
   publication. The ignored isolated runtime contains `adapters==1.3.0` and its
   official-model test suite passed 6/6;
-- the active branch `agent/m3-strong-baselines` and its upstream are aligned at
-  `3b2e7cc`; `f3e3343`, `5cc5ccc` and `3b2e7cc` were ordinary non-force pushed
-  under the user's explicit authorization. `main`, `origin/main`, and
+- the sealed-repair runtime branch `agent/m3-strong-baselines` and its upstream
+  were aligned at `f416f1f` before this documentation closeout; all research
+  commits through that freeze were ordinary non-force pushes under the user's
+  explicit authorization. `main`, `origin/main`, and
   `origin/agent/p0-causal-evaluation` remain protected and aligned at
   `ef12a0edd49c459b00abbd4f1c2c3d751cda82ae`. No PR, merge, tag, force push,
   or direct `main` push was created;
@@ -71,20 +80,20 @@ Continue in this order unless the user changes the objective:
    isolated `adapters` runtime and the complete M3 unified freeze;
 5. **complete:** retain the SCOPE-Rank method/config freeze, all 11 ablations,
    78-pair statistics, selective v2 report and explicit negative conclusion;
-6. **complete:** retain the 300/300 future set, unopened label vault, 234/1,000
-   request ledger, reference binding, and five complete blind score runs;
-7. **next authorization gate:** transmit exactly 300 missing blind-query texts
-   (455,260 characters) to the existing PCL bge-m3 endpoint in five logical
-   batches with at most 15 HTTP attempts and estimated cost USD 0. After that,
-   build LightRAG, the local cross-encoder and the three frozen SCOPE variants
-   without reading labels;
-8. after the prediction commitment exists, run the one-time evaluator and use
-   the already implemented tooling to build
-   and validate the 200--300-query, three-expert blind-evaluation package.
-   Never synthesize human labels;
-9. finish the final full validation, documentation and HANDOFF update. Keep
-   administrator TLS activation, real expert labels, and any unapproved live
-   Search/LLM evaluation explicitly pending.
+6. **complete:** retain the 300/300 future set, 234/1,000 request ledger, eight
+   complete source runs, three SCOPE variants and pre-access prediction
+   commitment;
+7. **complete:** retain the original failed first label access, immutable audit,
+   catalog-wide exact crosswalk, global one-shot sentinel and non-pristine
+   300-query namespace-repaired evaluation. Never retry either evaluator or
+   relabel this result as pristine;
+8. **complete:** retain the 250-query, three-expert blind-evaluation package,
+   deterministic randomization, sealed method mapping, audit/export tooling and
+   explicit `tools_and_materials_complete_human_evaluation_pending` status;
+9. **human/manual next gates:** three real experts must complete the blinded
+   annotations. Administrator TLS activation, a literal host reboot and any
+   live 500-paper Search/LLM acceptance also remain external/manual. Never
+   synthesize human labels or infer those gates from offline completion.
 
 Do not redownload or regenerate the clean PCL corpus merely to begin M3. Do not
 overwrite any v2-v6, canary, failed, `.building`, raw, paper, PCL, or acceptance
@@ -111,10 +120,11 @@ Suggested next-session prompt:
 
 > Read root `HANDOFF.md` completely with Section 0 as authoritative, verify the
 > current M3/SCOPE branch/upstream and all recorded artifact hashes, and preserve
-> every ignored/historical artifact. Resume after the frozen negative SCOPE-Rank
-> result: build a genuinely future sealed test and the expert blind-evaluation
-> infrastructure without retuning, synthesizing labels, launching live Search,
-> or rebuilding the clean PCL corpus.
+> every ignored/historical artifact. Retain the negative SCOPE-Rank result, the
+> original failed sealed attempt and the globally one-shot post-access repair;
+> never rerun, retune, synthesize expert labels, launch unapproved live Search,
+> or rebuild the clean PCL corpus. The next research dependency is execution by
+> three real blinded experts, not more automated metric fitting.
 
 ### Deployment checkpoint (2026-08-28)
 
@@ -658,7 +668,7 @@ engineering/reproducibility delivery, but its scientific success gate failed.
 No paper claim of SCOPE-Rank effectiveness, improvement, calibration quality or
 state of the art is permitted from this evidence.
 
-### Future sealed-test acquisition and blind-score checkpoint (2026-08-30)
+### Future sealed-test acquisition, prediction and evaluation checkpoint (2026-08-30)
 
 The method, candidate universe, source revisions, metrics and paired-statistics
 protocol were frozen before the first future-data request. The current tracked
@@ -700,8 +710,10 @@ Formal immutable inputs under
 - restricted source labeled dataset, mode `0600`:
   `2cfbb51da35c1c70e3034fe432aa90c43cbaeb42d0e65851401a5fc9139b8261`.
 
-The manifest status is `labels_sealed_predictions_pending`. Only label-vault
-bytes, mode and expected hash were verified; label content has not been parsed.
+The immutable acquisition manifest retains its pre-prediction status
+`labels_sealed_predictions_pending`; this is provenance, not the current
+operational state. Before prediction commitment, only label-vault bytes, mode
+and expected hash were verified and label content had not been parsed.
 The label-blind reference binding has SHA-256
 `fc0ee02b6c27a309082ffc1e678692c2f398adb0664331e20a0898dc2b3fad8c`,
 query-order fingerprint
@@ -720,7 +732,7 @@ one-paper-per-journal rule, 300-character abstract floor, seed, method,
 candidates, metrics, statistics, USD 0 and cumulative 1,000-attempt cap are
 unchanged. This operational amendment used aggregate stratum completion only.
 
-Five complete label-blind Search-free score runs now share all 300 ordered
+Eight complete label-blind Search-free source score runs share all 300 ordered
 queries, all 20,087 candidates, Top-100 depth, 30,000 ranking entries and zero
 failed/empty queries:
 
@@ -731,22 +743,96 @@ failed/empty queries:
 | property graph | `978717f6d4c738589b98a6f8c580d40c590fddb03e6e13e2d442df8afe6cd01b` | `7edc51a0fa5ca19679804490123c87d1d56a558f9847120b6d25c59648c57880` | 0 |
 | SPECTER2 proximity | `ad80bd02a87a81ee901857b0ec178395c93d8788068d51d801c681d2b423beda` | `c052ea0af81588e73ada5a0049a0a114323005dc04f37226734e1364cdc5e3c6` | 0 |
 | SciNCL | `90f97ab55de80ffb55b01e67f47732a4db1debd676e558aee4f21d3f51fde8d7` | `3b8951a51607357d90903b14daf7422fd0cd3afc86f6ebafe8fcc3bef5232ddf` | 0 |
+| bge-m3 prototype max | `8f792cd248c1335dad27a089f1b41ca734a706e2af1d6f939561e06e70e28773` | `addbbcdd61c568c41792d09bd92dc70e51ed3c4b1cae4f5883469cd38f30a5f0` | 5 authorized embedding batches |
+| LightRAG edge mix | `fe0352baa7ea7528c2933e16a89b55e75b5274bf9ec235520318ceb4087934e3` | `0ab22bbc8658f49250ada44a2c256fa67f9078b3223209aa39e26e5a3a44e0d2` | 0 |
+| local cross-encoder | `a3026804f3e9e50a40e668b380585ca8fa7d13026659ce4ff7ee03a3cca917d4` | `7f7cb6de04944ae5a7d3295fd3d61ffeacc2f983741e31a2703e44fb589cb896` | 0 |
 
 SPECTER2 and SciNCL used the pinned local assets, CUDA and isolated ignored
 runtime in offline mode. Their original M3 caches remain byte-identical at
 `984895ae...f20` and `d2a7064c...681`; only copied shadow caches received the
 300 future-query embeddings.
 
-The bge-m3 zero-network plan was repeated against a byte-identical shadow copy
-of the formal M3 cache (`25c357ce...891b`). It found 40,198/40,198 prototypes
-cached and exactly 300 missing query texts: 455,260 prepared characters, five
-logical batches at batch size 64, `max_retries=2`, at most 15 HTTP attempts,
-provider fingerprint `1f2fc9...f80d5`, and caller-bounded cost USD 0. No
-network was performed by the plan. Transmitting those texts to the configured
-PCL bge-m3 endpoint remains a separate explicit authorization gate. The
-LightRAG, local cross-encoder, frozen SCOPE predictions, one-time label access
-and expert package must wait for that gate; they must not substitute a different
-endpoint or inspect labels.
+The bge-m3 zero-network plan used a byte-identical shadow copy of the formal M3
+cache (`25c357ce...891b`) and found 40,198/40,198 prototypes cached plus exactly
+300 missing queries: 455,260 prepared characters, five logical batches, at most
+15 HTTP attempts and USD 0. The user explicitly authorized that exact request.
+The configured PCL endpoint completed all five batches, added only the 300
+queries to the ignored shadow cache, made no Search/LLM call and left the formal
+M3 cache unchanged. LightRAG replay and the pinned local cross-encoder then ran
+offline with zero external calls.
+
+The frozen SCOPE inference produced three 300-query Top-100 variants with no
+failure: full `7dd9bc8e...6223`, fixed linear `7eafc6f6...db0d` and RRF
+`62d15988...4729`. The immutable pre-access prediction commitment has SHA-256
+`8a2732e1626397d58f0be7bd9665aa98b79ddade13b1a294722640a5a39d875a`
+and binds the 300 ordered queries, 20,087 candidates, eight source runs, three
+variants and label-vault byte hash without parsing label content.
+
+The original one-time evaluator accessed the committed label vault once and
+failed closed before leakage or metric computation with
+`sealed labels contain out-of-candidate gold venues`. Its immutable access
+audit is `85a0bab2daf23449026a016832de3daa1591f6fd03d2964e75f67b880e84e4a2`;
+the original output directory was not published. This first access and failure
+must never be deleted, hidden or retried.
+
+Aggregate-only diagnosis identified an acquisition/candidate venue-ID namespace
+mismatch. A label-free catalog-wide exact/checksum-valid-ISSN crosswalk was
+then frozen: 20,087 source, target, mapped and distinct target IDs; 20,039
+identity and 48 remapped; zero unmapped, ambiguous or collisions. No name or
+fuzzy matching was allowed. Mapping SHA-256 is
+`c2001797828626141c8c6ae799a596853c016744690ef8fb320c9e883def1485`;
+manifest SHA-256 is
+`64456236a956ece0929bffc923b2f918a09c292fd3d35c1f2a9bd55eb2940d33`.
+The repair implementation/config were frozen at clean commit `f416f1f`; a new
+explicit user authorization bound the exact label, crosswalk, code bundle,
+runtime, output and zero-call/cost scope. A global read-only one-shot sentinel
+was published before the second semantic read; no retry is permitted even
+after a crash.
+
+The authorized deterministic repair succeeded and retained the complete 300
+denominator. It translated 299 qrels identically and one through the frozen
+crosswalk, with zero dropped/unmapped/ambiguous/failed queries, zero critical
+leakage, four retained non-critical `gold_venue_mentioned_in_query` warnings,
+four frozen methods and all six unordered comparisons. It changed no query
+text/order/gain, prediction, method, hyperparameter, candidate, denominator or
+statistical protocol. Formal hashes are:
+
+- evaluation manifest: `b0eb5d5045df10a0e64f7dc0ffba264bdc479671cb669197b5f3580d79391a0b`;
+- metrics: `e50da50af5a39266a8af9ef2fdde05bfc82abf2a5d11a047813567060cc7e52a`;
+- leakage audit: `54cb5246cca70decb8b5383da650670dc0630c07e8b4f3b31fb9cc4b74e7e725`;
+- namespace mapping audit: `e42d787a4a595ed2e8effefe3e91c0fbb0be544f95bde66ee522f95842248c71`;
+- repair-start sentinel: `fa7ab84ccfc889eca64710f19d25cd39fe91e5c938c80ecab9026b52b4530a2d`.
+
+Full-denominator future nDCG@10 is LightRAG `0.081519`, learned full
+`0.027090`, fixed linear `0.089928` and RRF `0.093417`. After the frozen Holm
+and BH corrections, LightRAG, linear and RRF each significantly exceed full.
+Linear versus LightRAG, RRF versus LightRAG and RRF versus linear are all
+non-significant; the largest point estimate is not a significant winner. This
+is a corroborating negative result for learned full, not evidence that
+SCOPE-Rank is effective. It must always be called an **audited post-access,
+deterministic namespace-repaired future evaluation** with
+`pristine_single_pass_sealed_test=false`.
+
+Post-publication integrity audit found no artifact blocker: all 20 direct and
+136 nested non-label path/hash/byte bindings passed, 87 unique non-label files
+and nine permission bindings matched, all six label-related bindings were
+skipped without reopening the vault, and no target `.building`/`.failed`
+directory exists. Two exploratory validation displays nonetheless breached the
+stricter aggregate-only inspection rule: one printed the four venue-name values
+already stored in warning findings, and an independent reviewer printed
+per-query dictionary key identifiers. No per-query metric values were printed,
+no method/output was changed, no refit or selection followed, and all later
+checks were aggregate-only. This process deviation must remain disclosed; it
+does not convert the already non-pristine result into pristine evidence.
+
+The three-expert package is complete at
+`benchmark_artifacts/future_sealed_expert_review_202607_v1/`, manifest
+`75cdf406fbad493c751ca453c3e0d3fceb1b8923d2869793036d270d6e6e13a7`.
+It deterministically samples 250 queries, merges four methods' Top-5/Top-10
+into 6,129 blinded items, hides method/rank/score and includes three anonymous
+assignments, schema, sealed mapping, hash-chained audit/conflict/export tools.
+Real annotations received are 0, agreement is unavailable, and the only valid
+status is `tools_and_materials_complete_human_evaluation_pending`.
 
 Current offline verification after the acquisition safety fix:
 
@@ -772,9 +858,8 @@ vector/LightRAG hashes, `NRestarts=0` and `Result=success`. The unit remains
 embedding call was made. This verifies a service restart, not a physical host
 reboot.
 
-Expert tooling is implemented, but its material package requires committed
-frozen predictions; real three-rater annotations remain manual and must never
-be synthesized.
+Expert tooling and materials are implemented and frozen; real three-rater
+annotations remain manual and must never be synthesized.
 
 All P0 exit gates remain satisfied. The bge-era subsection immediately above is
 retained as immutable history; the newer graph/model checkpoint is the current

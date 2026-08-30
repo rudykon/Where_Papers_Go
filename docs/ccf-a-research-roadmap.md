@@ -1,13 +1,13 @@
 # Where Papers Go 研究化与 CCF-A 投稿路线
 
-> 文档状态：工作草案；P0-A～P0-C 已完成，M3 强基线进行中
-> 状态更新：2026-08-27（Asia/Shanghai）
+> 文档状态：证据冻结草案；P0 和 M3 工程完成，SCOPE-Rank 科学成功门未通过，专家人评待执行
+> 状态更新：2026-08-30（Asia/Shanghai）
 > 主目标：SIGIR Full Paper
 > 原则：产品能力可继续增强，但论文主结论必须来自可复现、无泄漏的离线实验。
 
 ## 1. 投稿判断
 
-Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，但当前还不宜直接作为 CCF-A Full Paper 投稿。P0 已建立可复现、Search-free、零 critical leakage 的全库离线基线；现阶段仍缺公平的稠密/科学编码器/图/RAG 强基线、配对统计，以及可独立验证的方法贡献。LightRAG、稠密向量、属性图、LLM 和 Search API 的产品集成本身不能替代这些论文证据。
+Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，但当前还不宜把 SCOPE-Rank 包装成 CCF-A Full Paper 的成功方法贡献。P0 已建立可复现、Search-free、零 critical leakage 的全库离线基线；M3 强基线工程、统一评测和配对统计已完成。然而，SCOPE-Rank full 在暴露开发集和有限定的未来评测中都是显著负结果，专家盲评尚无真实标注。LightRAG、稠密向量、属性图、LLM 和 Search API 的产品集成本身仍不能替代方法有效性证据。
 
 推荐将研究问题定义为：
 
@@ -16,7 +16,7 @@ Where Papers Go 已经是一个较完整的开放候选投稿地检索系统，�
 
 SIGIR 是当前最匹配的主目标，因为论文的核心应当是信息检索、排序、推荐和评测。可另行准备 Demo 用于展示系统，但根据 CCF 目录说明，Demo、Short、Workshop 等非 Full/Regular Paper 不按 CCF-A Full Paper 计入。投稿前应再核对当年的 [CCF 目录与说明](https://www.ccf.org.cn/Academic_Evaluation/By_category/) 以及 [SIGIR Full Papers Track](https://sigir2026.org/en-AU/pages/submissions/full-papers-track)。
 
-## 2. 当前证据：P0 基线，不是论文结论
+## 2. 当前证据：工程完整，方法结果为负
 
 当前正式离线证据来自 P0-C acceptance run，而不是下面的旧 500 篇在线诊断：
 
@@ -31,7 +31,16 @@ SIGIR 是当前最匹配的主目标，因为论文的核心应当是信息检�
 
 这些结果完整绑定 dataset、query/candidate 指纹、profile、配置、代码状态、
 运行环境和逐 run sidecar。June-test 已被开发者查看，因此仍属于 development
-set；在方法与指标冻结前不创建未来 sealed test。
+set；后续未来集只在方法、指标和统计协议冻结后创建。
+
+| 当前研究证据 | 真实状态 |
+| --- | --- |
+| M3 强基线 | 工程完整；11 种方法共享 4,791 条开发查询、20,087 候选、查询顺序和指标，完整报告 55 对比较 |
+| SCOPE-Rank 暴露开发集 | full 方法显著弱于最强 M3 基线；linear/RRF 不建立显著增益 |
+| 2026-07 未来评测 | 300 查询、20,087 候选、4 种冻结方法、6 对比较；full 再次显著更差，linear/RRF 对 LightRAG 的数值增益不显著 |
+| 专家盲评 | 250 条查询、6,129 个去重评审项、3 份专家分配的工具与材料已完成；真实标注 0 |
+
+未来评测必须始终附带 non-pristine 限定：首次评测在 label access 后、指标计算前因 ID 命名空间错配 fail-closed；后续发布的是确定性、可审计的 post-access namespace-repaired evaluation。它保留全部 300 分母，且未改变预测、方法、统计、候选或查询，但不能被重新标记为 pristine single-pass sealed test。
 
 以下 500 篇结果保留为产品在线链路的历史诊断和回归参照：
 
@@ -50,7 +59,7 @@ set；在方法与指标冻结前不创建未来 sealed test。
 
 旧产品 scope overlay 的候选空间包含 20,087 个 JCR Q1–Q4 期刊实体，其中 420 个具有审核或自动收稿范围，覆盖率为 2.091%；自动 scope 为 348/20,087，500 个金标期刊中有 272 个具有自动 scope。机器可读证据位于本地 [`benchmark_artifacts/scope_enrichment/status.json`](../benchmark_artifacts/scope_enrichment/status.json)。这份金标优先的产品 overlay 不进入离线主榜；P0-B 已另行按统一、无金标优先级的规则构建 20,087-candidate clean research corpus。
 
-上述旧产品数值只用于锁定问题和回归对照。P0-C 数值也只建立受约束的开发集基线；在 M3 强基线、配对统计和未来不可见测试完成前，不将其写成方法有效性结论。
+上述旧产品数值只用于锁定问题和回归对照。当前 M3、SCOPE-Rank 和未来集证据已经完整记录，但记录完整不等于方法成功；论文必须保留显著负结果、不显著比较和 non-pristine 限定。
 
 ## 3. 任务定义
 
@@ -79,9 +88,9 @@ set；在方法与指标冻结前不创建未来 sealed test。
 
 ## 5. SCOPE-Rank 方法蓝图
 
-**SCOPE-Rank** 是本项目拟研究的方法名，表示 *Scope- and Constraint-aware Open-world Paper-to-venue Evidence Ranking*。它不是对当前固定融合参数的重命名，而应当包含以下可消融的组件。
+**SCOPE-Rank** 是本项目实现并评测的方法名，表示 *Scope- and Constraint-aware Open-world Paper-to-venue Evidence Ranking*。它不是对固定融合参数的重命名，而是由以下可消融组件组成的正式研究实现。
 
-首个可执行脚手架与完整方法应分开理解：当前实现优先提供 `QueryProfile` 路由画像、`AdaptiveBudgetAllocator` 确定性自适应预算、`LinearSoftmaxFusion` 可学习融合和 `SelectiveCalibrator` 选择性校准。下文的完整切面解析、证据档案和约束保持仍是待落地、待实验的研究组件，不应因为存在同名模块就声称已经验证。
+当前工程已覆盖 `QueryProfile` 路由画像、`AdaptiveBudgetAllocator` 确定性自适应预算、`LinearSoftmaxFusion` 仅训练集学习融合、`SelectiveCalibrator` 选择性校准、缺失感知、硬约束与来源解释，并完成了统一消融。但“实现完成”与“科学有效”必须分开：full 方法在开发集和有限定未来评测中均显著更差，因此下文组件只能作为已实现、已检验但未验证增益的方法设计。
 
 ### 5.1 Facet parser
 
@@ -125,15 +134,15 @@ LLM 将模糊输入转换为结构化切面，但保留原文、每个切面的�
 - 冻结哈希：`4c4d59dcdbf330f5703f7b3ea1ffabbd2459cef231506b8901cb16582cbf65f1`。
 - 局限：单一历史期刊是弱标签；分层宏平均分布不代表现实论文流量；Crossref 摘要可用性会引入出版社偏差。
 
-### 6.2 论文级数据应扩展为三层
+### 6.2 论文级数据的三层状态
 
-| 数据层 | 用途 | 最低要求 |
+| 数据层 | 用途 | 当前状态 |
 | --- | --- | --- |
-| 大规模历史弱标签对 | 训练召回、路由和融合排序 | 按发表时间分割；不同版本/近重复不能跨集 |
-| 严格时间测试集 | 自动主榜 | 查询及候选档案均冻结；不调用实时 Search |
-| 200–300 条专家多标签查询 | 评估“其他合理期刊”和模糊表达 | 中英文、跨学科、精确/模糊查询分层；盲评多系统 Top-K |
+| 大规模历史弱标签对 | 训练召回、路由和融合排序 | M3 与 SCOPE-Rank 共用 4,791-query 暴露开发集和 20,087 候选；离线 Search-free |
+| 严格时间测试集 | 自动主榜 | 2026-07 的 300-query 评测已完成，但因 post-access ID namespace repair 只能作为 non-pristine 证据 |
+| 专家多标签查询 | 评估“其他合理期刊”和模糊表达 | 250 query / 6,129 item / 3 专家的盲评材料已完成；真实标注 0，人工待执行 |
 
-`200–300` 是当前的人评设计目标，不是已有数据规模。大规模弱标签数量也应根据可获取、授权和计算成本诚实报告，不预先声称已达到某一规模。
+人评设计规模已落实为 250 条查询和 6,129 个去重评审项；这只表示工具、随机化、材料和分配完成。在真实专家标注仍为 0 时，不能报告相关性、适配性、解释质量或一致性结论。
 
 ## 7. 时间冻结与无泄漏协议
 
@@ -224,6 +233,8 @@ LLM 将模糊输入转换为结构化切面，但保留原文、每个切面的�
 
 ## 11. 专家人评
 
+当前状态是“工具与材料完成，人工评测待执行”：已确定性抽取 250 条查询，对四种方法的 Top-K 合并去重后得到 6,129 个评审项，并生成 3 份专家分配、进度保存、审计和导出材料。真实标注数为 0，因此 Krippendorff's alpha/Fleiss' kappa 与人评效果均不可用。实际执行仍必须遵守以下冻结协议：
+
 1. 按学科、语言、模糊度和跨学科性分层抽取 200–300 条查询。
 2. 每条查询合并强基线与 SCOPE-Rank 的 Top-5 或 Top-10，去重、随机打乱，隐藏系统来源和原始排名。
 3. 每条由至少 3 名相关领域评审独立打分：主题适配 0–3、稿件类型适配 0–2、约束通过/不通过、证据充分 0–2。
@@ -274,7 +285,7 @@ research/
 | M2 公平档案覆盖 | 已完成（P0-B） | 按统一协议生成的全库档案 | 金标与非金标不再使用不同补全优先级；报告全库及分层覆盖 |
 | M3 强基线 | 已完成（暴露开发集） | 词法、dense、科学编码器、混合、图、cross-encoder 与统一基线 | 11 方法共享数据/候选；55 配对、置信区间、成本和失败全部冻结 |
 | M4 SCOPE-Rank | 工程/评测已完成，科学成功门未通过 | 自适应路由、train-only 融合、缺失感知、校准、解释与 11 消融 | learned full 显著弱于 M3；线性/RRF 无显著增益；负结果与根因已冻结，不得宣称方法有效 |
-| M5 sealed/专家评测 | 基础设施待完成，人工标注待执行 | 未见测试、盲评工具/材料、随机化、审计、一致性和导出 | 不只依赖单一历史期刊标签；专家未标注时只能声明“工具与材料完成，人工评测待执行” |
+| M5 sealed/专家评测 | 机器可执行基础设施已完成；人工标注待执行 | 300/20,087/4/6 的 post-access repaired future evaluation；250-query、6,129-item、3-expert 盲评工具、随机化、审计和导出包 | future 结果保留 non-pristine 限定；真实专家标注为 0 时只能声明“工具与材料完成，人工评测待执行” |
 | M6 投稿冻结 | 未开始 | 论文、附录、代码/配置、数据卡和可复现说明 | 内部模拟审稿通过；所有主表可脚本重建；不泄露 API key 或受限内容 |
 
 没有通用的“Hit@10 达到某数即可中 SIGIR”门槛。本项目的准入条件应是：无泄漏、完全可复现、公平强基线、有统计支持的方法增益，以及专家多标签证据；不用一个未校准的百分比代替这些条件。
@@ -290,7 +301,7 @@ research/
 7. **Limitations, Ethics and Broader Impact**：决策辅助边界、数据偏差、商业目录与语言/学科不均衡。
 8. **Reproducibility**：配置、快照、代码、运行成本和授权边界。
 
-在 M4/M5 之前，论文的贡献句应使用“we investigate / we propose to evaluate”等待验证表述，不预先声称“state of the art”、“first”或“significant improvement”。
+现有论文表述必须正面报告 SCOPE-Rank full 在开发集和有限定未来评测中的显著负结果，以及 linear/RRF 对 LightRAG 的不显著比较。不得声称“state of the art”、“first”、“significant improvement”或已完成专家验证。
 
 ## 16. 数据版权、隐私与 AI 使用
 
@@ -317,8 +328,8 @@ research/
 
 ## 17. 当前最优先的三件事
 
-1. **保留 M3 与 SCOPE-Rank 冻结**：不因 learned 负结果改变 11/78 配对族、缩小分母或重写消融结论。
-2. **建立真正未来 sealed test**：只在当前方法、超参数、候选、指标、统计协议和 commit 全部冻结后采集，不先看标签。
-3. **完成专家盲评基础设施**：构建 200–300 query、三专家、去方法来源的随机化工具、审计和导出包；真实人工标注仍为人工依赖。
+1. **保留 M3 与 SCOPE-Rank 冻结**：不因 learned 负结果改变 11/78 配对族、缩小分母或重写消融结论；未来集的 4 方法/6 对比较也必须完整报告。
+2. **执行专家盲评**：使用已冻结的 250-query、6,129-item、3-expert 材料收集真实匿名标注；不得由模型代填，不在 0 标注时伪造一致性。
+3. **如需强确证则创建新的 pristine future test**：先冻结带 candidate-namespace 覆盖门禁的修正协议，再采集真正未来的新数据；不将当前 post-access repaired 结果重新标记为 pristine。
 
-这三项完成之前，产品可以继续优化串流、并发、缓存和界面，但不应用产品可用性替代方法新颖性和无泄漏实验；论文离线运行继续禁止实时 Search。
+产品可以继续优化部署、串流、并发、缓存和界面，但不应用产品可用性替代方法新颖性、人工评测或无泄漏实验；论文离线运行继续禁止实时 Search。

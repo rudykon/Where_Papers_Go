@@ -50,7 +50,7 @@ Key product behavior:
 - CCF, TH-CPL, CAS, and JCR targets can be combined; multiple target tiers use **OR** semantics.
 - Topic retrieval strictly uses **LightRAG + exact vector retrieval + LLM + Search API**. It does not silently downgrade when one layer fails.
 - Search, vector, and LightRAG work are parallelized; LLM reranking uses two concurrent batches.
-- A formal **offline SCOPE-Rank research implementation** now covers adaptive recall, train-only fusion, constraints, abstention and provenance explanations. Its exposed-development learned result is negative and is not used as evidence that the product ranking is better; fixed linear/RRF alternatives remain explicit ablations.
+- A formal **offline SCOPE-Rank research implementation** now covers adaptive recall, train-only fusion, constraints, abstention, and provenance explanations. The learned full method is a statistically significant negative result on both exposed development and the qualified future evaluation below; it is not evidence that the product ranking is better. Fixed linear/RRF alternatives remain explicit ablations.
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
 
@@ -246,18 +246,13 @@ python3 -m research evaluate \
   --config research/configs/cached_crossref_baselines.json
 ```
 
-The checked-in configuration includes BM25, TF-IDF, RRF, and train-only learned linear fusion. Frozen vector, graph, or LightRAG runs can be imported through the same interface. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, required baselines, ablations, statistics, and claims boundary.
+The completed M3 engineering platform evaluates 11 lexical, dense, scientific-encoder, graph, LightRAG, cross-encoder, and hybrid methods through one interface. All methods share the 4,791-query development set, ordered 20,087-candidate universe, query order, metrics, and 55-pair statistical family. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, baselines, ablations, statistics, and claims boundary.
 
-P0-A through P0-C and the M3 strong-baseline platform are complete. The accepted clean-PCL lexical run binds the
-4,791-query development set, the ordered 20,087-candidate universe, exact input
-hashes, configuration, code state, environment, and per-run sidecars; its
-leakage audit has zero critical findings. M3 and SCOPE-Rank use that same
-Search-free exposed development set. The formal learned SCOPE-Rank result is
-significantly worse than the strongest M3 baseline; fixed linear/RRF fusion is
-only non-significantly higher. See the [complete negative-result freeze](docs/scope-rank-results.md).
-A 300-query July 2026 future set now exists with its label vault still unopened;
-five label-blind baseline runs are complete. No sealed metric, label access,
-method-effectiveness result, or real expert annotation is claimed here.
+P0-A through P0-C and the M3 strong-baseline engineering platform are complete. The accepted clean-PCL runs bind the 4,791-query development set, ordered 20,087-candidate universe, exact inputs, configurations, code state, environment, and per-run sidecars; the leakage gate has zero critical findings. M3 and SCOPE-Rank use that same Search-free exposed development set. The learned SCOPE-Rank full method is significantly worse than the strongest M3 baseline there; fixed linear/RRF fusion does not establish a significant gain. See the [complete negative-result freeze](docs/scope-rank-results.md).
+
+The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the evaluated LightRAG baseline and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic, audited post-access namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described as a qualified post-access repaired future evaluation, not as clean confirmatory evidence that SCOPE-Rank works.
+
+The blinded expert-review tools and materials are complete for 250 queries, 6,129 deduplicated review items, and three expert assignments. They contain **zero real annotations**; agreement and expert-effectiveness conclusions remain unavailable until human reviewers perform the evaluation.
 
 <a id="repository-map"></a>
 ## Repository map

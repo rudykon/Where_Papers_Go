@@ -17,6 +17,11 @@ research/
 ├── prototype_vectors.py  # bge-m3 多原型 max-pooling 冻结 run
 ├── scope_rank_runs.py     # 正式 SCOPE-Rank 与 11 个冻结消融
 ├── scope_rank_selective.py # 不重拟合的 coverage/risk/校准事后评测
+├── sealed_preflight.py    # 标签无关的一次评测预检
+├── sealed_namespace_crosswalk.py # exact-ISSN venue namespace 双射
+├── sealed_namespace_repair.py # 授权的一次性 post-access 修复评测
+├── sealed_evaluation.py   # 冻结预测后的 sealed 评测器
+├── expert_review.py       # 三专家盲评材料、审计与导出
 ├── leakage.py            # DOI/标题/内容/时间/跨分割泄漏审计
 ├── baselines.py          # BM25、TF-IDF 和冻结 run 统一接口
 ├── fusion.py             # RRF 和 train-only 学习融合
@@ -32,7 +37,9 @@ research/
 作为当前权威状态。P0-A～P0-C、M3 强基线与 SCOPE-Rank 暴露开发集评测已冻结；
 learned SCOPE-Rank 是显著负结果，不得声称方法有效。大型语料、
 embedding 和逐查询 run 继续保存在忽略目录，不属于上述源码结构，也不得为
-开始 M3 而重新生成。
+开始 M3 而重新生成。未来集的自动评测已以「标签访问后、确定性 namespace
+修复」形式完成，必须明确标注它不是 pristine single-pass sealed test；真实
+专家标注仍为 0，不得声称人评完成。
 
 ## 1. 运行现有 500 篇基准
 
@@ -367,44 +374,56 @@ Top-1 正确数为 0，因而 fail-closed 并对全部 query 拒答。
 ## 7. 未来 sealed test 与专家盲评
 
 2026 年 7 月未来集的方法、候选、模型 revision、指标和统计协议已冻结；
-Crossref 有界采集已按授权以完整 300/300 分母原子发布。以下计划命令只做本地
-hash/cache/request/cost 核验，不发起网络请求：
+Crossref 有界采集已按授权以完整 300/300 分母原子发布。全部 36 个 strata
+填满，累计账本为 234/1,000；采集本身为 USD 0，未调用 Search、LLM 或
+embedding。正式 future manifest、blind queries 和 mode-`0600` label vault 的
+SHA-256 分别为 `b11de0a6...650`、`9cbf1948...96c4` 与
+`1de2664e...bab`。三个采集失败目录与部分分母拒绝证据仍完整保留。
 
-```bash
-python -m research plan-sealed-test \
-  --config research/configs/future_sealed_test_v1.json
-```
+标签访问前，BM25、TF-IDF、property graph、SPECTER2 proximity、SciNCL、
+bge-m3、LightRAG mix 和 cross-encoder 八个 source run 均完成 300 条
+Top-100 ranking，0 empty、0 failed、全程 Search-free。已授权的 bge-m3 调用
+只使用 ignored shadow cache，5 个逻辑 batch/实际 5 次请求、USD 0，
+M3 正式缓存保持字节不变。随后得到 full、fixed-linear 和 RRF 三个
+冻结 SCOPE 变体，并在首次 label access 前写入 prediction commitment
+`8a2732e1626397d58f0be7bd9665aa98b79ddade13b1a294722640a5a39d875a`。
 
-当前 hard cap 为 1,000 次 HTTP 尝试，预计收费 USD 0；
-授权前配置和 fail-closed 拒绝证据保存在 commit `32d6393`，授权记录 commit
-`f92944b` 只新增用户授权引用。首次授权执行因 Crossref cursor 不兼容
-`sort=published` 返回 HTTP 400，失败目录
-完整保留且未发布数据；commit `71d48aa` 在成功取数前移除该无效参数，并加入跨失败
-重跑的稳定 cache 和 append-only 累计请求账本。随后有效 cursor 响应在读取
-6,538,628 bytes 后发生 `IncompleteRead`；第二个失败目录同样记录未发布正式输出、
-未接受部分分母。commit `7aca22b` 将这一瞬态截断纳入既有有界重试策略。
-第三次执行完成 bulk scan 后以 286/300 underfill 失败关闭；commit `f3e3343`
-修复了本次暴露的两个
-可恢复性缺口：后续失败会先保留并哈希 partial dataset/manifest 且将标签数据设为
-`0600`，永久 HTTP 错误按 URL hash 缓存而不保存 URL/凭据。只依据 aggregate
-stratum underfill 将确定性期刊候选倍数从 3 提到 12；300 分母、日期、质量过滤、
-种子、方法、指标、统计、USD 0 与累计 hard cap 均不变。最新零网络计划确认稳定
-缓存有 110 个成功响应、103/3,601 个当时可知 URL 命中；18,040 次
-retry-inclusive 理论上限不取代 1,000 次账本硬上限。随后同一可恢复命令填满
-36 个 strata，正式 manifest 为 `b11de0a6...650`，blind queries 为
-`9cbf1948...96c4`，mode-`0600` label vault 为 `1de2664e...bab`；累计账本
-234/1,000，剩余 766，未调用 Search/LLM/embedding。
+首次正式 evaluator 在 commitment 后按协议访问标签，但在生成 metrics 前
+fail-closed：Crossref 采集器生成的 JCR venue ID namespace 与冻结 profile
+namespace 不同。该首次访问审计 SHA-256 为
+`85a0bab2daf23449026a016832de3daa1591f6fd03d2964e75f67b880e84e4a2`；没有隐藏失败或
+产生不完整 metrics。
 
-BM25、TF-IDF、property graph、SPECTER2 proximity、SciNCL 已在 300 条 blind
-query 上完成 Search-free Top-100 run，全部 30,000 entries、0 empty、0 failed。
-bge-m3 的独立零网络计划确认只有 300 个 query 缺失，共 455,260 chars、5 个逻辑
-batch、最多 15 次 HTTP 尝试、USD 0。该 query 外发仍需明确授权；必须使用 shadow
-cache 和 `--max-new-embeddings 300`，不得修改 M3 正式缓存。prediction commitment
-创建前不得读取 labels，sealed evaluation 后不得重复解封。
+独立、label-free 的 catalog crosswalk 只使用 checksum-valid exact ISSN 唯一归属，
+完成 20,087 source 到 20,087 target 的一对一全覆盖：20,039 identity、48
+remap，unmapped/ambiguous/collision 全为 0。crosswalk manifest 与 mapping
+SHA-256 为
+`64456236a956ece0929bffc923b2f918a09c292fd3d35c1f2a9bd55eb2940d33` /
+`c2001797828626141c8c6ae799a596853c016744690ef8fb320c9e883def1485`。
 
-完整冻结 hash、阶段退出门槛、标签物理隔离、原子发布/失败保留，以及 250-query、
-三专家盲评流程见 [`docs/future-sealed-test.md`](../docs/future-sealed-test.md)。专家未提交
-真实标注前，状态只能是“工具与材料完成，人工评测待执行”。
+在显式授权的独立 one-shot guard 下，post-access namespace repair 只翻译 qrel
+ID，不改变 method、prediction、query/order/text、candidate、gain、hyperparameter 或
+statistics。它保留完整 300 query / 20,087 candidate 分母，评测 4 个
+冻结方法与全部 6 个无序 pair；0 dropped、0 unmapped、0 failed、0 critical
+leakage。正式 evaluation manifest、metrics、leakage audit 和 namespace audit 为：
+
+- `b0eb5d5045df10a0e64f7dc0ffba264bdc479671cb669197b5f3580d79391a0b`;
+- `e50da50af5a39266a8af9ef2fdde05bfc82abf2a5d11a047813567060cc7e52a`;
+- `54cb5246cca70decb8b5383da650670dc0630c07e8b4f3b31fb9cc4b74e7e725`;
+- `e42d787a4a595ed2e8effefe3e91c0fbb0be544f95bde66ee522f95842248c71`.
+
+该运行必须表述为 **audited post-access deterministic namespace-repaired future
+evaluation**，且 `pristine_single_pass_sealed_test=false`。不得称为 pristine sealed-test
+success，也不得删除 null/负结果或将工程完成改写为 SCOPE-Rank 有效性。
+
+三专家盲评 manifest
+`75cdf406fbad493c751ca453c3e0d3fceb1b8923d2869793036d270d6e6e13a7`
+已固定 250 queries、4 methods、6,129 个去重 review items 与 3 名匿名专家；
+真实标注数为 0，agreement 不可用。当前唯一正确状态为
+`tools_and_materials_complete_human_evaluation_pending`（工具与材料完成，人工评测待执行）。
+不得重跑两个 evaluator、手工重新打开 label vault、覆盖正式输出或代替专家
+生成标注。完整协议、授权/失败边界和产物 hash 见
+[`docs/future-sealed-test.md`](../docs/future-sealed-test.md)。
 
 ## 泄漏规则
 
