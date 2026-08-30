@@ -367,9 +367,8 @@ Top-1 正确数为 0，因而 fail-closed 并对全部 query 拒答。
 ## 7. 未来 sealed test 与专家盲评
 
 2026 年 7 月未来集的方法、候选、模型 revision、指标和统计协议已冻结；
-Crossref 有界采集已于 2026-08-29 获得明确授权。以下命令只做本地
-hash/cache/request/cost 核验，不发起
-网络请求：
+Crossref 有界采集已按授权以完整 300/300 分母原子发布。以下计划命令只做本地
+hash/cache/request/cost 核验，不发起网络请求：
 
 ```bash
 python -m research plan-sealed-test \
@@ -384,17 +383,24 @@ python -m research plan-sealed-test \
 重跑的稳定 cache 和 append-only 累计请求账本。随后有效 cursor 响应在读取
 6,538,628 bytes 后发生 `IncompleteRead`；第二个失败目录同样记录未发布正式输出、
 未接受部分分母。commit `7aca22b` 将这一瞬态截断纳入既有有界重试策略。
-第三次执行完成 bulk scan 后以 286/300 underfill 失败关闭；正式目录仍未发布，
-当前账本为 128/1,000，剩余 872。commit `f3e3343` 修复了本次暴露的两个
+第三次执行完成 bulk scan 后以 286/300 underfill 失败关闭；commit `f3e3343`
+修复了本次暴露的两个
 可恢复性缺口：后续失败会先保留并哈希 partial dataset/manifest 且将标签数据设为
 `0600`，永久 HTTP 错误按 URL hash 缓存而不保存 URL/凭据。只依据 aggregate
 stratum underfill 将确定性期刊候选倍数从 3 提到 12；300 分母、日期、质量过滤、
 种子、方法、指标、统计、USD 0 与累计 hard cap 均不变。最新零网络计划确认稳定
-缓存有 110 个成功响应、103/3,601 个当前可知 URL 命中；18,040 次 retry-inclusive
-理论上限不取代 1,000 次账本硬上限。
-采集成功后仍须先对新 query 的 bge-m3 缓存覆盖、批次、字符量和费用
-单独 dry-run，并取得相应授权，才能生成冻结 score runs。预测 commitment 创建前
-不得读取 labels，sealed evaluation 后不得重复解封。
+缓存有 110 个成功响应、103/3,601 个当时可知 URL 命中；18,040 次
+retry-inclusive 理论上限不取代 1,000 次账本硬上限。随后同一可恢复命令填满
+36 个 strata，正式 manifest 为 `b11de0a6...650`，blind queries 为
+`9cbf1948...96c4`，mode-`0600` label vault 为 `1de2664e...bab`；累计账本
+234/1,000，剩余 766，未调用 Search/LLM/embedding。
+
+BM25、TF-IDF、property graph、SPECTER2 proximity、SciNCL 已在 300 条 blind
+query 上完成 Search-free Top-100 run，全部 30,000 entries、0 empty、0 failed。
+bge-m3 的独立零网络计划确认只有 300 个 query 缺失，共 455,260 chars、5 个逻辑
+batch、最多 15 次 HTTP 尝试、USD 0。该 query 外发仍需明确授权；必须使用 shadow
+cache 和 `--max-new-embeddings 300`，不得修改 M3 正式缓存。prediction commitment
+创建前不得读取 labels，sealed evaluation 后不得重复解封。
 
 完整冻结 hash、阶段退出门槛、标签物理隔离、原子发布/失败保留，以及 250-query、
 三专家盲评流程见 [`docs/future-sealed-test.md`](../docs/future-sealed-test.md)。专家未提交

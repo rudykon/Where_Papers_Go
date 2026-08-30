@@ -44,6 +44,14 @@ as proof of a physical reboot. Nginx/HTTPS activation remains the documented
 administrator step because Nginx is not installed and no hostname/certificate
 was supplied.
 
+Fresh host verification on 2026-08-30 repeated the exact-hash readiness check,
+then restarted the user unit. PID changed from `4095486` to `2212637`; the new
+process preloaded in 18,447 ms and reported `ready=true`, current bindings, a
+ready persistent worker, `NRestarts=0`, and `Result=success`. The unit remains
+`active/running`, `enabled`, and `Linger=yes`. This was a service restart, not a
+literal host reboot, and it made no Search, LLM, embedding, or `/api/search`
+request.
+
 The application itself enforces a second Search/LLM admission limit, caps body
 size and concurrent searches, emits body-free JSON audit records to journald,
 adds browser security headers, redacts configured credentials from public

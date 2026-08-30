@@ -255,7 +255,9 @@ leakage audit has zero critical findings. M3 and SCOPE-Rank use that same
 Search-free exposed development set. The formal learned SCOPE-Rank result is
 significantly worse than the strongest M3 baseline; fixed linear/RRF fusion is
 only non-significantly higher. See the [complete negative-result freeze](docs/scope-rank-results.md).
-No future sealed test or real expert labels are claimed here.
+A 300-query July 2026 future set now exists with its label vault still unopened;
+five label-blind baseline runs are complete. No sealed metric, label access,
+method-effectiveness result, or real expert annotation is claimed here.
 
 <a id="repository-map"></a>
 ## Repository map
