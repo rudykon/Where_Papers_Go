@@ -313,7 +313,12 @@ class ExternalCallRedirectTests(unittest.TestCase):
                 ) as explicit_ledger:
                     with self.assertRaises(urllib.error.HTTPError) as raised:
                         http_request(
-                            "http://origin.invalid/explicit",
+                            # Keep the deliberately unreachable origin inside
+                            # 127/8. A correct proxy still receives the absolute
+                            # URI; an accidental direct path fails closed on
+                            # the unused low port without touching DNS or an
+                            # external address.
+                            "http://127.0.0.2:1/explicit",
                             headers={"Authorization": "Bearer proxy-secret"},
                             proxy=proxy_url,
                             external_call_kind="http",
@@ -329,7 +334,7 @@ class ExternalCallRedirectTests(unittest.TestCase):
                 with self.budget(1, environment=proxy_environment) as environment_ledger:
                     with self.assertRaises(urllib.error.HTTPError) as raised:
                         http_request(
-                            "http://origin.invalid/environment",
+                            "http://127.0.0.2:1/environment",
                             headers={"Authorization": "Bearer proxy-secret"},
                             external_call_kind="http",
                         )
