@@ -834,39 +834,56 @@ assignments, schema, sealed mapping, hash-chained audit/conflict/export tools.
 Real annotations received are 0, agreement is unavailable, and the only valid
 status is `tools_and_materials_complete_human_evaluation_pending`.
 
-Current offline verification after the acquisition safety fix:
+Final machine validation was run from clean source/docs commit `9c6ed9b`:
 
-- full suite: 298 tests passed in 63.377 seconds, five explicit skips;
-- Crossref/sealed targeted suite: 20/20; research/SCOPE/sealed/expert suite:
-  60/60; deployment/security/Web suite: 30 passed with three sandbox socket
-  skips;
-- deterministic retrieval: 7/7, micro Recall@K `1.0`;
+- full suite: 311 tests in 64.967 seconds, 306 passed, five expected sandbox or
+  base-environment skips, zero failures/errors; the three sandbox socket tests
+  were covered by the host Web-security module, which passed 10/10;
+- research discover passed 18/18; sealed/crosswalk/repair/preflight/expert
+  focused tests passed 21/21; the ignored isolated official-model runtime passed
+  all 6/6 builder and real-safetensors integration tests;
+- deterministic retrieval passed 7/7 with micro Recall@K `1.0`; graph load was
+  3,910.568 ms and mean/median/max query latency was
+  27.594/14.116/67.597 ms;
 - graph is fresh; the exact configured provider binds 23,454 bge-m3 1,024-d
-  vectors and the LightRAG mix store with 23,714 chunks/entities and 2,007
-  relationships;
-- 87 manifest-listed P0/M3/SCOPE run, sidecar, metric and four-model payload
-  artifacts were independently rehashed with zero byte/hash mismatches;
-- tracked credential-pattern matches outside synthetic test fixtures: zero;
-  ignored `llmapi.json` remains mode `0600`, and paper, PCL, benchmark, vector,
-  LightRAG, failed, backup and `.building` artifacts remain present.
+  vectors/4,945 texts and the current LightRAG mix store with 23,714
+  chunks/entities and 2,007 relationships. Source, semantic and provider
+  fingerprints all match. An initial custom summary used nonexistent metadata
+  keys and printed a false mismatch, but the native graph check and correct
+  binding validator both passed; this was a validation-script field error, not
+  an artifact failure;
+- clean-PCL, P0-C, M3, SCOPE, future dataset, commitment, expert package,
+  crosswalk and repaired-evaluation hashes all match the values in this section.
+  The repaired manifest's full non-label closure verified 136 bindings over 87
+  unique files and nine permission bindings with zero mismatches;
+- high-confidence credential scanning covered 173 tracked files: three
+  synthetic-fixture matches and zero non-fixture matches. Ignored `llmapi.json`
+  remains a regular mode-`0600` file. Credentials, benchmark artifacts, raw
+  papers, PCL, graph, vectors, LightRAG, failures, backups and `.building`
+  categories all remain present, ignored and untracked;
+- final validation report
+  `benchmark_artifacts/final_delivery_validation_20260830/summary.json` is mode
+  `0444`, 6,862 bytes, SHA-256
+  `02bf056f663ae2d3578e7295fa7248fc358f2047e5ad88a0526084ab34182e57`.
 
-The user also authorized a fresh host service restart. The ready PID changed
-from `4095486` to `2212637`; the post-restart preload was 18,447 ms and health
+The user authorized another final host service restart. The ready PID changed
+from `2212637` to `84517`; the post-restart preload was 18,927 ms and health
 reported `ready=true`, `bindings_current=true`, persistent worker ready, exact
 vector/LightRAG hashes, `NRestarts=0` and `Result=success`. The unit remains
 `active/running`, `enabled`, and `Linger=yes`. No `/api/search`, Search, LLM or
-embedding call was made. This verifies a service restart, not a physical host
-reboot.
+embedding call was made by validation. This verifies a service restart, not a
+physical host reboot.
 
 Expert tooling and materials are implemented and frozen; real three-rater
 annotations remain manual and must never be synthesized.
 
-All P0 exit gates remain satisfied. The bge-era subsection immediately above is
-retained as immutable history; the newer graph/model checkpoint is the current
-M3 authority. The user's expanded objective authorizes local implementation,
-testing, documentation and agent-branch publication, but still explicitly
-requires separate authorization before large external model/runtime downloads
-or live Search/LLM evaluation. Section 10 remains historical context only.
+All P0, M3 and machine-executable SCOPE/future-evaluation/tooling exit gates
+remain satisfied. Product completion is still bounded by administrator TLS/auth
+activation, a literal host reboot and separately authorized live 500-paper
+Search/LLM acceptance; research completion is bounded by three real experts and
+does not imply method effectiveness. Any future large download or live external
+evaluation still requires its own dry-run and authorization. Section 10 remains
+historical context only.
 
 ## 1. Current objective
 
