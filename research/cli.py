@@ -1187,6 +1187,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify every label-free condition before the one-time unseal",
     )
     sealed_preflight.add_argument("--config", type=Path, required=True)
+    sealed_preflight.add_argument("--output", type=Path)
 
     sealed_evaluate = subparsers.add_parser(
         "evaluate-sealed-test",
@@ -1561,9 +1562,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         elif args.command == "preflight-sealed-evaluation":
+            report = preflight_sealed_evaluation(args.config)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        f"sealed preflight output exists and will not be overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+                report = {
+                    **report,
+                    "report": {
+                        "path": str(args.output.resolve()),
+                        "sha256": sha256_file(args.output),
+                        "bytes": args.output.stat().st_size,
+                    },
+                }
             print(
                 json.dumps(
-                    preflight_sealed_evaluation(args.config),
+                    report,
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,
