@@ -5,7 +5,7 @@ never rebuilds or replaces the graph, vector, LightRAG, P0, or M3 evidence.
 Every render is a dry-run unless `--apply` is explicit, and an existing unit or
 proxy file is renamed to a timestamped backup before atomic replacement.
 
-## Current boundary (2026-08-28)
+## Current boundary (deployed 2026-08-28; reverified 2026-08-30)
 
 The active deployment is the persistent user unit
 `~/.config/systemd/user/where-papers-go.service`. It is `enabled`, the user
@@ -32,10 +32,10 @@ Latest Search-free acceptance evidence:
 | installed unit | SHA-256 `2ad4619abff7677e1b54960ab55ea891eed233841caa619c90cfa6fbff680b7c`; `active/running`, `enabled`, `Restart=on-failure` |
 | private runtime env | mode `0600`; SHA-256 `8a465904ce88b602c7c786b3d104878543fd745b707fbc131c5571a555723280` |
 | preserved predecessor | `where-papers-go.service.backup-20260828T084402.672194Z`; SHA-256 `7c5aaca8ef2523d3aba8a19e144c39ece3d35532eeb1f3796046fc348a19f76c` |
-| restart recovery | PID changed after the explicit restart; second preload `18,719 ms`; `NRestarts=0`, `Result=success` |
+| restart recovery | latest authorized restart changed PID `2212637` to `84517`; preload `18,927 ms`; `NRestarts=0`, `Result=success` |
 | runtime binding | ready worker; vector SHA-256 `d3995c353b29614bac6954d895f3daaf4f2afee67d19ff0eb78089c4e3dc1cab`; LightRAG manifest SHA-256 `59d59babe37703175eb6a640bbe5c480386a3359a71073588b808747659b9bb3` |
 | product endpoints | direct LAN root HTTP 200; `/api/options` reports 45,207 records / 23,555 venues; liveness exposes the custom `where-paper-go/1.0` banner and all documented security headers |
-| regressions | 251 tests passed with three sandbox-only socket skips; the same socket module passed 10/10 on the host; deterministic retrieval passed 7/7 with micro Recall@K 1.0 |
+| regressions | final suite ran 311 tests with five expected sandbox/base-runtime skips and zero failures; the socket-security module passed 10/10 on the host; isolated official-model tests passed 6/6; deterministic retrieval passed 7/7 with micro Recall@K 1.0 |
 
 No `/api/search`, remote LLM/Search, embedding call, literal host reboot, or
 administrator action was used for this acceptance. `enabled` plus `Linger=yes`
@@ -44,13 +44,13 @@ as proof of a physical reboot. Nginx/HTTPS activation remains the documented
 administrator step because Nginx is not installed and no hostname/certificate
 was supplied.
 
-Fresh host verification on 2026-08-30 repeated the exact-hash readiness check,
-then restarted the user unit. PID changed from `4095486` to `2212637`; the new
-process preloaded in 18,447 ms and reported `ready=true`, current bindings, a
-ready persistent worker, `NRestarts=0`, and `Result=success`. The unit remains
-`active/running`, `enabled`, and `Linger=yes`. This was a service restart, not a
-literal host reboot, and it made no Search, LLM, embedding, or `/api/search`
-request.
+Final host verification on 2026-08-30 repeated the exact vector/LightRAG hash
+readiness check, then restarted the user unit. PID changed from `2212637` to
+`84517`; the new process preloaded in 18,927 ms and reported `ready=true`,
+current bindings, a ready persistent worker, `NRestarts=0`, and
+`Result=success`. The unit remains `active/running`, `enabled`, and
+`Linger=yes`. This was a service restart, not a literal host reboot, and it
+made no Search, LLM, embedding, or `/api/search` request.
 
 The application itself enforces a second Search/LLM admission limit, caps body
 size and concurrent searches, emits body-free JSON audit records to journald,
