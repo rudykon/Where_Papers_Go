@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -17,6 +18,39 @@ from where_paper_go.lightrag import (
 
 
 class LightRAGRecallTests(unittest.TestCase):
+    def test_third_party_query_logs_are_suppressed_but_warnings_remain(self) -> None:
+        from lightrag import operate
+
+        sensitive_query = "PRIVATE-query-7e3d"
+        captured: list[logging.LogRecord] = []
+
+        class CaptureHandler(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        logger = logging.getLogger("lightrag")
+        self.assertIs(operate.logger, logger)
+        handler = CaptureHandler(level=logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            logger.setLevel(logging.DEBUG)
+            logger.propagate = True
+            venue_lightrag._configure_lightrag_logging()
+            operate.logger.debug("raw query: %s", sensitive_query)
+            operate.logger.info("Query nodes: %s", sensitive_query)
+            operate.logger.info("Query edges: %s", sensitive_query)
+            operate.logger.info("Naive query: %s", sensitive_query)
+            operate.logger.warning("LightRAG storage retry remains visible")
+        finally:
+            logger.removeHandler(handler)
+
+        messages = [record.getMessage() for record in captured]
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(handler.level, logging.WARNING)
+        self.assertFalse(logger.propagate)
+        self.assertNotIn(sensitive_query, "\n".join(messages))
+        self.assertEqual(messages, ["LightRAG storage retry remains visible"])
+
     def test_custom_kg_import_keeps_event_loop_awake_and_finalizes(self) -> None:
         heartbeat_seen = []
 
