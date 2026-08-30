@@ -3,10 +3,10 @@
 ## Current state
 
 The July 2026 future-test protocol is frozen and its bounded Crossref
-acquisition is explicitly authorized, but acquisition is not yet complete.
-Authorized provider-response caches and three failed-attempt audits exist. No
-formal sealed dataset/query set, prediction, label-vault access, sealed metric,
-expert annotation, or effectiveness result exists at this state.
+acquisition completed at exactly 300/300. The formal blind query set and
+restricted label vault exist, together with five complete pre-label score runs.
+The label vault remains unopened: no prediction commitment, label access,
+sealed metric, expert annotation, or effectiveness result exists at this state.
 
 The authoritative tracked freeze is
 `research/configs/future_sealed_test_v1.json` (SHA-256
@@ -43,7 +43,7 @@ in the denominator, including failures. Every unordered method pair receives
 confidence interval, Holm family-wise correction and Benjamini-Hochberg FDR
 correction.
 
-## Zero-network acquisition plan
+## Acquisition evidence and current zero-network plan
 
 The following command completed without network access:
 
@@ -52,27 +52,27 @@ python -m research plan-sealed-test \
   --config research/configs/future_sealed_test_v1.json
 ```
 
-The current post-underfill dry-run records:
+The successful authorized acquisition records:
 
 - closed future window: 2026-07-01 through 2026-07-31, strictly after the
   2026-06-30 development cutoff;
 - target: exactly 300 papers over 36 field/quartile strata, at most one paper
   per journal;
 - eligible frozen catalog: 20,087 journals, zero ambiguous ISSNs;
-- stable cache: 110 successful JSON responses, zero permanent-error cache
-  records, and 103/3,601 currently knowable URL hits (later cursor URLs cannot
-  be derived without reading their preceding cached response);
-- logical upper bound: 8 bulk requests plus 3,600 journal fallbacks = 3,608;
-- retry-inclusive theoretical upper bound without a hard cap: 18,040 HTTP
-  attempts;
 - enforced cumulative hard cap: 1,000 HTTP attempts, append-only reservation
   before every socket open;
-- actual cumulative ledger before this retry: 128/1,000 attempts used and 872
-  remaining, SHA-256
-  `d159538c36a2e781dd858f34b62e4651f5139bbe765dd26b8a81409f2075d5b8`;
+- successful-run network requests: 106; cumulative ledger: 234/1,000 used and
+  766 remaining, SHA-256
+  `2731d7fbfe37b6a73ff94c13c25d9b3e27298168a282c80ca8a77c43b94c2e7e`;
 - expected charge: USD 0.00 because this stage uses only the official Crossref
   REST API and no paid key, Search, LLM or embedding provider;
-- output directory did not exist and no acquisition artifact was written.
+- all 36 strata full, exactly 300 records, and no denominator reduction;
+- formal manifest SHA-256
+  `b11de0a6bfce3869643a4c0dab38a0ac3d92913a0720d579c1cf850ab98d9650`;
+- blind-query SHA-256
+  `9cbf1948662a3b07624df12ced795f85a879cda7c8e6e2bae33fce7c2c4496c4`;
+- mode-`0600` label-vault SHA-256
+  `1de2664e11d8807cd6cd104924e04315edc5e645048b90ce8cfc7b26eff94bab`.
 
 Commit `32d6393` preserved the authorization reference as deliberately empty.
 A build invocation was regression-tested to fail before creating the output directory with
@@ -131,6 +131,20 @@ method hyperparameters remain
 and the source protocol remains
 `62658dcc866552de5b2a1897c0b5e5bc765ca09d4e5dd1828dce3aa31026c14e`.
 
+The label-blind reference manifest is
+`fc0ee02b6c27a309082ffc1e678692c2f398adb0664331e20a0898dc2b3fad8c`.
+BM25, TF-IDF, property graph, SPECTER2 proximity and SciNCL each produced all
+300 Top-100 rankings with zero empty/failed queries and zero external calls.
+Their run hashes are respectively `eab78207...a5fd`, `5af3696e...9094`,
+`978717f6...cd01`, `ad80bd02...beda`, and `90f97ab5...e8d7`.
+
+The bge-m3 cache plan itself performed no network. Against an isolated shadow
+copy of the formal M3 cache, it found every one of 40,198 prototype texts cached
+and exactly 300 missing blind queries: 455,260 prepared characters, five
+logical batches, at most 15 HTTP attempts, provider fingerprint
+`1f2fc9c5...f80d5`, and bounded cost USD 0. Sending those queries still
+requires a separate explicit authorization.
+
 ## Execution and exit gates
 
 After the controlled acquisition-only compatibility, retry and evidence fixes,
@@ -140,7 +154,7 @@ Acquisition must use the same cumulative request ledger and build in a unique
 accepted records; underfill is a failure and must not reduce the denominator.
 Failed staging directories are retained under a `.failed-*` name.
 
-On successful atomic publication:
+The successful atomic publication satisfies these acquisition gates:
 
 - `queries.blind.jsonl` contains only the closed label-free schema;
 - `labels.sealed.jsonl` and the source labeled dataset are mode `0600`;
@@ -163,16 +177,17 @@ materials complete; human evaluation pending**.
 
 ## Commands after the relevant authorization gate
 
-The authorized acquisition command is:
+The completed authorized acquisition used:
 
 ```bash
 python -m research build-sealed-test \
   --config research/configs/future_sealed_test_v1.json
 ```
 
-After acquisition, first run the label-blind reference and cache-coverage
-commands documented by `python -m research --help`. Do not run an embedding
-provider until its exact missing-query count, batch/request bound, character
-payload, charge estimate and authorization reference have been recorded. Do
-not run sealed evaluation until the prediction commitment exists. Do not open
-the sealed label vault manually.
+The next external command is the frozen bge-m3 score-run builder, but it must
+not run until the user explicitly authorizes the exact 300-query/455,260-char,
+five-batch/15-attempt/USD-0 plan and an authorization reference is supplied.
+The builder must use the shadow cache and `--max-new-embeddings 300`; it must
+not modify the formal M3 cache. Do not run sealed evaluation until every frozen
+prediction is hashed in a pre-label commitment. Do not open the sealed label
+vault manually.
