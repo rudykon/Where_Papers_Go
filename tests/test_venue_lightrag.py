@@ -156,12 +156,7 @@ class LightRAGRecallTests(unittest.TestCase):
             (working_dir / venue_lightrag.MANIFEST_FILE).write_text(
                 json.dumps(manifest), encoding="utf-8"
             )
-            for name in (
-                "graph_chunk_entity_relation.graphml",
-                "vdb_entities.json",
-                "vdb_relationships.json",
-                "vdb_chunks.json",
-            ):
+            for name in venue_lightrag.QUERY_STORAGE_FILES:
                 (working_dir / name).write_text("{}", encoding="utf-8")
             with patch.object(venue_lightrag, "VenueGraphIndex", FakeGraph):
                 self.assertEqual(

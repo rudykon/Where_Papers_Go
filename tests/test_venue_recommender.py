@@ -92,6 +92,126 @@ class TargetParsingTests(unittest.TestCase):
             venue_recommender.rank_candidates_indexed.__kwdefaults__["lexical_limit"]
         )
 
+    def test_run_local_cache_paths_can_be_bound_by_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = {
+                venue_recommender.API_CACHE_DIR_ENV: str(root / "api"),
+                venue_recommender.QUERY_EMBEDDING_CACHE_ENV: str(
+                    root / "query.json.gz"
+                ),
+                venue_recommender.LIGHTRAG_EMBEDDING_CACHE_ENV: str(
+                    root / "lightrag.json.gz"
+                ),
+            }
+            with patch.dict("os.environ", environment, clear=False):
+                args = build_parser().parse_args(["--target", "CCF-A"])
+            self.assertEqual(args.api_cache_dir, root / "api")
+            self.assertEqual(args.query_embedding_cache, root / "query.json.gz")
+            self.assertEqual(
+                args.lightrag_embedding_cache, root / "lightrag.json.gz"
+            )
+
+    def test_topic_query_rejects_shared_embedding_write_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            shared = Path(temporary) / "shared.json.gz"
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                venue_recommender.main(
+                    [
+                        "--target",
+                        "CCF-A",
+                        "--query",
+                        "wireless systems",
+                        "--query-embedding-cache",
+                        str(shared),
+                        "--lightrag-embedding-cache",
+                        str(shared),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_only_explicit_lightrag_cache_cannot_collide_with_query_default(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            default_query = venue_embeddings.default_query_embedding_cache_path(
+                data_dir
+            )
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                venue_recommender.main(
+                    [
+                        "--target",
+                        "CCF-A",
+                        "--query",
+                        "wireless systems",
+                        "--data-dir",
+                        str(data_dir),
+                        "--lightrag-embedding-cache",
+                        str(default_query),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_only_explicit_query_cache_cannot_collide_with_lightrag_default(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            default_lightrag = venue_embeddings.default_graph_embedding_cache_path(
+                data_dir
+            )
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                venue_recommender.main(
+                    [
+                        "--target",
+                        "CCF-A",
+                        "--query",
+                        "wireless systems",
+                        "--data-dir",
+                        str(data_dir),
+                        "--query-embedding-cache",
+                        str(default_lightrag),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_embedding_cache_cannot_collide_with_effective_api_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            default_api = data_dir / ".query_api_cache"
+            for option in (
+                "--query-embedding-cache",
+                "--lightrag-embedding-cache",
+            ):
+                with (
+                    self.subTest(option=option),
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    venue_recommender.main(
+                        [
+                            "--target",
+                            "CCF-A",
+                            "--query",
+                            "wireless systems",
+                            "--data-dir",
+                            str(data_dir),
+                            option,
+                            str(default_api / "shared.json.gz"),
+                        ]
+                    )
+                self.assertEqual(raised.exception.code, 2)
+
     def test_common_target_spellings(self) -> None:
         cases = {
             "CCFA": ("ccf", "A"),
@@ -144,6 +264,16 @@ class TargetParsingTests(unittest.TestCase):
 
 class ApiAssistedSearchIntegrationTests(unittest.TestCase):
     def test_cli_pipeline_expands_collects_evidence_and_reranks_known_ids(self) -> None:
+        cache_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(cache_directory.cleanup)
+        cache_root = Path(cache_directory.name)
+        api_write_cache = cache_root / "api"
+        query_write_cache = cache_root / "query.json.gz"
+        lightrag_write_cache = cache_root / "lightrag.json.gz"
+        observed_api_caches: list[Path] = []
+        observed_query_caches: list[Path] = []
+        observed_lightrag_caches: list[Path] = []
+
         class FakeEmbeddingProvider:
             fingerprint = "fake-embedding-fingerprint"
             model = "fake-embedding-model"
@@ -155,7 +285,7 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
             model = "fake-query-model"
 
             def __init__(self, _config, _cache_dir):
-                pass
+                observed_api_caches.append(_cache_dir)
 
             def plan_query(
                 self,
@@ -200,15 +330,18 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
         ]
         pipeline_barrier = threading.Barrier(3)
 
-        def collect_evidence_concurrently(*_args, **_kwargs):
+        def collect_evidence_concurrently(*args, **_kwargs):
+            observed_api_caches.append(args[3])
             pipeline_barrier.wait(timeout=2)
             return evidence, ["official mobile networking CFP"]
 
-        def embed_concurrently(*_args, **_kwargs):
+        def embed_concurrently(*args, **_kwargs):
+            observed_query_caches.append(args[2])
             pipeline_barrier.wait(timeout=2)
             return [1.0] + [0.0] * 1023
 
-        def query_lightrag_concurrently(*_args, **_kwargs):
+        def query_lightrag_concurrently(*args, **_kwargs):
+            observed_lightrag_caches.append(args[4])
             pipeline_barrier.wait(timeout=2)
             return LightRAGRecall(
                 entity_ids=(),
@@ -292,6 +425,12 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
                     "--api-assisted-search",
                     "--api-candidate-limit",
                     "10",
+                    "--api-cache-dir",
+                    str(api_write_cache),
+                    "--query-embedding-cache",
+                    str(query_write_cache),
+                    "--lightrag-embedding-cache",
+                    str(lightrag_write_cache),
                     "--limit",
                     "3",
                     "--format",
@@ -320,6 +459,12 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
                 if event["type"] == "progress" and event["status"] == "done"
             ],
             ["llm", "vector", "graph", "search"],
+        )
+        self.assertEqual(observed_api_caches, [api_write_cache, api_write_cache])
+        self.assertEqual(observed_query_caches, [query_write_cache])
+        self.assertEqual(observed_lightrag_caches, [lightrag_write_cache])
+        self.assertEqual(
+            len({query_write_cache.resolve(), lightrag_write_cache.resolve()}), 2
         )
 
 
