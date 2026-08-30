@@ -13,6 +13,30 @@ from where_paper_go import web_app
 
 
 class WebAppTests(TestCase):
+    def test_startup_store_verification_failure_never_activates_listener(self) -> None:
+        server = Mock()
+        with (
+            patch.object(
+                web_app.WebSecurityConfig,
+                "from_environment",
+                return_value=Mock(),
+            ),
+            patch.object(web_app, "VenueHTTPServer", return_value=server),
+            patch.object(
+                web_app._SEARCH_RUNTIME,
+                "start",
+                side_effect=RuntimeError("冻结 LightRAG store 哈希不匹配"),
+            ) as start,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            web_app.main(["--host", "127.0.0.1", "--port", "8001"])
+
+        self.assertEqual(raised.exception.code, 2)
+        server.server_bind.assert_called_once_with()
+        start.assert_called_once_with()
+        server.server_activate.assert_not_called()
+        server.server_close.assert_called_once_with()
+
     def test_frontend_declares_brand_assets(self) -> None:
         favicon_path = web_app.WEB_DIR / "favicon.png"
         brand_path = web_app.WEB_DIR / "brand-mark.png"
@@ -647,6 +671,41 @@ class WebAppTests(TestCase):
                 self.assertIsNone(manager._process)
                 process.terminate.assert_called_once()
                 manager.close()
+
+    def test_required_runtime_rejects_worker_without_frozen_store_proof(self) -> None:
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock()
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        expected = {
+            "graph_path": "/synthetic/graph",
+            "lightrag_working_dir": "/synthetic/rag",
+            "api_cache_dir": "/synthetic/api",
+            "query_embedding_cache": "/synthetic/query",
+            "lightrag_embedding_cache": "/synthetic/lightrag",
+        }
+        ready_line = json.dumps(
+            {"ready": True, "preload_ms": 1, "bindings": expected}
+        )
+        environment = {
+            "WPG_REQUIRE_RUNTIME_SHADOW": "1",
+            web_app.RUNTIME_MANIFEST_SHA256_ENV: "1" * 64,
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(
+                web_app, "_result_dependency_stamp", return_value=[("graph", 1, 1)]
+            ),
+            patch.object(web_app, "_expected_worker_bindings", return_value=expected),
+            patch.object(web_app.subprocess, "Popen", return_value=process),
+            patch.object(manager, "_readline", return_value=ready_line),
+            self.assertRaisesRegex(RuntimeError, "LightRAG store"),
+        ):
+            manager.start()
+        self.assertIsNone(manager._process)
+        process.terminate.assert_called_once()
+        manager.close()
 
     def test_invalid_worker_protocol_is_discarded_without_partial_result(self) -> None:
         manager = web_app.RetrievalWorkerManager()

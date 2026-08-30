@@ -331,8 +331,13 @@ benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest \
 
 2026-08-28 正式隔离运行时使用 Python 3.12.3、Torch 2.11.0、
 `adapters==1.3.0`、Transformers 4.57.6、huggingface-hub 0.36.2 和
-safetensors 0.7.0，真实模型测试 6/6 通过；SPECTER2 活动 adapter 还通过
-启用/禁用输出差异检查。该 overlay 通过 `.pth` 读取既有 Torch 环境，因此
+safetensors 0.7.0。模型聚焦命令的 6/6 分为：4 个使用 test double 的
+builder/adapter-activation 单元测试，以及 2 个现场生成 tiny random BERT
+safetensors 的本地 Transformers 集成测试。它们不是 6 个官方权重
+推理测试；已下载权重的完整性和正式 run 应以上述 asset/run manifest
+为证据。已提交的 SPECTER2 回归只验证 test double 上的显式激活与
+fail-closed，不是官方 SPECTER2 权重启用/禁用的输出差异检查。该
+overlay 通过 `.pth` 读取既有 Torch 环境，因此
 `pip check` 会看到与本实验无关的父环境 vLLM/Transformers 版本冲突；正式
 provider 不导入 vLLM，manifest 仍完整记录重复可见的 distributions，不能把
 环境描述为全局依赖无冲突。

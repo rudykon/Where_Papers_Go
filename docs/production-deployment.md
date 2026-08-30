@@ -35,7 +35,7 @@ Latest Search-free deployment evidence:
 | shared Search-quota state | revision 0; primary and backup both SHA-256 `eaeed431ed064ce4f833fd575ef3490abc6be8073c0394ebb9a61557cf148583`; the legacy files under `data/` were not changed |
 | initial final-unit startup | PID `3328201`; preload 18,746 ms; health ready on attempt 1 |
 | forced-failure recovery | enhanced systemd main-process-`SIGKILL` regression 1/1; recovered PID `3379788`; preload 19,564 ms; health ready on attempt 1; `NRestarts=1`, `Result=success` |
-| repository and focused regressions | default suite ran 441 tests with zero failures and 27 explained skips; host-only socket/security 25/25 and redirect/budget 10/10; isolated official-model runtime 6/6; retrieval 7/7 with micro Recall@K 1.0; Nginx integration skipped because Nginx is not installed |
+| repository and focused regressions | default suite ran 441 tests with zero failures and 27 explained skips; host-only socket/security 25/25 and redirect/budget 10/10; isolated model-focused command 6/6 (four test-double builder/activation unit tests plus two temporary synthetic-safetensors integrations, not official-weight inference); retrieval 7/7 with micro Recall@K 1.0; Nginx integration skipped because Nginx is not installed |
 
 No `/api/search`, remote LLM/Search, or embedding call was made by these
 deployment checks. Pre-activation validation exercised the real persistent
@@ -46,8 +46,23 @@ first and post-restart loopback health gates are the listener-backed evidence.
 A literal host reboot was not performed, and `enabled` must not be rewritten as
 proof that it was. The 27 default-suite skips are not hidden failures: 23 are
 loopback tests rerun successfully in the two host-only groups above, two are
-official-model tests rerun in the isolated runtime, one is the separately
-passed opt-in systemd recovery test, and one is the unavailable-Nginx check.
+synthetic local-safetensors tests rerun in the isolated runtime, one is the
+separately passed opt-in systemd recovery test, and one is the
+unavailable-Nginx check. The isolated 6/6 command also repeats four
+builder/adapter-activation unit tests already covered by the default suite; its
+count is not evidence of six direct official-weight tests.
+
+The tracked aggregate-only closeout validator is read-only with respect to the
+service: it queries the fixed user unit with `/usr/bin/systemctl --user show`,
+requires every TCP port-8001 listener returned by `/usr/bin/ss` to be
+`127.0.0.1` or `::1`, and reads `/api/health` over loopback. It clears all
+host-integration opt-ins before running tests, so validation cannot restart or
+kill the production unit. The two guarded Python test interpreters record zero
+observed non-loopback attempts. This is deliberately not labelled an absolute
+provider-call count: loopback, AF_UNIX, native non-Python children and any later
+separately authorized Git transport are outside that observation. The systemd
+PID, `ss` listener and HTTP health response are also separate read-only
+snapshots, not a cryptographic same-process binding.
 
 Use the host user manager and journal as the service-state authority. During
 this rollout, a sandboxed process listing could not see the host PID and briefly
@@ -137,7 +152,15 @@ generation is operational state, not P0/M3/formal evidence, and its initial
 manifest must not be rewritten after queries mutate caches. The unit grants
 the generation its cache write boundary but overlays the manifest itself with
 an explicit `ReadOnlyPaths=` rule; mode `0400`, the environment hash binding,
-and the startup health gate provide independent fail-closed checks.
+and the startup health gate provide independent fail-closed checks. When
+`WPG_REQUIRE_RUNTIME_SHADOW=1`, worker preload first verifies the exact runtime
+manifest hash and then streams all six frozen LightRAG inputs (the import
+manifest plus five query stores) through stable, no-follow descriptors. Each
+size and SHA-256 must match its unique runtime-manifest row. Missing, replaced,
+duplicated, permission-unsafe or content-drifted stores make the worker report
+`ready=false` before the graph or LightRAG runtime opens; the parent process
+therefore never activates its listener. Readiness exposes only the aggregate
+verified file count, byte count and binding digests, not store contents.
 
 Validate the candidate before selection. On subsequent upgrades, once the
 shared state already exists, the preferred check on a host that permits an
@@ -315,8 +338,9 @@ python -m scripts.manage_deployment health
 ```
 
 `/api/health/live` is process liveness. `/api/health` is readiness and returns
-HTTP 503 when API config, graph, vector, LightRAG manifest, worker, or preloaded
-dependency stamps are unavailable. A failed Search, LLM timeout, exhausted key
+HTTP 503 when API config, graph, vector, LightRAG manifest, frozen-store hash
+verification, worker, or preloaded dependency stamps are unavailable. A failed
+Search, LLM timeout, exhausted key
 pool, worker protocol failure, or stale index never returns a downgraded final
 recommendation. The browser may display explicitly labelled local preliminary
 recall while the mandatory remote stages are in flight, but it removes those

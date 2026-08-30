@@ -63,7 +63,15 @@ test ! -e "$ACQUISITION_PLAN"
 
 该模式会拒绝 redirect，并在 socket 前消费持久 attempt reservation；固定官方 Crossref request descriptor（base URL、path、query）会重新生成 URL SHA-256。每个入选样本必须从已绑定 reservation 的原始 response leaf 按 item 位置和 canonical hash 重放。最终新目录以相对路径保存 `provenance.jsonl`、cache evidence tree、仅实际使用的 `raw_cache/` leaves，以及 request-ledger/high-water/global-usage 的只读前缀快照和预算 binding。发布前任何源文件漂移都会 fail closed，已有输出不会被覆盖。
 
-这些材料只支持“在操作者纪律下，可本地重放入选行的 provenance 及其实际使用的 Crossref 成功响应”；它们不保证未入选响应或失败响应的完整性，也不是 Crossref 的密码学签名、远端真实性证明或人工身份认证。尤其不能追认历史产物：现有 500 篇数据和 2026-07 Crossref 300 篇数据都在这套 pre-attempt evidence 协议启用前采集，不得事后创建 binding/high-water 来把它们改称新协议 `complete`。2026-07 的结果只能称为“经审计的 post-access namespace-repaired future evaluation”，不能称为 pristine single-pass sealed test，也不能代替 500 篇 formal live evaluation。
+这些材料只支持“在操作者纪律下，可本地重放入选行的 provenance 及其实际使用的 Crossref 成功响应”；它们不保证未入选响应或失败响应的完整性，也不是 Crossref 的密码学签名、远端真实性证明或人工身份认证。本地 mode、哈希、追加世代、high-water/global anchor 和回滚检测的威胁模型，假定运行用户的证据、账本、anchor、验证代码与时钟不会被联合重写。它们可以 fail-closed 地发现普通断尾、回退或事后漂移，但**无法防御拥有同等或更高文件权限的管理员**同时改写这些文件、代码或时钟。要提升这一保证，必须把签名或 WORM anchor 放在独立权限域；当前仓库没有这种外部信任根。尤其不能追认历史产物：现有 500 篇数据和 2026-07 Crossref 300 篇数据都在这套 pre-attempt evidence 协议启用前采集，不得事后创建 binding/high-water 来把它们改称新协议 `complete`。2026-07 的结果只能称为“经审计的 post-access namespace-repaired future evaluation”，不能称为 pristine single-pass sealed test，也不能代替 500 篇 formal live evaluation。
+
+仓库收尾的 aggregate-only validator 只验证上述冻结 aggregate 文件的固定
+路径、已知 SHA-256、字节数和 `0444` 模式；它不会执行 live formal-500，
+不会启动人工标注，也不会请求 live
+Crossref/Search/LLM/embedding provider workflow。离线 guard 只能证明被守护的
+Python 进程中未观察到 non-loopback attempt；loopback、AF_UNIX 和原生子进程
+不在该计数内。其 full-suite 中涉及 500 条记录的回归使用临时合成数据、
+cache 和 dry-run，不能改称一次新的正式评测。
 
 ## 20,087 个期刊的 aims & scope 补全
 
@@ -165,7 +173,7 @@ test ! -e "$REVIEWED_PLAN"
 
 人工审阅该 JSON 时至少核对：`evaluation_mode=formal_500_full_denominator`、`case_count=500`、`case_track_count=1000`、两个默认 track 顺序、`output.exists=false`、数据/构建器/acquisition evidence/代码/API/图/向量/LightRAG/三类缓存 hashes、共享配额、预算警告和 `maximum_estimated_cost_usd`。此时尚未提供 digest 和不可变授权文件，`live_control_ready=false`，缺失项包含 `--reviewed-plan-digest` 与 `--authorization-grant` 是预期状态。
 
-审阅者确认整份计划并给出与其完全一致的新授权后，提取 digest，并在 ignored 私有目录创建一次性 grant。grant 必须是当前用户拥有的真实 regular file、mode `0444`、无 symlink、无重复或额外 JSON 字段；它精确绑定授权编号 hash、reviewed digest、输出目录 identity、评测模式、HTTP 硬预算和两项 USD 上限。它是本地不可变审计哨兵，不是数字签名或人工身份的密码学证明。
+审阅者确认整份计划并给出与其完全一致的新授权后，提取 digest，并在 ignored 私有目录创建一次性 grant。grant 必须是当前用户拥有的真实 regular file、mode `0444`、无 symlink、无重复或额外 JSON 字段；它精确绑定授权编号 hash、reviewed digest、输出目录 identity、评测模式、HTTP 硬预算和两项 USD 上限。它是在上述本地权限假设下的不可变审计哨兵，不是数字签名、人工身份的密码学证明，也不能阻止同权限管理员联合重写 grant 与其他本地 anchor。
 
 ```bash
 REVIEWED_PLAN_DIGEST="$(python3 -c \
@@ -228,7 +236,9 @@ python3 -m scripts.evaluate_recent_journals \
   --reviewed-plan-digest "$REVIEWED_PLAN_DIGEST"
 ```
 
-每次外部传输都在打开 socket 前向全局私有账本 `fsync` 一条 reservation；重试、并发和 worker 重启不能恢复已消耗的预算。Tavily 还有独立的跨运行共享配额状态：primary/backup 两份状态必须同时有效且 revision 一致，configured keyset、容量、`used` 和 revision 都被绑定；`used`/revision 在 resume 与 closeout 链上只能单调增加。单副本 degraded、不可读、keyset 漂移或 usage 回退都会令 live fail closed。run manifest 记录净化后的 `shared_external_quota_initial`，每个 closeout 记录 `shared_external_quota_final`，绝不记录 key 明文。
+每次外部传输都在打开 socket 前向全局私有账本 `fsync` 一条 reservation；重试、并发和 worker 重启不能恢复已消耗的预算。新账本同时要求同 inode 的 `.highwater.jsonl` 镜像和 mode-`0400` 的 `.binding.json` 身份绑定：单边截断、回滚、替换或写入中断都会在下次传输前 fail closed。没有这两个 sidecar 的旧 schema-v1 单文件账本不会被追溯绑定或自动恢复；继续 live 需要新授权和新账本。本地三文件方案不是密码学见证：拥有同等写权限的主体可在保留 inode 的同时把 ledger 与 high-water 协调回滚到同一旧前缀，且无需修改 binding；防御该威胁必须使用独立管理的 WORM/追加式存储或签名远程审计。
+
+Tavily 还有独立的跨运行共享配额状态：primary/backup 两份状态必须同时有效且 revision 一致，configured keyset、容量、`used` 和 revision 都被绑定；`used`/revision 在 resume 与 closeout 链上只能单调增加。单副本 degraded、不可读、keyset 漂移或 usage 回退都会令 live fail closed。run manifest 记录净化后的 `shared_external_quota_initial`，每个 closeout 记录 `shared_external_quota_final`，绝不记录 key 明文。
 
 除 Tavily 的共享配额外，所有运行时写入都隔离在本次输出中。`source_evidence/` 和 `runtime_cache/` 都是 mode `0700` 的敏感私有目录，但语义不同：前者保存 mode `0400` 的不可变审计文件，后者保存 mode `0600` 的可变运行文件。正式输出目录必须位于 Git ignored 路径或仓库外；`.building-*`、中断 segment 和失败 closeout 也必须按同一敏感级别保留，不得提交或公开打包。输出目录采用追加世代，不存在可覆盖的 formal `raw.jsonl` 或 `summary.json`：
 

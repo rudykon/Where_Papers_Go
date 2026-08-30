@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,6 +117,171 @@ class WorkerCacheBindingTests(unittest.TestCase):
             ):
                 worker._worker_cache_bindings()
 
+
+class FrozenLightRAGStoreTests(unittest.TestCase):
+    def test_fifo_store_is_rejected_without_blocking_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fifo = Path(temporary) / "frozen-store.fifo"
+            os.mkfifo(fifo, 0o600)
+            program = (
+                "from pathlib import Path\n"
+                "import sys\n"
+                "from where_paper_go.worker import _read_stable_private_file\n"
+                "try:\n"
+                " _read_stable_private_file(Path(sys.argv[1]),max_bytes=1024,capture=False)\n"
+                "except ValueError:\n"
+                " raise SystemExit(0)\n"
+                "raise SystemExit(9)\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", program, str(fifo)],
+                cwd=Path(__file__).resolve().parents[1],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2,
+                check=False,
+            )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr.decode("utf-8", errors="replace"),
+        )
+
+    def _runtime_fixture(
+        self, root: Path
+    ) -> tuple[worker.WorkerCacheBindings, dict[str, str], Path]:
+        generation = root / "generation-test"
+        storage = generation / "lightrag_storage"
+        storage.mkdir(parents=True)
+        generation.chmod(0o700)
+        storage.chmod(0o700)
+        rows = []
+        for index, name in enumerate(
+            (worker.lightrag.MANIFEST_FILE, *worker.lightrag.QUERY_STORAGE_FILES)
+        ):
+            payload = f"frozen-store-{index}-{name}\n".encode("utf-8")
+            path = storage / name
+            path.write_bytes(payload)
+            path.chmod(0o600)
+            rows.append(
+                {
+                    "runtime_path": f"lightrag_storage/{name}",
+                    "bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            )
+        manifest_payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact_type": "where_papers_go_runtime_shadow",
+                    "source_data_dir": str(worker.DATA_DIR.resolve()),
+                    "source_binding_sha256": "1" * 64,
+                    "files": rows,
+                    "write_boundary": "runtime_generation_only",
+                    "protected_sources_never_replaced": True,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        manifest = generation / worker.RUNTIME_MANIFEST_FILE
+        manifest.write_bytes(manifest_payload)
+        manifest.chmod(0o400)
+        bindings = worker.WorkerCacheBindings(
+            api_cache_dir=generation / "api_cache",
+            query_embedding_cache=generation / "query.json.gz",
+            lightrag_embedding_cache=generation / "lightrag.json.gz",
+            lightrag_working_dir=storage,
+            graph_path=worker.DATA_DIR / "venue_graph.json.gz",
+        )
+        environment = {
+            worker.REQUIRE_RUNTIME_SHADOW_ENV: "1",
+            worker.RUNTIME_GENERATION_ENV: str(generation),
+            worker.RUNTIME_MANIFEST_ENV: str(manifest),
+            worker.RUNTIME_MANIFEST_SHA256_ENV: hashlib.sha256(
+                manifest_payload
+            ).hexdigest(),
+        }
+        return bindings, environment, manifest
+
+    def test_frozen_store_verification_binds_manifest_and_all_six_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bindings, environment, _manifest = self._runtime_fixture(Path(temporary))
+            with patch.dict(os.environ, environment, clear=True):
+                result = worker._validate_frozen_lightrag_store(bindings)
+
+        self.assertTrue(result["required"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(
+            result["file_count"], len(worker.lightrag.QUERY_STORAGE_FILES) + 1
+        )
+        self.assertRegex(result["manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(result["store_binding_sha256"], r"^[0-9a-f]{64}$")
+        self.assertGreater(result["bytes"], 0)
+
+    def test_each_frozen_store_drift_fails_before_graph_or_lightrag_open(self) -> None:
+        names = (worker.lightrag.MANIFEST_FILE, *worker.lightrag.QUERY_STORAGE_FILES)
+        for name in names:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                bindings, environment, _manifest = self._runtime_fixture(
+                    Path(temporary)
+                )
+                store = bindings.lightrag_working_dir / name
+                original = store.read_bytes()
+                store.write_bytes(b"x" * len(original))
+                store.chmod(0o600)
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(recommender, "open_persistent_graph") as open_graph,
+                    patch.object(
+                        worker.lightrag, "preload_persistent_runtime"
+                    ) as preload,
+                    self.assertRaisesRegex(ValueError, "SHA-256 drifted"),
+                ):
+                    worker._preload(bindings)
+                open_graph.assert_not_called()
+                preload.assert_not_called()
+
+    def test_manifest_hash_drift_fails_before_graph_or_lightrag_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bindings, environment, manifest = self._runtime_fixture(Path(temporary))
+            manifest.chmod(0o600)
+            manifest.write_bytes(manifest.read_bytes() + b" ")
+            manifest.chmod(0o400)
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(recommender, "open_persistent_graph") as open_graph,
+                patch.object(worker.lightrag, "preload_persistent_runtime") as preload,
+                self.assertRaisesRegex(ValueError, "manifest SHA-256 drifted"),
+            ):
+                worker._preload(bindings)
+            open_graph.assert_not_called()
+            preload.assert_not_called()
+
+    def test_required_store_rejects_duplicate_manifest_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bindings, environment, manifest = self._runtime_fixture(Path(temporary))
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["files"].append(dict(payload["files"][0]))
+            raw = (
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode("utf-8")
+            manifest.chmod(0o600)
+            manifest.write_bytes(raw)
+            manifest.chmod(0o400)
+            environment[worker.RUNTIME_MANIFEST_SHA256_ENV] = hashlib.sha256(
+                raw
+            ).hexdigest()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                self.assertRaisesRegex(ValueError, "duplicate file bindings"),
+            ):
+                worker._validate_frozen_lightrag_store(bindings)
+
+
+class WorkerCacheIsolationTests(unittest.TestCase):
     def test_only_lightrag_environment_cannot_collide_with_query_default(
         self,
     ) -> None:

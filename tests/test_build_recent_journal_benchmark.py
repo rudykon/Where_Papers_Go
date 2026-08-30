@@ -4,6 +4,7 @@ import io
 import http.client
 import json
 import os
+import socket
 import stat
 import unittest
 import urllib.error
@@ -11,6 +12,10 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
+
+import scripts.build_recent_journal_benchmark as benchmark_builder
+import scripts.evaluate_recent_journals as benchmark_evaluator
 
 from scripts.build_recent_journal_benchmark import (
     BuildWindow,
@@ -932,6 +937,255 @@ class FailedBuildEvidenceTests(unittest.TestCase):
 
 
 class AcquisitionEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def _fixture_issn(index: int) -> str:
+        prefix = f"{1_000_000 + index:07d}"
+        weighted = sum(
+            int(value) * weight
+            for value, weight in zip(prefix, range(8, 1, -1))
+        )
+        check = (11 - weighted % 11) % 11
+        suffix = "X" if check == 10 else str(check)
+        return f"{prefix[:4]}-{prefix[4:]}{suffix}"
+
+    def test_complete_500_item_evidence_build_replays_entirely_offline(self) -> None:
+        strata = [
+            (field, quartile)
+            for field in benchmark_builder.BROAD_FIELDS
+            for quartile in benchmark_builder.QUARTILES
+        ]
+        targets = allocate_stratum_targets(
+            strata,
+            sample_size=500,
+            samples_per_stratum=10,
+        )
+        venues: list[JournalVenue] = []
+        items: list[dict[str, object]] = []
+        item_number = 0
+        for field, quartile in strata:
+            for _ in range(targets[(field, quartile)]):
+                issn = self._fixture_issn(item_number)
+                venue = JournalVenue(
+                    venue_id=f"offline-fixture-{item_number:03d}",
+                    entity_id=10_000 + item_number,
+                    name=f"Offline Fixture Journal {item_number:03d}",
+                    quartile=quartile,
+                    category="OFFLINE INTEGRATION FIXTURE",
+                    broad_field=field,
+                    issns=(issn.replace("-", ""),),
+                    lookup_issn=issn,
+                )
+                venues.append(venue)
+                items.append(
+                    {
+                        "DOI": f"10.9999/offline-evidence-{item_number:03d}",
+                        "type": "journal-article",
+                        "title": [
+                            f"Offline acquisition evidence article {item_number:03d}"
+                        ],
+                        "abstract": (
+                            "<jats:p>"
+                            + ("Detailed offline methods and findings. " * 12)
+                            + "</jats:p>"
+                        ),
+                        "ISSN": [issn],
+                        "container-title": [venue.name],
+                        "published-online": {"date-parts": [[2026, 2, 3]]},
+                        "language": "en",
+                    }
+                )
+                item_number += 1
+        self.assertEqual(item_number, 500)
+        self.assertEqual(sum(targets.values()), 500)
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache_dir = root / "cache"
+            ledger = root / "request-ledger.jsonl"
+            registry = root / "budget-registry"
+            output = root / "formal-bundle"
+            mailto = "offline500@example.org"
+            budget_id = "offline-500-evidence-budget"
+            window = BuildWindow(date(2026, 1, 1), date(2026, 6, 30))
+            request_params = {
+                "cursor": "*",
+                "filter": (
+                    "from-pub-date:2026-01-01,until-pub-date:2026-06-30,"
+                    "type:journal-article,has-abstract:true"
+                ),
+                "rows": "500",
+            }
+
+            network_forbidden = AssertionError(
+                "the 500-item acquisition-evidence integration test must stay offline"
+            )
+            with (
+                mock.patch.object(
+                    urllib.request.OpenerDirector,
+                    "open",
+                    side_effect=network_forbidden,
+                ) as opener_open,
+                mock.patch.object(
+                    http.client.HTTPConnection,
+                    "connect",
+                    side_effect=network_forbidden,
+                ) as http_connect,
+                mock.patch.object(
+                    socket,
+                    "create_connection",
+                    side_effect=network_forbidden,
+                ) as socket_connect,
+            ):
+                seed_client = CrossrefClient(
+                    cache_dir=cache_dir,
+                    mailto=mailto,
+                    timeout=1.0,
+                    retries=0,
+                    request_interval=0.0,
+                    use_environment_proxy=False,
+                    refresh_cache=False,
+                    max_network_requests=1,
+                    request_ledger=ledger,
+                    request_budget_id=budget_id,
+                    require_private_storage=True,
+                    budget_registry_dir=registry,
+                )
+                descriptor = benchmark_builder._crossref_request_descriptor(
+                    "/works", request_params, mailto=mailto
+                )
+                request_url = benchmark_builder._crossref_url_from_descriptor(
+                    descriptor
+                )
+                seed_client._reserve_network_request(request_url)
+                seed_client._write_cache_object(
+                    seed_client._cache_path(request_url),
+                    {"message": {"items": items}},
+                )
+
+                args = build_parser().parse_args(
+                    [
+                        "--data-dir",
+                        str(benchmark_builder.DATA_DIR),
+                        "--output-dir",
+                        str(output),
+                        "--cache-dir",
+                        str(cache_dir),
+                        "--from-date",
+                        "2026-01-01",
+                        "--until-date",
+                        "2026-06-30",
+                        "--sample-size",
+                        "500",
+                        "--samples-per-stratum",
+                        "10",
+                        "--max-papers-per-journal",
+                        "1",
+                        "--journal-workers",
+                        "1",
+                        "--bulk-pages",
+                        "1",
+                        "--bulk-rows",
+                        "500",
+                        "--rows-per-journal",
+                        "1",
+                        "--min-abstract-chars",
+                        "300",
+                        "--mailto",
+                        mailto,
+                        "--retries",
+                        "0",
+                        "--request-interval",
+                        "0",
+                        "--max-network-requests",
+                        "1",
+                        "--request-ledger",
+                        str(ledger),
+                        "--request-budget-id",
+                        budget_id,
+                        "--request-budget-registry-dir",
+                        str(registry),
+                        "--require-complete-acquisition-evidence",
+                    ]
+                )
+                with mock.patch.object(
+                    benchmark_builder,
+                    "load_jcr_venues",
+                    return_value=(venues, set()),
+                ):
+                    manifest = benchmark_builder.build_benchmark(args)
+                    persisted = json.loads(
+                        (output / "manifest.json").read_text(encoding="utf-8")
+                    )
+                    dataset_rows = [
+                        json.loads(line)
+                        for line in (output / "dataset.jsonl")
+                        .read_text(encoding="utf-8")
+                        .splitlines()
+                    ]
+                    audit = benchmark_evaluator._validate_formal_acquisition_evidence(
+                        persisted,
+                        builder_manifest=output / "manifest.json",
+                        dataset=output / "dataset.jsonl",
+                        dataset_sha256=benchmark_evaluator._file_sha256(
+                            output / "dataset.jsonl"
+                        ),
+                        raw_rows=dataset_rows,
+                        expected_count=500,
+                        acquisition_window=window,
+                        min_abstract_chars=300,
+                    )
+
+            opener_open.assert_not_called()
+            http_connect.assert_not_called()
+            socket_connect.assert_not_called()
+            self.assertEqual(manifest["dataset"]["record_count"], 500)
+            self.assertTrue(manifest["dataset"]["complete"])
+            self.assertEqual(manifest["coverage"]["accepted_records"], 500)
+            self.assertEqual(manifest["coverage"]["target_records"], 500)
+            self.assertEqual(manifest["coverage"]["complete_strata"], 36)
+            self.assertEqual(manifest["source"]["network_requests_this_run"], 0)
+            self.assertEqual(manifest["source"]["network_requests_cumulative"], 1)
+            self.assertEqual(manifest["source"]["cache_hits"], 1)
+            self.assertEqual(manifest["source"]["response_cache_hits"], 1)
+            self.assertEqual(len(dataset_rows), 500)
+            self.assertEqual(len({row["doi"] for row in dataset_rows}), 500)
+            self.assertEqual(
+                len({row["gold_journal_id"] for row in dataset_rows}), 500
+            )
+            self.assertEqual(len({row["gold_entity_id"] for row in dataset_rows}), 500)
+
+            evidence = persisted["acquisition_evidence"]
+            self.assertTrue(evidence["complete"])
+            self.assertEqual(evidence["dataset_record_count"], 500)
+            self.assertEqual(evidence["provenance"]["record_count"], 500)
+            self.assertEqual(evidence["cache_leaves"]["record_count"], 1)
+            self.assertEqual(evidence["ledger"]["attempt_records"], 1)
+            tree = json.loads(
+                (output / "cache_evidence_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(tree["accepted_record_count"], 500)
+            self.assertEqual(tree["provenance_replay_verified"], 500)
+            self.assertEqual(tree["leaf_count"], 1)
+            self.assertTrue(tree["complete"])
+            provenance = [
+                json.loads(line)
+                for line in (output / "provenance.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(len(provenance), 500)
+            self.assertTrue(
+                all(row["ledger_sequences"] == [1] for row in provenance)
+            )
+            self.assertTrue(
+                all(row["observed_via"] == "cache" for row in provenance)
+            )
+            self.assertEqual(audit["provenance_record_count"], 500)
+            self.assertEqual(audit["used_response_count"], 1)
+            self.assertEqual(audit["http_attempt_prefix_count"], 1)
+
     def _make_evidence_fixture(self, root: Path):
         venue = make_venue("known", "0007-9235")
         issn_index = build_issn_index([venue])
