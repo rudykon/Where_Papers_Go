@@ -66,6 +66,10 @@ from .sealed_test import build_sealed_test, plan_sealed_test
 from .sealed_sources import build_sealed_lexical_run, build_sealed_reference_binding
 from .sealed_evaluation import evaluate_sealed_test
 from .sealed_preflight import preflight_sealed_evaluation
+from .sealed_namespace_repair import (
+    evaluate_post_access_namespace_repair,
+    namespace_repair_readiness,
+)
 from .expert_review import (
     build_conflict_report,
     build_expert_review_package,
@@ -1195,6 +1199,26 @@ def _parser() -> argparse.ArgumentParser:
     )
     sealed_evaluate.add_argument("--config", type=Path, required=True)
 
+    sealed_repair_preflight = subparsers.add_parser(
+        "preflight-sealed-namespace-repair",
+        help=(
+            "verify the post-access exact-ID repair without parsing labels or "
+            "creating the one-shot repair sentinel"
+        ),
+    )
+    sealed_repair_preflight.add_argument("--config", type=Path, required=True)
+    sealed_repair_preflight.add_argument("--output", type=Path)
+
+    sealed_repair = subparsers.add_parser(
+        "evaluate-sealed-namespace-repair",
+        help=(
+            "run one explicitly authorized post-access exact-ID repair without "
+            "changing frozen predictions, candidates, methods, or statistics"
+        ),
+    )
+    sealed_repair.add_argument("--config", type=Path, required=True)
+    sealed_repair.add_argument("--authorization-record", type=Path, required=True)
+
     expert_package = subparsers.add_parser(
         "build-expert-review-package",
         help="merge, deduplicate, blind, and randomize committed Top-K results",
@@ -1594,6 +1618,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.dumps(
                     {
                         "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "metrics": manifest["metrics"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "preflight-sealed-namespace-repair":
+            report = namespace_repair_readiness(args.config)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        "namespace-repair preflight output exists and will not be "
+                        f"overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+                report = {
+                    **report,
+                    "report": {
+                        "path": str(args.output.resolve()),
+                        "sha256": sha256_file(args.output),
+                        "bytes": args.output.stat().st_size,
+                    },
+                }
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "evaluate-sealed-namespace-repair":
+            manifest = evaluate_post_access_namespace_repair(
+                args.config,
+                authorization_path=args.authorization_record,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "pristine_single_pass_sealed_test": manifest[
+                            "pristine_single_pass_sealed_test"
+                        ],
                         "coverage": manifest["coverage"],
                         "metrics": manifest["metrics"],
                         "manifest": manifest["manifest"],
