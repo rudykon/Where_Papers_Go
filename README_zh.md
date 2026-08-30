@@ -158,10 +158,22 @@ python3 -m scripts.prepare_retrieval --api-config llmapi.json
 ### 4. 启动 Web 界面
 
 ```bash
-where-paper-go-web --host 0.0.0.0 --port 8000
+where-paper-go-web --host 127.0.0.1 --port 8000
 ```
 
-本机访问 `http://127.0.0.1:8000/`；通过 SSH 或局域网使用时访问 `http://<服务器IP>:8000/`。界面支持中英文切换、投稿范围组合筛选、常驻检索进度、流式结果和证据详情。
+本机访问 `http://127.0.0.1:8000/`。如需临时开放受信局域网，必须把下面的示例网段替换为真实 LAN，并保留 loopback：
+
+```bash
+WPG_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,::1/128,192.168.1.0/24 \
+  where-paper-go-web --host 0.0.0.0 --port 8000
+```
+
+其他 direct peer 会在创建请求处理线程前被拒绝。界面支持中英文切换、投稿范围组合筛选、常驻检索进度、流式结果和证据详情。
+
+可重启服务、严格 readiness、HTTPS/鉴权前门、限流/审计、影子升级和可恢复回滚请参考[production deployment runbook](docs/production-deployment.md)。直接 `0.0.0.0` 仅用于受信 LAN 过渡，不是 Internet-facing 部署。
+
+截至 2026-08-30，已审计的宿主部署特意仅监听
+`http://127.0.0.1:8001/`。systemd 用户服务已 enabled 且 active，并通过显式重启与强制终止进程后的恢复检查。当前未对 LAN 或 Internet 开放：Nginx 尚未安装，管理员 TLS/鉴权反向代理激活和物理宿主重启仍是人工门禁。
 
 <details>
 <summary><strong>命令行示例</strong></summary>
@@ -243,7 +255,9 @@ python3 -m research evaluate \
 
 P0-A～P0-C 和 M3 强基线工程平台已完成。M3 与 SCOPE-Rank 共用 Search-free 暴露开发集；学习版 SCOPE-Rank full 显著弱于最强 M3 基线，linear/RRF 固定融合未建立显著增益。详见[完整负结果冻结](docs/scope-rank-results.md)。
 
-2026 年 7 月未来评测保留全部 300 条查询、同一 20,087 候选、4 种冻结方法和全部 6 对比较。SCOPE-Rank full 再次呈现显著负结果；linear 和 RRF 替代方案仅在数值上高于所评 LightRAG 基线，经多重比较校正后均不显著。该证据明确**不是 pristine single-pass sealed test**：首次评测已访问标签，随后因 ID 命名空间不一致在计算指标前 fail-closed；发布结果使用了确定性、可审计的 post-access namespace repair，未改变预测、方法、统计、候选或分母。因此它只能称为有限定的 post-access repaired future evaluation，不能作为 SCOPE-Rank 有效的干净确证。
+独立的 future 500-paper 正式采集和完整分母评测器的机器基础设施已完成，但尚未授权或执行新的实时 500-paper Search/LLM 运行。正式准入必须使用新采集、由当前用户控制且 mode-`0444` 的 dataset 和 builder manifest，并附完整 acquisition-evidence bundle。历史 500-paper 文件（`dataset.jsonl` SHA-256 `4c4d59dc...cbf65f1`，`manifest.json` SHA-256 `99abb875...e0026c`）仍为 mode `0664` 且缺少该证据，因此会被正式 preflight 拒绝，不得改称为正式评测。
+
+2026 年 7 月未来评测保留全部 300 条查询、同一 20,087 候选、4 种冻结方法和全部 6 对比较。SCOPE-Rank full 再次呈现显著负结果；linear 和 RRF 替代方案仅在数值上高于所评 LightRAG 基线，经多重比较校正后均不显著。该证据明确**不是 pristine single-pass sealed test**：首次评测已访问标签，随后因 ID 命名空间不一致在计算指标前 fail-closed；发布结果使用了确定性的精确 ID 命名空间修复，未改变预测、方法、统计、候选或分母。因此它只能称为**经审计的 post-access namespace-repaired future evaluation**，不能作为 SCOPE-Rank 有效的干净确证。
 
 专家盲评工具与材料已完成：250 条查询、6,129 个去重评审项、3 份专家分配。当前真实标注数为 **0**，一致性和专家效果结论均待人工评测。
 

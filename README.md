@@ -159,16 +159,33 @@ This creates the property graph, exact venue vectors, and the LightRAG `mix` kno
 ### 4. Start the web app
 
 ```bash
-where-paper-go-web --host 0.0.0.0 --port 8000
+where-paper-go-web --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/` locally, or `http://<server-ip>:8000/` over SSH/LAN. The interface supports Chinese/English switching, combined scope filters, persistent retrieval progress, streamed results, and evidence details.
+Open `http://127.0.0.1:8000/` locally. For a temporary trusted-LAN listener,
+explicitly replace the example subnet with the real LAN and keep loopback:
+
+```bash
+WPG_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,::1/128,192.168.1.0/24 \
+  where-paper-go-web --host 0.0.0.0 --port 8000
+```
+
+Requests from every other direct peer are dropped before a handler thread is
+created. The interface supports Chinese/English switching, combined scope
+filters, persistent retrieval progress, streamed results, and evidence details.
 
 For a restartable production service, strict readiness, HTTPS/auth proxy,
 request limiting/audit, shadow upgrade, and recoverable rollback, follow the
 [production deployment runbook](docs/production-deployment.md). A direct
 `0.0.0.0` listener is a trusted-LAN transition only, not an Internet-facing
 deployment.
+
+The audited host deployment as of 2026-08-30 is intentionally loopback-only at
+`http://127.0.0.1:8001/`. Its user-systemd unit is enabled and active and has
+passed explicit restart and forced-process-termination recovery checks. It is
+not currently exposed to the LAN or Internet: Nginx is not installed, and
+administrator TLS/auth proxy activation plus a literal host reboot remain
+manual gates.
 
 <details>
 <summary><strong>CLI examples</strong></summary>
@@ -250,7 +267,16 @@ The completed M3 engineering platform evaluates 11 lexical, dense, scientific-en
 
 P0-A through P0-C and the M3 strong-baseline engineering platform are complete. The accepted clean-PCL runs bind the 4,791-query development set, ordered 20,087-candidate universe, exact inputs, configurations, code state, environment, and per-run sidecars; the leakage gate has zero critical findings. M3 and SCOPE-Rank use that same Search-free exposed development set. The learned SCOPE-Rank full method is significantly worse than the strongest M3 baseline there; fixed linear/RRF fusion does not establish a significant gain. See the [complete negative-result freeze](docs/scope-rank-results.md).
 
-The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the evaluated LightRAG baseline and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic, audited post-access namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described as a qualified post-access repaired future evaluation, not as clean confirmatory evidence that SCOPE-Rank works.
+The machine infrastructure for a separate formal future 500-paper acquisition
+and full-denominator evaluator is complete, but no new live 500-paper
+Search/LLM run has been authorized or executed. Admission requires a newly
+acquired, owner-controlled mode-`0444` dataset and builder manifest plus the
+complete acquisition-evidence bundle. The legacy 500-paper files
+(`dataset.jsonl` SHA-256 `4c4d59dc...cbf65f1`, `manifest.json` SHA-256
+`99abb875...e0026c`) remain mode `0664` and lack that evidence, so the formal
+preflight rejects them; they cannot be relabeled as a formal evaluation.
+
+The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the evaluated LightRAG baseline and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic exact-namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described only as an **audited post-access namespace-repaired future evaluation**, not as clean confirmatory evidence that SCOPE-Rank works.
 
 The blinded expert-review tools and materials are complete for 250 queries, 6,129 deduplicated review items, and three expert assignments. They contain **zero real annotations**; agreement and expert-effectiveness conclusions remain unavailable until human reviewers perform the evaluation.
 

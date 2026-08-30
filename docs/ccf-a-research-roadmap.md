@@ -40,7 +40,7 @@ set；后续未来集只在方法、指标和统计协议冻结后创建。
 | 2026-07 未来评测 | 300 查询、20,087 候选、4 种冻结方法、6 对比较；full 再次显著更差，linear/RRF 对 LightRAG 的数值增益不显著 |
 | 专家盲评 | 250 条查询、6,129 个去重评审项、3 份专家分配的工具与材料已完成；真实标注 0 |
 
-未来评测必须始终附带 non-pristine 限定：首次评测在 label access 后、指标计算前因 ID 命名空间错配 fail-closed；后续发布的是确定性、可审计的 post-access namespace-repaired evaluation。它保留全部 300 分母，且未改变预测、方法、统计、候选或查询，但不能被重新标记为 pristine single-pass sealed test。
+未来评测必须始终附带 non-pristine 限定：首次评测在 label access 后、指标计算前因 ID 命名空间错配 fail-closed；后续发布的结果只能称为**经审计的 post-access namespace-repaired future evaluation**。其修复是确定性的，保留全部 300 分母，且未改变预测、方法、统计、候选或查询，但不能被重新标记为 pristine single-pass sealed test。
 
 以下 500 篇结果保留为产品在线链路的历史诊断和回归参照：
 
@@ -139,7 +139,7 @@ LLM 将模糊输入转换为结构化切面，但保留原文、每个切面的�
 | 数据层 | 用途 | 当前状态 |
 | --- | --- | --- |
 | 大规模历史弱标签对 | 训练召回、路由和融合排序 | M3 与 SCOPE-Rank 共用 4,791-query 暴露开发集和 20,087 候选；离线 Search-free |
-| 严格时间测试集 | 自动主榜 | 2026-07 的 300-query 评测已完成，但因 post-access ID namespace repair 只能作为 non-pristine 证据 |
+| 严格时间测试集 | 自动主榜 | 2026-07 的 300-query **经审计的 post-access namespace-repaired future evaluation** 已完成，只能作为 non-pristine 证据 |
 | 专家多标签查询 | 评估“其他合理期刊”和模糊表达 | 250 query / 6,129 item / 3 专家的盲评材料已完成；真实标注 0，人工待执行 |
 
 人评设计规模已落实为 250 条查询和 6,129 个去重评审项；这只表示工具、随机化、材料和分配完成。在真实专家标注仍为 0 时，不能报告相关性、适配性、解释质量或一致性结论。
@@ -285,7 +285,7 @@ research/
 | M2 公平档案覆盖 | 已完成（P0-B） | 按统一协议生成的全库档案 | 金标与非金标不再使用不同补全优先级；报告全库及分层覆盖 |
 | M3 强基线 | 已完成（暴露开发集） | 词法、dense、科学编码器、混合、图、cross-encoder 与统一基线 | 11 方法共享数据/候选；55 配对、置信区间、成本和失败全部冻结 |
 | M4 SCOPE-Rank | 工程/评测已完成，科学成功门未通过 | 自适应路由、train-only 融合、缺失感知、校准、解释与 11 消融 | learned full 显著弱于 M3；线性/RRF 无显著增益；负结果与根因已冻结，不得宣称方法有效 |
-| M5 sealed/专家评测 | 机器可执行基础设施已完成；人工标注待执行 | 300/20,087/4/6 的 post-access repaired future evaluation；250-query、6,129-item、3-expert 盲评工具、随机化、审计和导出包 | future 结果保留 non-pristine 限定；真实专家标注为 0 时只能声明“工具与材料完成，人工评测待执行” |
+| M5 sealed/专家评测 | 机器可执行基础设施已完成；人工标注待执行 | 300/20,087/4/6 的**经审计的 post-access namespace-repaired future evaluation**；250-query、6,129-item、3-expert 盲评工具、随机化、审计和导出包 | future 结果保留 non-pristine 限定；真实专家标注为 0 时只能声明“工具与材料完成，人工评测待执行” |
 | M6 投稿冻结 | 未开始 | 论文、附录、代码/配置、数据卡和可复现说明 | 内部模拟审稿通过；所有主表可脚本重建；不泄露 API key 或受限内容 |
 
 没有通用的“Hit@10 达到某数即可中 SIGIR”门槛。本项目的准入条件应是：无泄漏、完全可复现、公平强基线、有统计支持的方法增益，以及专家多标签证据；不用一个未校准的百分比代替这些条件。
@@ -330,6 +330,6 @@ research/
 
 1. **保留 M3 与 SCOPE-Rank 冻结**：不因 learned 负结果改变 11/78 配对族、缩小分母或重写消融结论；未来集的 4 方法/6 对比较也必须完整报告。
 2. **执行专家盲评**：使用已冻结的 250-query、6,129-item、3-expert 材料收集真实匿名标注；不得由模型代填，不在 0 标注时伪造一致性。
-3. **如需强确证则创建新的 pristine future test**：先冻结带 candidate-namespace 覆盖门禁的修正协议，再采集真正未来的新数据；不将当前 post-access repaired 结果重新标记为 pristine。
+3. **如需强确证则创建新的 pristine future test**：先冻结带 candidate-namespace 覆盖门禁的修正协议，再采集真正未来的新数据；不将当前**经审计的 post-access namespace-repaired future evaluation**重新标记为 pristine。
 
 产品可以继续优化部署、串流、并发、缓存和界面，但不应用产品可用性替代方法新颖性、人工评测或无泄漏实验；论文离线运行继续禁止实时 Search。
