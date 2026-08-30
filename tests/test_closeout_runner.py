@@ -153,6 +153,13 @@ if not sitecustomize.guard_self_check():
     raise SystemExit(10)
 if not socket.getaddrinfo("localhost", 80):
     raise SystemExit(12)
+class DisconnectedVerifiedLoopback:
+    family = socket.AF_INET
+    _closeout_peer_allowed = True
+    def getpeername(self):
+        raise OSError("peer already closed")
+if not sitecustomize._socket_peer_is_allowed(DisconnectedVerifiedLoopback()):
+    raise SystemExit(13)
 blocked = 0
 with patch.dict(os.environ, {}, clear=True):
     try:

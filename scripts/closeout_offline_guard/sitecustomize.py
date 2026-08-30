@@ -157,6 +157,13 @@ def _socket_peer_is_allowed(sock: Any) -> bool:
         return True
     if family not in {_AF_INET, _AF_INET6}:
         return False
+    # A peer can disappear between an accepted loopback connection and a
+    # server's final error response.  Preserve the address decision made by
+    # guarded connect/accept so that a disconnected local peer is not
+    # misreported as an external attempt.  Sockets imported from arbitrary
+    # file descriptors have no such marker and still require getpeername().
+    if getattr(sock, "_closeout_peer_allowed", False) is True:
+        return True
     try:
         peer = sock.getpeername()
     except OSError:
@@ -243,9 +250,18 @@ class GuardedSocket(_ORIGINAL_SOCKET):
         fileno: int | None = None,
     ) -> None:
         super().__init__(family, type, proto, fileno)
+        self._closeout_peer_allowed = False
         if self.family not in _ALLOWED_FAMILIES:
             super().close()
             _deny()
+
+    def accept(self) -> tuple[Any, Any]:
+        connection, address = super().accept()
+        if not _address_is_allowed(connection.family, address):
+            connection.close()
+            _deny()
+        connection._closeout_peer_allowed = True
+        return connection, address
 
     def bind(self, address: Any) -> None:
         if not _address_is_allowed(self.family, address):
@@ -255,12 +271,15 @@ class GuardedSocket(_ORIGINAL_SOCKET):
     def connect(self, address: Any) -> None:
         if not _address_is_allowed(self.family, address):
             _deny()
-        return super().connect(address)
+        super().connect(address)
+        self._closeout_peer_allowed = True
 
     def connect_ex(self, address: Any) -> int:
         if not _address_is_allowed(self.family, address):
             _deny()
-        return super().connect_ex(address)
+        result = super().connect_ex(address)
+        self._closeout_peer_allowed = True
+        return result
 
     def send(self, data: Any, flags: int = 0) -> int:
         if not _socket_peer_is_allowed(self):
