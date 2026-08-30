@@ -65,6 +65,7 @@ from .scope_rank_selective import evaluate_scope_rank_selective
 from .sealed_test import build_sealed_test, plan_sealed_test
 from .sealed_sources import build_sealed_lexical_run, build_sealed_reference_binding
 from .sealed_evaluation import evaluate_sealed_test
+from .sealed_preflight import preflight_sealed_evaluation
 from .expert_review import (
     build_conflict_report,
     build_expert_review_package,
@@ -1181,6 +1182,12 @@ def _parser() -> argparse.ArgumentParser:
     sealed_lexical.add_argument("--no-sublinear-tf", action="store_true")
     sealed_lexical.add_argument("--no-prototypes", action="store_true")
 
+    sealed_preflight = subparsers.add_parser(
+        "preflight-sealed-evaluation",
+        help="verify every label-free condition before the one-time unseal",
+    )
+    sealed_preflight.add_argument("--config", type=Path, required=True)
+
     sealed_evaluate = subparsers.add_parser(
         "evaluate-sealed-test",
         help="verify pre-label prediction hashes, then unseal and evaluate once",
@@ -1553,6 +1560,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "preflight-sealed-evaluation":
+            print(
+                json.dumps(
+                    preflight_sealed_evaluation(args.config),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         elif args.command == "evaluate-sealed-test":
             manifest = evaluate_sealed_test(
                 args.config,
