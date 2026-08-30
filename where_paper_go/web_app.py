@@ -90,6 +90,7 @@ class RetrievalWorkerManager:
         )
         self.preload_ms: int | None = None
         self.runtime_bindings: dict[str, str] = {}
+        self.lightrag_store_verification: dict[str, Any] = {}
 
     @property
     def process_ready(self) -> bool:
@@ -98,11 +99,26 @@ class RetrievalWorkerManager:
 
     @property
     def bindings_current(self) -> bool:
+        runtime_shadow_required = os.environ.get(
+            "WPG_REQUIRE_RUNTIME_SHADOW", ""
+        ).strip() == "1"
+        store_verification_current = bool(
+            not runtime_shadow_required
+            or (
+                self.lightrag_store_verification.get("required") is True
+                and self.lightrag_store_verification.get("verified") is True
+                and self.lightrag_store_verification.get("file_count")
+                == len(lightrag.QUERY_STORAGE_FILES) + 1
+                and self.lightrag_store_verification.get("manifest_sha256")
+                == os.environ.get(RUNTIME_MANIFEST_SHA256_ENV, "").strip()
+            )
+        )
         return (
             self.process_ready
             and self._dependency_stamp is not None
             and self._dependency_stamp == _result_dependency_stamp()
             and self.runtime_bindings == _expected_worker_bindings()
+            and store_verification_current
         )
 
     @property
@@ -131,6 +147,7 @@ class RetrievalWorkerManager:
         self._process = None
         self._dependency_stamp = None
         self.runtime_bindings = {}
+        self.lightrag_store_verification = {}
         if process is None:
             return
         if process.poll() is not None:
@@ -204,9 +221,29 @@ class RetrievalWorkerManager:
                     and bindings == expected_bindings_after
                 ):
                     raise RuntimeError("检索工作进程报告的运行时绑定与父进程不一致")
+                store_verification = ready.get("lightrag_store_verification")
+                runtime_shadow_required = os.environ.get(
+                    "WPG_REQUIRE_RUNTIME_SHADOW", ""
+                ).strip() == "1"
+                if not isinstance(store_verification, dict):
+                    store_verification = {}
+                if runtime_shadow_required and not (
+                    store_verification.get("required") is True
+                    and store_verification.get("verified") is True
+                    and store_verification.get("file_count")
+                    == len(lightrag.QUERY_STORAGE_FILES) + 1
+                    and store_verification.get("manifest_sha256")
+                    == os.environ.get(RUNTIME_MANIFEST_SHA256_ENV, "").strip()
+                    and isinstance(store_verification.get("store_binding_sha256"), str)
+                    and len(store_verification["store_binding_sha256"]) == 64
+                ):
+                    raise RuntimeError(
+                        "检索工作进程未证明冻结 LightRAG store 的完整性"
+                    )
                 self._dependency_stamp = dependency_after
                 self.preload_ms = int(ready.get("preload_ms") or 0)
                 self.runtime_bindings = dict(bindings)
+                self.lightrag_store_verification = dict(store_verification)
             except (
                 OSError,
                 ValueError,
@@ -992,6 +1029,11 @@ def _runtime_status() -> dict[str, Any]:
         and tavily_shared
     )
     manifest_status = _runtime_manifest_status(generation)
+    store_verification = getattr(
+        _SEARCH_RUNTIME, "lightrag_store_verification", {}
+    )
+    if not isinstance(store_verification, dict):
+        store_verification = {}
     worker_bindings_match = _SEARCH_RUNTIME.runtime_bindings == expected
     process_ready = _SEARCH_RUNTIME.process_ready
     bindings_current = _SEARCH_RUNTIME.bindings_current
@@ -1028,6 +1070,17 @@ def _runtime_status() -> dict[str, Any]:
         "result_cache_within_api_cache": result_nested,
         "tavily_state_shared": tavily_shared,
         "runtime_manifest": manifest_status,
+        "lightrag_store_verification": {
+            key: store_verification.get(key)
+            for key in (
+                "required",
+                "verified",
+                "file_count",
+                "bytes",
+                "manifest_sha256",
+                "store_binding_sha256",
+            )
+        },
         "worker_bindings": {
             "exact_match": worker_bindings_match,
             "expected_keys": sorted(expected),
@@ -1049,6 +1102,10 @@ def _health_payload() -> dict[str, Any]:
     counts = light_info.get("counts") if isinstance(light_info, dict) else {}
     config = _config_status()
     runtime = _runtime_status()
+    store_verification = runtime.get("lightrag_store_verification")
+    store_verification = (
+        store_verification if isinstance(store_verification, dict) else {}
+    )
     quota_audit = config.get("search_quota_audit")
     quota_audit = quota_audit if isinstance(quota_audit, dict) else {}
     checks = {
@@ -1064,6 +1121,10 @@ def _health_payload() -> dict[str, Any]:
         ),
         "worker": bool(runtime.get("process_ready")),
         "bindings_current": bool(runtime.get("bindings_current")),
+        "lightrag_store_hashes": bool(
+            not runtime.get("runtime_shadow_required")
+            or store_verification.get("verified") is True
+        ),
         "runtime_contract": bool(runtime.get("ready")),
     }
     ready = all(checks.values())

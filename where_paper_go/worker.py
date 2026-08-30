@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
+import hashlib
 import io
 import json
 import os
@@ -13,7 +14,7 @@ import stat
 import sys
 import time
 import traceback
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Mapping, TextIO
 
 from . import lightrag, recommender
 from .embeddings import (
@@ -31,6 +32,12 @@ GRAPH_PATH_ENV = "WPG_GRAPH_PATH"
 STRICT_GRAPH_READ_ONLY_ENV = "WPG_STRICT_GRAPH_READ_ONLY"
 REQUIRE_RUNTIME_SHADOW_ENV = "WPG_REQUIRE_RUNTIME_SHADOW"
 RUNTIME_GENERATION_ENV = "WPG_RUNTIME_GENERATION"
+RUNTIME_MANIFEST_ENV = "WPG_RUNTIME_MANIFEST"
+RUNTIME_MANIFEST_SHA256_ENV = "WPG_RUNTIME_MANIFEST_SHA256"
+RUNTIME_MANIFEST_FILE = "runtime-shadow-manifest.json"
+RUNTIME_MANIFEST_MAX_BYTES = 16 * 1024 * 1024
+RUNTIME_STORE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+RUNTIME_STORE_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
@@ -43,6 +50,235 @@ class WorkerCacheBindings:
     lightrag_embedding_cache: Path
     lightrag_working_dir: Path
     graph_path: Path
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    """Return the fields that must remain stable across one verified read."""
+
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _read_stable_private_file(
+    path: Path,
+    *,
+    expected_bytes: int | None = None,
+    exact_mode: int | None = None,
+    max_bytes: int,
+    capture: bool,
+) -> tuple[str, bytes | None, int]:
+    """Hash an owned regular file through one stable, no-follow descriptor."""
+
+    try:
+        path_before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except OSError as exc:
+        raise ValueError(f"frozen runtime file is unavailable: {path.name}") from exc
+    try:
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        if (
+            stat.S_ISLNK(path_before.st_mode)
+            or not stat.S_ISREG(path_before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or mode & 0o077
+            or (exact_mode is not None and mode != exact_mode)
+            or before.st_size < 0
+            or before.st_size > max_bytes
+            or (expected_bytes is not None and before.st_size != expected_bytes)
+            or _file_identity(path_before) != _file_identity(before)
+        ):
+            raise ValueError(f"frozen runtime file has an unsafe identity: {path.name}")
+        digest = hashlib.sha256()
+        chunks: list[bytes] | None = [] if capture else None
+        observed = 0
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            observed += len(block)
+            if observed > max_bytes:
+                raise ValueError(f"frozen runtime file is oversized: {path.name}")
+            digest.update(block)
+            if chunks is not None:
+                chunks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"frozen runtime file changed while read: {path.name}") from exc
+    if (
+        observed != before.st_size
+        or _file_identity(before) != _file_identity(after)
+        or _file_identity(before) != _file_identity(path_after)
+    ):
+        raise ValueError(f"frozen runtime file changed while read: {path.name}")
+    return digest.hexdigest(), b"".join(chunks) if chunks is not None else None, observed
+
+
+def _validate_frozen_lightrag_store(
+    bindings: WorkerCacheBindings,
+) -> dict[str, Any]:
+    """Verify every frozen LightRAG store hash before any runtime is opened."""
+
+    if os.environ.get(REQUIRE_RUNTIME_SHADOW_ENV, "").strip() != "1":
+        return {
+            "required": False,
+            "verified": False,
+            "file_count": 0,
+            "bytes": 0,
+            "manifest_sha256": None,
+            "store_binding_sha256": None,
+        }
+
+    generation_raw = os.environ.get(RUNTIME_GENERATION_ENV, "").strip()
+    manifest_raw = os.environ.get(RUNTIME_MANIFEST_ENV, "").strip()
+    expected_manifest_sha256 = os.environ.get(
+        RUNTIME_MANIFEST_SHA256_ENV, ""
+    ).strip()
+    if (
+        not generation_raw
+        or not manifest_raw
+        or not Path(generation_raw).expanduser().is_absolute()
+        or not Path(manifest_raw).expanduser().is_absolute()
+        or len(expected_manifest_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_manifest_sha256
+        )
+    ):
+        raise ValueError("production runtime manifest binding is incomplete or invalid")
+
+    generation = Path(generation_raw).expanduser().resolve()
+    manifest_path = Path(manifest_raw).expanduser()
+    expected_manifest_path = generation / RUNTIME_MANIFEST_FILE
+    if manifest_path.resolve() != expected_manifest_path:
+        raise ValueError("production runtime manifest path is not generation-bound")
+    expected_working_dir = generation / "lightrag_storage"
+    if bindings.lightrag_working_dir != expected_working_dir:
+        raise ValueError("LightRAG working directory is not the frozen runtime store")
+    try:
+        working_info = expected_working_dir.lstat()
+    except OSError as exc:
+        raise ValueError("frozen LightRAG store directory is unavailable") from exc
+    if (
+        stat.S_ISLNK(working_info.st_mode)
+        or not stat.S_ISDIR(working_info.st_mode)
+        or working_info.st_uid != os.geteuid()
+        or stat.S_IMODE(working_info.st_mode) & 0o077
+    ):
+        raise ValueError("frozen LightRAG store directory has an unsafe identity")
+
+    actual_manifest_sha256, raw_manifest, _manifest_bytes = _read_stable_private_file(
+        manifest_path,
+        exact_mode=0o400,
+        max_bytes=RUNTIME_MANIFEST_MAX_BYTES,
+        capture=True,
+    )
+    if actual_manifest_sha256 != expected_manifest_sha256:
+        raise ValueError("production runtime manifest SHA-256 drifted")
+    assert raw_manifest is not None
+    try:
+        manifest = json.loads(raw_manifest.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("production runtime manifest is unreadable") from exc
+    if (
+        not isinstance(manifest, Mapping)
+        or manifest.get("schema_version") != 1
+        or manifest.get("artifact_type") != "where_papers_go_runtime_shadow"
+        or manifest.get("source_data_dir") != str(DATA_DIR.resolve())
+        or not isinstance(manifest.get("source_binding_sha256"), str)
+        or len(str(manifest.get("source_binding_sha256"))) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in str(manifest.get("source_binding_sha256"))
+        )
+        or manifest.get("write_boundary") != "runtime_generation_only"
+        or manifest.get("protected_sources_never_replaced") is not True
+        or not isinstance(manifest.get("files"), list)
+    ):
+        raise ValueError("production runtime manifest contract is invalid")
+
+    file_bindings: dict[str, Mapping[str, Any]] = {}
+    for row in manifest["files"]:
+        if not isinstance(row, Mapping) or not isinstance(row.get("runtime_path"), str):
+            raise ValueError("production runtime manifest contains an invalid file row")
+        runtime_path = str(row["runtime_path"])
+        if runtime_path in file_bindings:
+            raise ValueError("production runtime manifest contains duplicate file bindings")
+        file_bindings[runtime_path] = row
+
+    required_names = (lightrag.MANIFEST_FILE, *lightrag.QUERY_STORAGE_FILES)
+    verified_rows: list[dict[str, Any]] = []
+    total_bytes = 0
+    for name in required_names:
+        relative = f"lightrag_storage/{name}"
+        row = file_bindings.get(relative)
+        if row is None:
+            raise ValueError(f"runtime manifest does not bind frozen LightRAG file: {name}")
+        expected_bytes = row.get("bytes")
+        expected_sha256 = row.get("sha256")
+        if (
+            isinstance(expected_bytes, bool)
+            or not isinstance(expected_bytes, int)
+            or expected_bytes < 0
+            or expected_bytes > RUNTIME_STORE_MAX_BYTES
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected_sha256
+            )
+        ):
+            raise ValueError(f"runtime manifest has an invalid LightRAG binding: {name}")
+        actual_sha256, _raw, observed_bytes = _read_stable_private_file(
+            expected_working_dir / name,
+            expected_bytes=expected_bytes,
+            max_bytes=RUNTIME_STORE_MAX_BYTES,
+            capture=False,
+        )
+        if actual_sha256 != expected_sha256:
+            raise ValueError(f"frozen LightRAG store SHA-256 drifted: {name}")
+        total_bytes += observed_bytes
+        if total_bytes > RUNTIME_STORE_MAX_TOTAL_BYTES:
+            raise ValueError("frozen LightRAG stores exceed the cumulative size bound")
+        verified_rows.append(
+            {
+                "runtime_path": relative,
+                "bytes": expected_bytes,
+                "sha256": expected_sha256,
+            }
+        )
+    binding_payload = json.dumps(
+        verified_rows,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "required": True,
+        "verified": True,
+        "file_count": len(verified_rows),
+        "bytes": total_bytes,
+        "manifest_sha256": actual_manifest_sha256,
+        "store_binding_sha256": hashlib.sha256(binding_payload).hexdigest(),
+    }
 
 
 def _optional_environment_path(name: str) -> Path | None:
@@ -220,6 +456,7 @@ def _emit(payload: dict[str, Any], stream: TextIO | None = None) -> None:
 def _preload(bindings: WorkerCacheBindings | None = None) -> dict[str, Any]:
     bindings = bindings or _worker_cache_bindings()
     started = time.perf_counter()
+    store_verification = _validate_frozen_lightrag_store(bindings)
     graph_path = bindings.graph_path
     graph, _rebuilt, _reason = recommender.open_persistent_graph(
         DATA_DIR, graph_path
@@ -234,6 +471,7 @@ def _preload(bindings: WorkerCacheBindings | None = None) -> dict[str, Any]:
     return {
         "graph": str(graph_path),
         "preload_ms": round((time.perf_counter() - started) * 1000),
+        "lightrag_store_verification": store_verification,
         "bindings": {
             "graph_path": str(bindings.graph_path),
             "lightrag_working_dir": str(bindings.lightrag_working_dir),

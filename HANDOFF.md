@@ -58,7 +58,12 @@ estimates:
   dry-run first, cache/disk/cost/quota state was recorded, failures preserve
   `.building`, and successful payloads were SHA-256 checked before atomic
   publication. The ignored isolated runtime contains `adapters==1.3.0` and its
-  official-model test suite passed 6/6;
+  six-test model-focused command passed 6/6. Four tests exercise builders and
+  adapter-activation fail-closed logic with test doubles; two create tiny
+  temporary random BERT safetensors and exercise the local Transformers paths.
+  This command is not direct inference evidence for the downloaded official
+  weights; those assets and completed runs are bound by the asset and run
+  manifests recorded below;
 - the final machine closeout on `agent/m3-strong-baselines` adds
   `0b45a0f` (external-call budgets and runtime isolation), `b09cc3c`
   (audited two-phase user-service deployment) and `ca6bb95` (formal recent500
@@ -204,9 +209,12 @@ loopback listener must not be described as LAN- or Internet-facing.
 Final code/deployment verification ran 441 default-environment tests with zero
 failures and 27 explained skips. The 23 loopback skips then passed as host-only
 socket/security 25/25 and redirect/budget 10/10 groups; the two base-runtime
-model skips passed in the ignored isolated runtime as part of the complete 6/6
-official-model suite; the opt-in systemd recovery test passed 1/1. The sole
-remaining skipped check is Nginx integration because Nginx is not installed.
+model skips passed in the ignored isolated runtime as 2/2 synthetic
+temporary-safetensors integration tests. The same isolated command also reran
+four already-covered builder/adapter-activation unit tests, giving 6/6 for that
+command, not six official-weight inference tests. The opt-in systemd recovery
+test passed 1/1. The sole remaining skipped check is Nginx integration because
+Nginx is not installed.
 Deterministic retrieval passed 7/7 with micro Recall@K 1.0. These checks made
 no live Search, LLM or embedding request.
 
@@ -632,10 +640,16 @@ its subsequent revalidation audit is
 `d4a37bcd80a79fddccce1cad967376f46277735d44b2f84cf28b6a79afc94217`.
 The ignored runtime uses Python 3.12.3, Torch 2.11.0,
 `adapters==1.3.0`, Transformers 4.57.6, huggingface-hub 0.36.2 and
-safetensors 0.7.0. Official local-model tests passed 6/6, including an active
-SPECTER2 adapter enable/disable output-difference check. The overlay sees an
-unrelated parent vLLM/Transformers conflict in `pip check`; the formal provider
-does not import vLLM, so do not describe the global environment as conflict-free.
+safetensors 0.7.0. The model-focused command passed 6/6: four builder and
+adapter-activation unit tests use test doubles, while two integration tests
+load tiny temporary random BERT safetensors. The committed adapter regression
+proves explicit activation and fail-closed behavior on a test double; it does
+not perform the previously claimed official SPECTER2 enable/disable
+output-difference test. Official asset integrity and completed model runs are
+instead evidenced by the exact asset-tree and frozen-run manifests in this
+section. The overlay sees an unrelated parent vLLM/Transformers conflict in
+`pip check`; the formal provider does not import vLLM, so do not describe the
+global environment as conflict-free.
 
 The complete M3 evaluation is
 `benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2`:
@@ -914,8 +928,9 @@ Final machine validation was run from clean source/docs commit `9c6ed9b`:
   base-environment skips, zero failures/errors; the three sandbox socket tests
   were covered by the host Web-security module, which passed 10/10;
 - research discover passed 18/18; sealed/crosswalk/repair/preflight/expert
-  focused tests passed 21/21; the ignored isolated official-model runtime passed
-  all 6/6 builder and real-safetensors integration tests;
+  focused tests passed 21/21; the ignored isolated model runtime command passed
+  6/6: four test-double builder/activation unit tests and two temporary
+  synthetic-safetensors integration tests, not six official-weight tests;
 - deterministic retrieval passed 7/7 with micro Recall@K `1.0`; graph load was
   3,910.568 ms and mean/median/max query latency was
   27.594/14.116/67.597 ms;
@@ -939,6 +954,52 @@ Final machine validation was run from clean source/docs commit `9c6ed9b`:
   `benchmark_artifacts/final_delivery_validation_20260830/summary.json` is mode
   `0444`, 6,862 bytes, SHA-256
   `02bf056f663ae2d3578e7295fa7248fc358f2047e5ad88a0526084ab34182e57`.
+
+That immutable schema-v1 report's field name
+`isolated_official_model_runtime` is historically misnamed. Its `6/6` count has
+the narrower 4+2 meaning above and must not be cited as six direct tests of the
+official weights. Preserve the old directory and bytes; correct the
+interpretation rather than rewriting historical evidence.
+
+New closeouts use `python -m scripts.validate_closeout --input INPUT.json` only
+after the bound commit and tracked/non-ignored worktree are clean. The strict
+schema-2 input contains only its fixed identity, the expected 40-hex HEAD, its
+matching fixed `agent/aggregate-only-closeout-20260831` branch, and the exact
+known hashes for the eight fixed aggregate artifacts. Those hashes, paths, byte sizes and
+mode-`0444` requirements are pinned in tracked validator code; the request
+cannot substitute paths or self-report tests, deployment state, external-call
+counts, group names or output fields. The validator binds the clean HEAD and
+tree plus fixed tracked implementation/doc hashes, runs full unittest discovery
+itself, and separately requires exactly 6/6 in the ignored isolated runtime:
+four test-double builder/activation tests plus two temporary random tiny-BERT
+safetensors integrations, with `official_weight_inference_tests=0`. Both runs
+inherit the tracked non-loopback socket guard and publish only aggregate counts,
+test-ID fingerprints and an empty blocked-attempt audit. The guard permits
+loopback and AF_UNIX and is inherited by Python children, not native non-Python
+executables. The evidence therefore proves zero observed non-loopback attempts
+only inside the guarded Python interpreters, not an absolute provider-call
+count; the fixed tracked suite, sanitized environment, cleared host opt-ins and
+offline dependency settings constrain that residual scope.
+
+Deployment validation directly reads the fixed user service with
+`/usr/bin/systemctl`, proves that every port-8001 listener reported by
+`/usr/bin/ss` is loopback-only, and performs a read-only
+`127.0.0.1:8001/api/health` probe. It does not restart or otherwise mutate the
+production service. The deployment record also carries the observed
+`lightrag_store_hashes_verified` boolean without forcing it true; an old live
+process that has not restarted under the new startup gate must remain `false`.
+The closeout explicitly records that no live formal-500 or human-evaluation run
+occurred and that the validator requested no live external-provider workflow.
+Local loopback HTTP exercised by fixed tests and the read-only health probe are
+allowed; native-child networking and later user-authorized Git transport remain
+outside the socket observation. The separately collected systemd PID, listener
+snapshot and HTTP health response are not a cryptographic same-process binding.
+Each successful invocation exclusively creates a new ignored
+`benchmark_artifacts/final_delivery_validation_v2_<UTC>-<HEAD>/` directory with
+a mode-`0444` summary and mode-`0555` directory, then reopens and verifies the
+final bytes, hash, permissions and sole directory entry. A failed final check
+is preserved under a unique `.failed-*` name. There is no overwrite option,
+and the 2026-08-30 directory remains untouched.
 
 The 2026-08-30 private-generation deployment subsequently passed an authorized
 host unit restart and forced-process-termination recovery with `ready=true`,
