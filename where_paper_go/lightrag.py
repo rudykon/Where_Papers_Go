@@ -121,6 +121,18 @@ def manifest_path(working_dir: Path) -> Path:
     return working_dir / MANIFEST_FILE
 
 
+# LightRAG mix queries read every one of these stores.  Keep this list shared
+# with the web worker/cache binding so a partial atomic index switch cannot be
+# mistaken for the manifest-bound workspace that the worker preloaded.
+QUERY_STORAGE_FILES = (
+    "graph_chunk_entity_relation.graphml",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "vdb_chunks.json",
+    "kv_store_text_chunks.json",
+)
+
+
 def _load_manifest(working_dir: Path) -> dict[str, Any]:
     path = manifest_path(working_dir)
     try:
@@ -166,13 +178,9 @@ def validate_lightrag_workspace(
             + "、".join(mismatches)
             + "）；请运行 python3 -m scripts.prepare_retrieval --force"
         )
-    required_files = (
-        "graph_chunk_entity_relation.graphml",
-        "vdb_entities.json",
-        "vdb_relationships.json",
-        "vdb_chunks.json",
-    )
-    missing = [name for name in required_files if not (working_dir / name).is_file()]
+    missing = [
+        name for name in QUERY_STORAGE_FILES if not (working_dir / name).is_file()
+    ]
     if missing:
         raise LightRAGRuntimeError(
             "LightRAG 存储不完整，缺少：" + "、".join(missing)
@@ -726,15 +734,22 @@ _PERSISTENT_RUNTIME_KEY: tuple[object, ...] | None = None
 _PERSISTENT_RUNTIME: _PersistentLightRAGRuntime | None = None
 
 
-def _path_stamp(path: Path | None) -> tuple[str, int, int] | None:
+def _path_stamp(path: Path | None) -> tuple[str, int, int, int, int, int] | None:
     if path is None:
         return None
     resolved = path.resolve()
     try:
         stat = resolved.stat()
-        return str(resolved), stat.st_mtime_ns, stat.st_size
+        return (
+            str(resolved),
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
     except FileNotFoundError:
-        return str(resolved), -1, -1
+        return str(resolved), -1, -1, -1, -1, -1
 
 
 def _persistent_key(
@@ -747,6 +762,7 @@ def _persistent_key(
         str(working_dir.resolve()),
         _path_stamp(graph_path),
         _path_stamp(manifest_path(working_dir)),
+        *(_path_stamp(working_dir / name) for name in QUERY_STORAGE_FILES),
         _path_stamp(config_path),
         str(embedding_cache.resolve()) if embedding_cache is not None else None,
     )

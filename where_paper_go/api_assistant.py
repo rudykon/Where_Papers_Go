@@ -490,6 +490,7 @@ class OpenAICompatibleQueryAssistant:
                     body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                     timeout=self.timeout,
                     max_bytes=4_000_000,
+                    external_call_kind="llm",
                 )
                 response = json.loads(content.decode("utf-8"))
                 message = response.get("choices", [{}])[0].get("message", {})
@@ -501,6 +502,7 @@ class OpenAICompatibleQueryAssistant:
             except urllib.error.HTTPError as exc:
                 last_error = exc
                 if exc.code < 500 and exc.code != 429:
+                    exc.close()
                     break
                 if exc.code == 429 and exc.headers:
                     try:
@@ -510,6 +512,7 @@ class OpenAICompatibleQueryAssistant:
                         )
                     except (TypeError, ValueError):
                         pass
+                exc.close()
             except (
                 urllib.error.URLError,
                 TimeoutError,

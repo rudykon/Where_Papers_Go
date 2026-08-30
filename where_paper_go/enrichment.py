@@ -40,6 +40,7 @@ from typing import Any, Iterable, Mapping
 
 from .paths import DATA_DIR, PROJECT_ROOT
 from .tavily_pool import TavilyKeyPool
+from .external_call_budget import prepare_external_call_urlopen
 
 
 ROOT = PROJECT_ROOT
@@ -357,6 +358,7 @@ def http_request(
     timeout: int = 30,
     max_bytes: int = 1_000_000,
     proxy: str | None | object = _USE_ENV_PROXY,
+    external_call_kind: str = "http",
 ) -> tuple[int, dict[str, str], bytes]:
     request = urllib.request.Request(
         url,
@@ -370,20 +372,37 @@ def http_request(
         },
     )
     opener = None
+    proxy_handler = None
     if proxy is not _USE_ENV_PROXY:
         if proxy is None or str(proxy).strip().lower() in {"", "direct", "none", "off"}:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            proxy_handler = urllib.request.ProxyHandler({})
+            opener = urllib.request.build_opener(proxy_handler)
         else:
             proxy_url = str(proxy).strip()
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": proxy_url, "https": proxy_url}
             )
+            opener = urllib.request.build_opener(proxy_handler)
     open_url = opener.open if opener is not None else urllib.request.urlopen
-    with hard_timeout(max(1, int(timeout) + 2)):
-        with open_url(request, timeout=timeout) as response:
-            status = int(getattr(response, "status", 200))
-            response_headers = {key.lower(): value for key, value in response.headers.items()}
-            content = response.read(max_bytes + 1)
+    open_url = prepare_external_call_urlopen(
+        external_call_kind,
+        url,
+        unbudgeted_open=open_url,
+        proxy_handler=proxy_handler,
+    )
+    try:
+        with hard_timeout(max(1, int(timeout) + 2)):
+            with open_url(request, timeout=timeout) as response:
+                status = int(getattr(response, "status", 200))
+                response_headers = {
+                    key.lower(): value for key, value in response.headers.items()
+                }
+                content = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        # HTTPError owns a live response object. Callers only need code/headers;
+        # close here so retry loops cannot accumulate descriptors.
+        exc.close()
+        raise
     return status, response_headers, content[:max_bytes]
 
 
@@ -611,6 +630,7 @@ def http_stream_request(
     total_timeout: int = 180,
     max_bytes: int = 4_000_000,
     proxy: str | None | object = _USE_ENV_PROXY,
+    external_call_kind: str = "http",
 ) -> tuple[int, dict[str, str], bytes]:
     """Read an SSE response incrementally with idle and total time limits."""
 
@@ -624,39 +644,52 @@ def http_stream_request(
         headers=request_headers,
     )
     opener = None
+    proxy_handler = None
     if proxy is not _USE_ENV_PROXY:
         if proxy is None or str(proxy).strip().lower() in {"", "direct", "none", "off"}:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            proxy_handler = urllib.request.ProxyHandler({})
+            opener = urllib.request.build_opener(proxy_handler)
         else:
             proxy_url = str(proxy).strip()
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": proxy_url, "https": proxy_url}
             )
+            opener = urllib.request.build_opener(proxy_handler)
     open_url = opener.open if opener is not None else urllib.request.urlopen
+    open_url = prepare_external_call_urlopen(
+        external_call_kind,
+        url,
+        unbudgeted_open=open_url,
+        proxy_handler=proxy_handler,
+    )
     started = time.monotonic()
     chunks: list[bytes] = []
     wire_bytes = 0
-    with hard_timeout(max(1, int(total_timeout) + 2)):
-        with open_url(request, timeout=max(1, int(timeout))) as response:
-            status = int(getattr(response, "status", 200))
-            response_headers = {
-                key.lower(): value for key, value in response.headers.items()
-            }
-            read_chunk = getattr(response, "read1", response.read)
-            while True:
-                if time.monotonic() - started > total_timeout:
-                    raise TimeoutError(
-                        f"chat stream exceeded the {total_timeout}s total timeout"
-                    )
-                chunk = read_chunk(65_536)
-                if not chunk:
-                    break
-                wire_bytes += len(chunk)
-                if wire_bytes > max_bytes:
-                    raise OpenAIStreamError(
-                        f"chat stream exceeded the {max_bytes}-byte transport limit"
-                    )
-                chunks.append(bytes(chunk))
+    try:
+        with hard_timeout(max(1, int(total_timeout) + 2)):
+            with open_url(request, timeout=max(1, int(timeout))) as response:
+                status = int(getattr(response, "status", 200))
+                response_headers = {
+                    key.lower(): value for key, value in response.headers.items()
+                }
+                read_chunk = getattr(response, "read1", response.read)
+                while True:
+                    if time.monotonic() - started > total_timeout:
+                        raise TimeoutError(
+                            f"chat stream exceeded the {total_timeout}s total timeout"
+                        )
+                    chunk = read_chunk(65_536)
+                    if not chunk:
+                        break
+                    wire_bytes += len(chunk)
+                    if wire_bytes > max_bytes:
+                        raise OpenAIStreamError(
+                            f"chat stream exceeded the {max_bytes}-byte transport limit"
+                        )
+                    chunks.append(bytes(chunk))
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise
     return status, response_headers, b"".join(chunks)
 
 
@@ -669,6 +702,7 @@ def openai_chat_request(
     timeout: int = 60,
     max_bytes: int = 2_000_000,
     proxy: str | None | object = _USE_ENV_PROXY,
+    external_call_kind: str = "llm",
 ) -> tuple[int, dict[str, str], bytes]:
     """Call chat completions in streaming or conventional transport mode."""
 
@@ -682,6 +716,7 @@ def openai_chat_request(
             timeout=timeout,
             max_bytes=max_bytes,
             proxy=proxy,
+            external_call_kind=external_call_kind,
         )
 
     request_payload["stream"] = True
@@ -710,6 +745,7 @@ def openai_chat_request(
         total_timeout=total_timeout,
         max_bytes=stream_max_bytes,
         proxy=proxy,
+        external_call_kind=external_call_kind,
     )
     response, stream_meta = parse_openai_chat_stream(
         [raw],

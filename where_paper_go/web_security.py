@@ -31,6 +31,7 @@ _LABELED_SECRET = re.compile(
 )
 _BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 _URL_USERINFO = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
+_MAX_API_TOKEN_FILE_BYTES = 64 * 1024
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -58,17 +59,92 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return parsed
 
 
-def _read_api_token(path: Path) -> str:
+def _env_networks(
+    name: str,
+    default: str,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    value = os.environ.get(name, default)
     try:
-        info = path.stat()
-        mode = stat.S_IMODE(info.st_mode)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("WPG_API_TOKEN_FILE must name a regular file")
-        if mode & 0o077:
-            raise ValueError("WPG_API_TOKEN_FILE must not be accessible by group/other")
-        token = path.read_text(encoding="utf-8").strip()
+        networks = tuple(
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in value.split(",")
+            if item.strip()
+        )
+    except ValueError as exc:
+        raise ValueError(f"{name} contains an invalid network") from exc
+    if not networks:
+        raise ValueError(f"{name} must not be empty")
+    return networks
+
+
+def _read_api_token(path: Path) -> str:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
     except OSError as exc:
         raise ValueError("WPG_API_TOKEN_FILE is not readable") from exc
+    try:
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("WPG_API_TOKEN_FILE must name a regular file")
+        if before.st_uid != os.getuid():
+            raise ValueError("WPG_API_TOKEN_FILE must be owned by the current user")
+        if mode & 0o077:
+            raise ValueError("WPG_API_TOKEN_FILE must not be accessible by group/other")
+        if before.st_size > _MAX_API_TOKEN_FILE_BYTES:
+            raise ValueError(
+                f"WPG_API_TOKEN_FILE must not exceed {_MAX_API_TOKEN_FILE_BYTES} bytes"
+            )
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(
+                descriptor,
+                min(64 * 1024, _MAX_API_TOKEN_FILE_BYTES + 1 - total),
+            )
+            if not block:
+                break
+            chunks.append(block)
+            total += len(block)
+            if total > _MAX_API_TOKEN_FILE_BYTES:
+                raise ValueError(
+                    f"WPG_API_TOKEN_FILE must not exceed {_MAX_API_TOKEN_FILE_BYTES} bytes"
+                )
+
+        after = os.fstat(descriptor)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        raw = b"".join(chunks)
+        if identity_before != identity_after or len(raw) != before.st_size:
+            raise ValueError("WPG_API_TOKEN_FILE changed while being read")
+    except OSError as exc:
+        raise ValueError("WPG_API_TOKEN_FILE is not readable") from exc
+    finally:
+        os.close(descriptor)
+
+    try:
+        token = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("WPG_API_TOKEN_FILE must contain valid UTF-8") from exc
     if len(token) < 32 or any(character.isspace() for character in token):
         raise ValueError("WPG_API_TOKEN_FILE must contain one token of at least 32 characters")
     return token
@@ -80,11 +156,18 @@ class WebSecurityConfig:
 
     rate_limit_requests: int = 6
     rate_limit_window_seconds: int = 60
+    max_concurrent_connections: int = 64
     max_concurrent_searches: int = 2
     request_body_limit: int = 200_000
     request_read_timeout_seconds: int = 30
     trust_proxy_headers: bool = False
     trusted_proxy_cidrs: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+        ipaddress.ip_network("127.0.0.0/8"),
+        ipaddress.ip_network("::1/128"),
+    )
+    allowed_client_cidrs: tuple[
+        ipaddress.IPv4Network | ipaddress.IPv6Network, ...
+    ] = (
         ipaddress.ip_network("127.0.0.0/8"),
         ipaddress.ip_network("::1/128"),
     )
@@ -101,27 +184,22 @@ class WebSecurityConfig:
             raise ValueError(
                 "WPG_REQUIRE_API_AUTH is enabled but WPG_API_TOKEN_FILE is not configured"
             )
-        cidr_text = os.environ.get(
+        trusted_proxy_cidrs = _env_networks(
             "WPG_TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128"
         )
-        try:
-            cidrs = tuple(
-                ipaddress.ip_network(item.strip(), strict=False)
-                for item in cidr_text.split(",")
-                if item.strip()
-            )
-        except ValueError as exc:
-            raise ValueError("WPG_TRUSTED_PROXY_CIDRS contains an invalid network") from exc
-        if not cidrs:
-            raise ValueError("WPG_TRUSTED_PROXY_CIDRS must not be empty")
+        allowed_client_cidrs = _env_networks(
+            "WPG_ALLOWED_CLIENT_CIDRS", "127.0.0.0/8,::1/128"
+        )
         return cls(
             rate_limit_requests=_env_int("WPG_RATE_LIMIT_REQUESTS", 6),
             rate_limit_window_seconds=_env_int("WPG_RATE_LIMIT_WINDOW_SECONDS", 60),
+            max_concurrent_connections=_env_int("WPG_MAX_CONCURRENT_CONNECTIONS", 64),
             max_concurrent_searches=_env_int("WPG_MAX_CONCURRENT_SEARCHES", 2),
             request_body_limit=_env_int("WPG_REQUEST_BODY_LIMIT", 200_000),
             request_read_timeout_seconds=_env_int("WPG_REQUEST_READ_TIMEOUT", 30),
             trust_proxy_headers=_env_bool("WPG_TRUST_PROXY_HEADERS", False),
-            trusted_proxy_cidrs=cidrs,
+            trusted_proxy_cidrs=trusted_proxy_cidrs,
+            allowed_client_cidrs=allowed_client_cidrs,
             api_token=token,
             require_api_auth=require_auth,
             audit_enabled=_env_bool("WPG_AUDIT_LOG", True),
@@ -138,6 +216,17 @@ class WebSecurityConfig:
         if not separator or scheme.casefold() != "bearer":
             return False
         return hmac.compare_digest(supplied.strip(), self.api_token)
+
+    def client_allowed(self, peer_ip: str) -> bool:
+        """Authorize the direct TCP peer without trusting forwarded headers."""
+
+        try:
+            peer = ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return False
+        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
+        return any(peer in network for network in self.allowed_client_cidrs)
 
 
 class SlidingWindowRateLimiter:
@@ -156,6 +245,21 @@ class SlidingWindowRateLimiter:
         timestamp = time.monotonic() if now is None else float(now)
         cutoff = timestamp - self.window_seconds
         with self._lock:
+            if client not in self._events and len(self._events) >= self.max_clients:
+                stale = [
+                    key
+                    for key, values in self._events.items()
+                    if not values or values[-1] <= cutoff
+                ]
+                for key in stale:
+                    self._events.pop(key, None)
+                if len(self._events) >= self.max_clients:
+                    oldest_last = min(values[-1] for values in self._events.values())
+                    retry_after = max(
+                        1,
+                        int(oldest_last + self.window_seconds - timestamp + 0.999),
+                    )
+                    return False, retry_after
             events = self._events.setdefault(client, deque())
             while events and events[0] <= cutoff:
                 events.popleft()
@@ -163,12 +267,6 @@ class SlidingWindowRateLimiter:
                 retry_after = max(1, int(events[0] + self.window_seconds - timestamp + 0.999))
                 return False, retry_after
             events.append(timestamp)
-            if len(self._events) > self.max_clients:
-                stale = [key for key, values in self._events.items() if not values or values[-1] <= cutoff]
-                for key in stale:
-                    self._events.pop(key, None)
-                    if len(self._events) <= self.max_clients:
-                        break
             return True, 0
 
 
@@ -183,13 +281,21 @@ def client_ip(
         peer = ipaddress.ip_address(peer_ip)
     except ValueError:
         return "invalid"
+    if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+        peer = peer.ipv4_mapped
     if not config.trust_proxy_headers or not any(
         peer in network for network in config.trusted_proxy_cidrs
     ):
         return peer.compressed
     forwarded = str(headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
     try:
-        return ipaddress.ip_address(forwarded).compressed if forwarded else peer.compressed
+        forwarded_ip = ipaddress.ip_address(forwarded) if forwarded else peer
+        if (
+            isinstance(forwarded_ip, ipaddress.IPv6Address)
+            and forwarded_ip.ipv4_mapped is not None
+        ):
+            forwarded_ip = forwarded_ip.ipv4_mapped
+        return forwarded_ip.compressed
     except ValueError:
         return peer.compressed
 
