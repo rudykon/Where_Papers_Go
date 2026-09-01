@@ -28,6 +28,9 @@ import tempfile
 from typing import Any, Callable, Iterator, Mapping, Sequence
 import uuid
 
+from scripts.manage_deployment import _current_git_source_plan
+from where_paper_go.deployment_identity import atomic_rename_noreplace
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmark_artifacts"
@@ -36,21 +39,42 @@ SYSTEMCTL_BINARY = Path("/usr/bin/systemctl")
 SS_BINARY = Path("/usr/bin/ss")
 SERVICE_UNIT = "where-papers-go.service"
 HEALTH_HOST = "127.0.0.1"
-HEALTH_PORT = 8001
 HEALTH_PATH = "/api/health"
 EXPECTED_BACKEND = "lightrag_mix+property_graph_exact_vector+llm+search_api"
 REQUEST_ARTIFACT_TYPE = "where_papers_go_aggregate_closeout_request"
 OUTPUT_ARTIFACT_TYPE = "where_papers_go_aggregate_closeout_validation"
+REPROOF_ARTIFACT_TYPE = "where_papers_go_post_deployment_reproof"
 TEST_REPORT_ARTIFACT_TYPE = "where_papers_go_closeout_test_report"
-OUTPUT_PREFIX = "final_delivery_validation_v2_"
-OUTPUT_SCHEMA_VERSION = 3
-FULL_TEST_COUNT = 482
+OUTPUT_PREFIX = "final_delivery_validation_v3_"
+REPROOF_PREFIX = "final_delivery_deployment_reproof_v1_"
+OUTPUT_SCHEMA_VERSION = 4
+REPROOF_SCHEMA_VERSION = 1
+FULL_TEST_COUNT = 489
 FULL_TEST_ID_SHA256 = (
-    "d59330bf8f317661ae543cbd6d56c48cc1db168ef72c64be1b6618cdcb243268"
+    "ddc285a4a7b74373dd0cf92f2da5515899d382a16e3c31ccb3e27963565eccc4"
 )
 MODEL_FOCUSED_TEST_COUNT = 6
 MODEL_FOCUSED_TEST_ID_SHA256 = (
     "651d59643b938f9f13712a8838a08f51efe74bb18d100fc07e8f0c825c866b94"
+)
+SKIPPED_TEST_ID_HASH_DOMAIN = (
+    b"where-papers-go-closeout-skipped-test-ids-v1\0"
+)
+FULL_SKIP_ALLOWLIST_SHA256 = (
+    "cf862e1b9db067771bace29fc33381c603c7aca542e624b398a2808856713018"
+)
+MODEL_SKIP_ALLOWLIST_SHA256 = (
+    "ecbbeafb099c4e91937fc5570d6dbf6ffdde3700e59245704340e92d8d558fed"
+)
+FULL_ALLOWED_SKIP_TEST_IDS = (
+    "test_local_model_runtime.LocalModelRuntimeIntegrationTests."
+    "test_cross_encoder_provider_loads_local_safetensors",
+    "test_local_model_runtime.LocalModelRuntimeIntegrationTests."
+    "test_scientific_cls_provider_loads_local_safetensors",
+    "test_nginx_integration.NginxIntegrationTests."
+    "test_nginx_syntax_tls_auth_and_proxy_redaction",
+    "test_systemd_host_integration.HostSystemdIntegrationTests."
+    "test_main_process_sigkill_is_automatically_restarted_and_ready",
 )
 MODEL_RUNTIME_PYTHON = Path(
     "benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python"
@@ -70,8 +94,34 @@ AGENT_BRANCH = re.compile(r"agent/[a-z0-9][a-z0-9._/-]{0,126}\Z")
 VERSION_DIRECTORY = re.compile(
     rf"{re.escape(OUTPUT_PREFIX)}\d{{8}}T\d{{12}}Z-[0-9a-f]{{12}}\Z"
 )
+REPROOF_VERSION_DIRECTORY = re.compile(
+    rf"{re.escape(REPROOF_PREFIX)}\d{{8}}T\d{{12}}Z-[0-9a-f]{{12}}\Z"
+)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def _skipped_test_id_digest(identifiers: Sequence[str]) -> str:
+    digest = hashlib.sha256()
+    digest.update(SKIPPED_TEST_ID_HASH_DOMAIN)
+    for identifier in sorted(set(identifiers)):
+        digest.update(identifier.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+FULL_ALLOWED_SKIP_FINGERPRINTS = {
+    (len(subset), _skipped_test_id_digest(subset))
+    for mask in range(1 << len(FULL_ALLOWED_SKIP_TEST_IDS))
+    for subset in [
+        tuple(
+            identifier
+            for index, identifier in enumerate(FULL_ALLOWED_SKIP_TEST_IDS)
+            if mask & (1 << index)
+        )
+    ]
+}
+MODEL_SKIPPED_TEST_ID_SHA256 = _skipped_test_id_digest(())
 
 # This is intentionally a fixed allowlist.  All files are aggregate records
 # already frozen mode 0444.  The legacy closeout transitively binds the older
@@ -123,6 +173,14 @@ TRACKED_IMPLEMENTATION_FILES: Mapping[str, Path] = {
     "worker_test_sha256": Path("tests/test_worker.py"),
     "web_app_sha256": Path("where_paper_go/web_app.py"),
     "web_app_test_sha256": Path("tests/test_web_app.py"),
+    "deployment_identity_sha256": Path(
+        "where_paper_go/deployment_identity.py"
+    ),
+    "deployment_manager_sha256": Path("scripts/manage_deployment.py"),
+    "deployment_manager_test_sha256": Path("tests/test_deployment.py"),
+    "systemd_template_sha256": Path(
+        "deploy/systemd/where-papers-go.service.in"
+    ),
     "formal500_builder_test_sha256": Path(
         "tests/test_build_recent_journal_benchmark.py"
     ),
@@ -179,6 +237,9 @@ TEST_REPORT_KEYS = {
     "unexpected_successes",
     "test_id_count",
     "test_id_sha256",
+    "skipped_test_id_count",
+    "skipped_test_id_sha256",
+    "skip_allowlist_sha256",
 }
 OUTPUT_KEYS = {
     "schema_version",
@@ -198,6 +259,27 @@ OUTPUT_KEYS = {
     "publication",
     "threat_model_limitations",
 }
+REPROOF_OUTPUT_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "status",
+    "recorded_at",
+    "base_closeout",
+    "git",
+    "tracked_implementation",
+    "deployment",
+    "publication",
+    "threat_model_limitations",
+}
+REPROOF_BASE_KEYS = {
+    "directory",
+    "summary_sha256",
+    "recorded_at",
+    "head",
+    "tree",
+    "deployment_invocation_id",
+    "deployment_process_start_ticks",
+}
 TEST_PUBLIC_KEYS = {
     "total",
     "passed",
@@ -208,6 +290,9 @@ TEST_PUBLIC_KEYS = {
     "unexpected_successes",
     "test_id_count",
     "test_id_sha256",
+    "skipped_test_id_count",
+    "skipped_test_id_sha256",
+    "skip_allowlist_sha256",
     "offline_guard_active",
     "report_sha256",
     "offline_guard_audit_sha256",
@@ -236,9 +321,18 @@ DEPLOYMENT_OUTPUT_KEYS = {
     "listener_scope",
     "main_pid",
     "nrestarts",
+    "process_start_ticks",
+    "systemd_invocation_id",
+    "source_head",
+    "source_tree",
+    "source_manifest_sha256",
+    "source_release",
+    "source_files_verified",
+    "lightrag_file_count",
     "lightrag_manifest_sha256",
     "lightrag_store_binding_sha256",
     "systemd_snapshot_sha256",
+    "process_snapshot_sha256",
     "health_snapshot_sha256",
     "listener_snapshot_sha256",
 }
@@ -258,6 +352,8 @@ PUBLICATION_OUTPUT_KEYS = {
     "existing_directories_preserved",
     "overwrite_supported",
     "same_head_replay_supported",
+    "published_from_hidden_building",
+    "atomic_directory_rename",
 }
 EXCLUDED_ACTION_OUTPUT_KEYS = {
     "live_formal500_executed",
@@ -271,8 +367,14 @@ THREAT_MODEL_LIMITATIONS = (
     "The tracked runner emits aggregate counts and a test-ID fingerprint only; no per-test or per-query values are published.",
     "The socket guard covers the closeout test interpreters and inheriting Python children; fixed systemd, listener, and loopback-health inspections are read-only local probes, and later user-authorized Git transport is outside this observation.",
     "The socket guard permits loopback and AF_UNIX and does not instrument native non-Python child networking; therefore an empty audit proves zero observed non-loopback attempts only within guarded Python interpreters, not an absolute zero-provider-call claim. The fixed tracked suite, sanitized environment, cleared host opt-ins, and offline dependency settings constrain that residual scope.",
-    "The systemd MainPID, ss listener, and HTTP health result are separate read-only observations; the listener snapshot does not expose process ownership, so this local probe does not cryptographically prove that all three observations came from one process.",
+    "The deployment probe binds systemd MainPID and invocation ID, /proc start ticks, cwd and selected non-secret source environment, ss listener ownership, and the health process/source identity, then requires an identical second observation before publication. Kernel, systemd, and filesystem observations remain local host evidence rather than remote attestation.",
     "Local modes, hashes, exclusive creation, and drift checks do not defend against an administrator with equal or greater file permissions who can rewrite evidence, anchors, code, or the clock together.",
+)
+REPROOF_THREAT_MODEL_LIMITATIONS = (
+    "This append-only record independently re-observes deployment state for an immutable base closeout; it does not rerun the base test suites or rewrite the base summary.",
+    "A same-HEAD service restart or redeployment is intentionally supported by creating another immutable reproof directory, never by updating an existing closeout or reproof.",
+    THREAT_MODEL_LIMITATIONS[-2],
+    THREAT_MODEL_LIMITATIONS[-1],
 )
 
 
@@ -318,17 +420,36 @@ class ArtifactEvidence:
 
 
 @dataclass(frozen=True)
+class BaseCloseoutEvidence:
+    directory: Path
+    summary_path: Path
+    summary_snapshot: FileSnapshot
+    summary: Mapping[str, Any]
+    git: GitState
+
+
+@dataclass(frozen=True)
 class DeploymentEvidence:
     active: bool
     enabled: bool
     ready: bool
     bindings_current: bool
     lightrag_store_hashes_verified: bool
+    listener_scope: str
     main_pid: int
     nrestarts: int
-    lightrag_manifest_sha256: str | None
-    lightrag_store_binding_sha256: str | None
+    process_start_ticks: int
+    systemd_invocation_id: str
+    source_head: str
+    source_tree: str
+    source_manifest_sha256: str
+    source_release: str
+    source_files_verified: bool
+    lightrag_file_count: int
+    lightrag_manifest_sha256: str
+    lightrag_store_binding_sha256: str
     systemd_snapshot_sha256: str
+    process_snapshot_sha256: str
     health_snapshot_sha256: str
     listener_snapshot_sha256: str
 
@@ -341,14 +462,23 @@ class DeploymentEvidence:
             "lightrag_store_hashes_verified": (
                 self.lightrag_store_hashes_verified
             ),
-            "listener_scope": "loopback_only",
+            "listener_scope": self.listener_scope,
             "main_pid": self.main_pid,
             "nrestarts": self.nrestarts,
+            "process_start_ticks": self.process_start_ticks,
+            "systemd_invocation_id": self.systemd_invocation_id,
+            "source_head": self.source_head,
+            "source_tree": self.source_tree,
+            "source_manifest_sha256": self.source_manifest_sha256,
+            "source_release": self.source_release,
+            "source_files_verified": self.source_files_verified,
+            "lightrag_file_count": self.lightrag_file_count,
             "lightrag_manifest_sha256": self.lightrag_manifest_sha256,
             "lightrag_store_binding_sha256": (
                 self.lightrag_store_binding_sha256
             ),
             "systemd_snapshot_sha256": self.systemd_snapshot_sha256,
+            "process_snapshot_sha256": self.process_snapshot_sha256,
             "health_snapshot_sha256": self.health_snapshot_sha256,
             "listener_snapshot_sha256": self.listener_snapshot_sha256,
         }
@@ -670,7 +800,7 @@ def _validate_test_report(
     raw: Mapping[str, Any], *, expected_total: int | None = None
 ) -> dict[str, Any]:
     _require_exact_keys(raw, TEST_REPORT_KEYS, context="tracked test report")
-    if raw["schema_version"] != 1 or raw["artifact_type"] != TEST_REPORT_ARTIFACT_TYPE:
+    if raw["schema_version"] != 2 or raw["artifact_type"] != TEST_REPORT_ARTIFACT_TYPE:
         raise CloseoutValidationError("unexpected tracked test report identity")
     if raw["guard_active"] is not True:
         raise CloseoutValidationError("offline sitecustomize guard was not active")
@@ -683,6 +813,7 @@ def _validate_test_report(
         "expected_failures",
         "unexpected_successes",
         "test_id_count",
+        "skipped_test_id_count",
     )
     counts = {field: _validate_count(raw[field], field=field) for field in fields}
     if expected_total is None:
@@ -696,6 +827,10 @@ def _validate_test_report(
         )
     if counts["test_id_count"] != counts["total"]:
         raise CloseoutValidationError("test ID count does not match executed total")
+    if counts["skipped_test_id_count"] != counts["skipped"]:
+        raise CloseoutValidationError(
+            "skipped-test ID count does not match aggregate skipped count"
+        )
     if counts["total"] != sum(
         counts[field]
         for field in (
@@ -723,6 +858,38 @@ def _validate_test_report(
         raise CloseoutValidationError(
             "model-focused suite must pass all six tests without skips"
         )
+    skipped_fingerprint = raw["skipped_test_id_sha256"]
+    allowlist_fingerprint = raw["skip_allowlist_sha256"]
+    for name, fingerprint_value in (
+        ("skipped-test ID", skipped_fingerprint),
+        ("skip allowlist", allowlist_fingerprint),
+    ):
+        if (
+            not isinstance(fingerprint_value, str)
+            or HEX_SHA256.fullmatch(fingerprint_value) is None
+        ):
+            raise CloseoutValidationError(
+                f"invalid aggregate {name} fingerprint"
+            )
+    if expected_total is None:
+        if (
+            counts["skipped_test_id_count"],
+            skipped_fingerprint,
+        ) not in FULL_ALLOWED_SKIP_FINGERPRINTS:
+            raise CloseoutValidationError(
+                "full unittest skipped-test fingerprint is outside the fixed allowlist"
+            )
+        if allowlist_fingerprint != FULL_SKIP_ALLOWLIST_SHA256:
+            raise CloseoutValidationError(
+                "full unittest skip-allowlist fingerprint does not match policy"
+            )
+    elif (
+        skipped_fingerprint != MODEL_SKIPPED_TEST_ID_SHA256
+        or allowlist_fingerprint != MODEL_SKIP_ALLOWLIST_SHA256
+    ):
+        raise CloseoutValidationError(
+            "model-focused skip fingerprints do not match the empty policy"
+        )
     fingerprint = raw["test_id_sha256"]
     if not isinstance(fingerprint, str) or HEX_SHA256.fullmatch(fingerprint) is None:
         raise CloseoutValidationError("invalid aggregate test-ID fingerprint")
@@ -744,6 +911,9 @@ def _validate_test_report(
         "unexpected_successes": counts["unexpected_successes"],
         "test_id_count": counts["test_id_count"],
         "test_id_sha256": fingerprint,
+        "skipped_test_id_count": counts["skipped_test_id_count"],
+        "skipped_test_id_sha256": skipped_fingerprint,
+        "skip_allowlist_sha256": allowlist_fingerprint,
         "offline_guard_active": True,
     }
 
@@ -758,7 +928,7 @@ def _validated_test_output(
         evidence.public, expected_keys, context="tracked test evidence"
     )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": TEST_REPORT_ARTIFACT_TYPE,
         "guard_active": evidence.public["offline_guard_active"],
         **{
@@ -773,6 +943,9 @@ def _validated_test_output(
                 "unexpected_successes",
                 "test_id_count",
                 "test_id_sha256",
+                "skipped_test_id_count",
+                "skipped_test_id_sha256",
+                "skip_allowlist_sha256",
             )
         },
     }
@@ -1088,6 +1261,9 @@ def _systemctl_show() -> str:
         "NRestarts",
         "Result",
         "NeedDaemonReload",
+        "InvocationID",
+        "ControlGroup",
+        "ExecMainStartTimestampMonotonic",
     )
     command = [str(SYSTEMCTL_BINARY), "--user", "show", SERVICE_UNIT, "--no-pager"]
     for name in properties:
@@ -1107,14 +1283,14 @@ def _systemctl_show() -> str:
     return completed.stdout
 
 
-def _ss_listeners() -> str:
+def _ss_listeners(port: int) -> str:
     try:
         completed = subprocess.run(
             [
                 str(SS_BINARY),
                 "-H",
-                "-ltn",
-                f"sport = :{HEALTH_PORT}",
+                "-ltnp",
+                f"sport = :{port}",
             ],
             env=_systemd_environment(),
             check=True,
@@ -1128,8 +1304,11 @@ def _ss_listeners() -> str:
     return completed.stdout
 
 
-def _parse_listener_snapshot(raw: str) -> dict[str, Any]:
+def _parse_listener_snapshot(
+    raw: str, *, expected_host: str, expected_port: int, expected_pid: int
+) -> dict[str, Any]:
     listeners: set[str] = set()
+    owner_pids: set[int] = set()
     for line in raw.splitlines():
         fields = line.split()
         if len(fields) < 5 or fields[0] != "LISTEN":
@@ -1149,18 +1328,42 @@ def _parse_listener_snapshot(raw: str) -> dict[str, Any]:
             port = int(port_text)
         except (ValueError, TypeError) as exc:
             raise CloseoutValidationError("invalid numeric listener address") from exc
-        if port != HEALTH_PORT or not address.is_loopback:
+        if port != expected_port:
+            raise CloseoutValidationError("production listener port is unexpected")
+        if expected_host in {"localhost", "127.0.0.1"}:
+            if not address.is_loopback:
+                raise CloseoutValidationError(
+                    "production listener does not match the configured loopback host"
+                )
+            listener_scope = "loopback_only"
+        elif expected_host == "0.0.0.0":
+            if address != ipaddress.ip_address("0.0.0.0"):
+                raise CloseoutValidationError(
+                    "production listener does not match the configured IPv4 wildcard"
+                )
+            listener_scope = "all_interfaces_ipv4"
+        else:
+            raise CloseoutValidationError("unsupported production listener host")
+        matched_pids = {
+            int(value) for value in re.findall(r"\bpid=(\d+)\b", line)
+        }
+        if matched_pids != {expected_pid}:
             raise CloseoutValidationError(
-                "production listener is not restricted to loopback"
+                "production listener owner does not equal systemd MainPID"
             )
+        owner_pids.update(matched_pids)
         listeners.add(f"{address.compressed}:{port}")
     if not listeners:
         raise CloseoutValidationError("production listener was not found")
-    return {"listener_scope": "loopback_only", "listeners": sorted(listeners)}
+    return {
+        "listener_scope": listener_scope,
+        "listeners": sorted(listeners),
+        "owner_pids": sorted(owner_pids),
+    }
 
 
-def _fetch_loopback_health() -> bytes:
-    connection = http.client.HTTPConnection(HEALTH_HOST, HEALTH_PORT, timeout=5)
+def _fetch_loopback_health(port: int) -> bytes:
+    connection = http.client.HTTPConnection(HEALTH_HOST, port, timeout=5)
     try:
         connection.request(
             "GET",
@@ -1189,6 +1392,9 @@ def _parse_systemd_snapshot(raw: str) -> dict[str, Any]:
         "NRestarts",
         "Result",
         "NeedDaemonReload",
+        "InvocationID",
+        "ControlGroup",
+        "ExecMainStartTimestampMonotonic",
     }
     values: dict[str, str] = {}
     for line in raw.splitlines():
@@ -1208,22 +1414,39 @@ def _parse_systemd_snapshot(raw: str) -> dict[str, Any]:
     try:
         main_pid = int(values["MainPID"])
         nrestarts = int(values["NRestarts"])
+        start_monotonic = int(values["ExecMainStartTimestampMonotonic"])
     except ValueError as exc:
         raise CloseoutValidationError("invalid numeric systemctl state") from exc
-    if main_pid <= 0 or nrestarts < 0:
+    if main_pid <= 0 or nrestarts < 0 or start_monotonic <= 0:
         raise CloseoutValidationError("invalid production process state")
+    invocation_id = values["InvocationID"]
+    if re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None:
+        raise CloseoutValidationError("invalid systemd invocation identity")
+    if not values["ControlGroup"].endswith(f"/{SERVICE_UNIT}"):
+        raise CloseoutValidationError("systemd control group is not bound to the unit")
     return {
         "active": True,
         "enabled": True,
         "main_pid": main_pid,
         "nrestarts": nrestarts,
+        "invocation_id": invocation_id,
+        "control_group": values["ControlGroup"],
+        "exec_main_start_monotonic": start_monotonic,
         "result": "success",
         "need_daemon_reload": False,
     }
 
 
-def _optional_sha256(value: Any) -> str | None:
-    return value if isinstance(value, str) and HEX_SHA256.fullmatch(value) else None
+def _required_sha256(value: Any, *, context: str) -> str:
+    if not isinstance(value, str) or HEX_SHA256.fullmatch(value) is None:
+        raise CloseoutValidationError(f"{context} must be lowercase SHA-256")
+    return value
+
+
+def _required_commit(value: Any, *, context: str) -> str:
+    if not isinstance(value, str) or HEX_COMMIT.fullmatch(value) is None:
+        raise CloseoutValidationError(f"{context} must be lowercase 40-hex")
+    return value
 
 
 def _parse_health_snapshot(raw: bytes) -> dict[str, Any]:
@@ -1256,6 +1479,7 @@ def _parse_health_snapshot(raw: bytes) -> dict[str, Any]:
         "worker",
         "bindings_current",
         "runtime_contract",
+        "source_identity",
     ):
         if checks.get(name) is not True:
             raise CloseoutValidationError("mandatory loopback health check failed")
@@ -1268,27 +1492,185 @@ def _parse_health_snapshot(raw: bytes) -> dict[str, Any]:
         if runtime.get(name) is not True:
             raise CloseoutValidationError("mandatory runtime health check failed")
     verification = runtime.get("lightrag_store_verification")
-    verification = verification if isinstance(verification, dict) else {}
-    store_verified = bool(
+    runtime_manifest = runtime.get("runtime_manifest")
+    if not isinstance(verification, dict) or not (
         checks.get("lightrag_store_hashes") is True
+        and verification.get("required") is True
         and verification.get("verified") is True
-    )
-    manifest_sha256 = _optional_sha256(verification.get("manifest_sha256"))
-    store_binding_sha256 = _optional_sha256(
-        verification.get("store_binding_sha256")
-    )
-    if store_verified and (
-        manifest_sha256 is None or store_binding_sha256 is None
+        and verification.get("file_count") == 6
+        and isinstance(runtime_manifest, dict)
+        and runtime_manifest.get("ready") is True
+        and runtime_manifest.get("actual_sha256")
+        == verification.get("manifest_sha256")
     ):
         raise CloseoutValidationError(
-            "loopback health reports verified LightRAG stores without valid hashes"
+            "loopback health lacks a true six-file LightRAG integrity proof"
         )
+    manifest_sha256 = _required_sha256(
+        verification.get("manifest_sha256"),
+        context="LightRAG manifest hash",
+    )
+    store_binding_sha256 = _required_sha256(
+        verification.get("store_binding_sha256"),
+        context="LightRAG store binding hash",
+    )
+    source = value.get("source")
+    if not isinstance(source, dict) or not (
+        source.get("ready") is True
+        and source.get("files_verified") is True
+    ):
+        raise CloseoutValidationError(
+            "loopback health lacks a verified immutable source release"
+        )
+    source_head = _required_commit(
+        source.get("head"), context="health source HEAD"
+    )
+    source_tree = _required_commit(
+        source.get("tree"), context="health source tree"
+    )
+    source_manifest_sha256 = _required_sha256(
+        source.get("manifest_sha256"), context="health source manifest hash"
+    )
+    process_pid = source.get("process_pid")
+    process_start_ticks = source.get("process_start_ticks")
+    for name, number in (
+        ("process PID", process_pid),
+        ("process start ticks", process_start_ticks),
+    ):
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise CloseoutValidationError(f"health source {name} is invalid")
     return {
         "ready": True,
         "bindings_current": True,
-        "lightrag_store_hashes_verified": store_verified,
+        "lightrag_store_hashes_verified": True,
+        "lightrag_file_count": 6,
         "lightrag_manifest_sha256": manifest_sha256,
         "lightrag_store_binding_sha256": store_binding_sha256,
+        "source_head": source_head,
+        "source_tree": source_tree,
+        "source_manifest_sha256": source_manifest_sha256,
+        "source_files_verified": True,
+        "process_pid": process_pid,
+        "process_start_ticks": process_start_ticks,
+    }
+
+
+def _read_proc_bytes(path: Path, *, maximum_bytes: int) -> bytes:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise CloseoutValidationError("cannot inspect the systemd MainPID") from exc
+    if len(raw) > maximum_bytes:
+        raise CloseoutValidationError("systemd MainPID metadata is too large")
+    return raw
+
+
+def _proc_start_ticks(raw: bytes) -> int:
+    try:
+        text = raw.decode("ascii")
+        close = text.rindex(")")
+        fields = text[close + 2 :].split()
+        value = int(fields[19])
+    except (UnicodeError, ValueError, IndexError) as exc:
+        raise CloseoutValidationError("invalid /proc process stat") from exc
+    if value <= 0:
+        raise CloseoutValidationError("invalid /proc process start ticks")
+    return value
+
+
+def _process_snapshot(main_pid: int) -> dict[str, Any]:
+    proc = Path("/proc") / str(main_pid)
+    initial_ticks = _proc_start_ticks(
+        _read_proc_bytes(proc / "stat", maximum_bytes=64 * 1024)
+    )
+    try:
+        cwd = Path(os.path.realpath(proc / "cwd"))
+    except OSError as exc:
+        raise CloseoutValidationError("cannot inspect systemd MainPID cwd") from exc
+    command = [
+        item.decode("utf-8", errors="strict")
+        for item in _read_proc_bytes(
+            proc / "cmdline", maximum_bytes=1024 * 1024
+        ).split(b"\0")
+        if item
+    ]
+    if not any(
+        command[index : index + 2] == ["-m", "where_paper_go.web_app"]
+        for index in range(max(0, len(command) - 1))
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID command is not the tracked web application"
+        )
+    environment: dict[str, str] = {}
+    selected = {
+        "WPG_HOST",
+        "WPG_PORT",
+        "WPG_SOURCE_HEAD",
+        "WPG_SOURCE_TREE",
+        "WPG_SOURCE_MANIFEST",
+        "WPG_SOURCE_MANIFEST_SHA256",
+    }
+    for item in _read_proc_bytes(
+        proc / "environ", maximum_bytes=4 * 1024 * 1024
+    ).split(b"\0"):
+        if not item:
+            continue
+        key, separator, value = item.partition(b"=")
+        if not separator:
+            raise CloseoutValidationError("invalid systemd MainPID environment")
+        try:
+            name = key.decode("ascii")
+        except UnicodeError as exc:
+            raise CloseoutValidationError(
+                "invalid systemd MainPID environment name"
+            ) from exc
+        if name in selected:
+            if name in environment:
+                raise CloseoutValidationError(
+                    "duplicate systemd MainPID source environment"
+                )
+            try:
+                environment[name] = value.decode("utf-8", errors="strict")
+            except UnicodeError as exc:
+                raise CloseoutValidationError(
+                    "invalid systemd MainPID source environment"
+                ) from exc
+    _require_exact_keys(
+        environment, selected, context="systemd MainPID source environment"
+    )
+    try:
+        port = int(environment["WPG_PORT"])
+    except ValueError as exc:
+        raise CloseoutValidationError("invalid systemd MainPID port") from exc
+    if not 1 <= port <= 65535:
+        raise CloseoutValidationError("invalid systemd MainPID port")
+    host = environment["WPG_HOST"]
+    if host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        raise CloseoutValidationError("invalid systemd MainPID host")
+    _required_commit(environment["WPG_SOURCE_HEAD"], context="process source HEAD")
+    _required_commit(environment["WPG_SOURCE_TREE"], context="process source tree")
+    _required_sha256(
+        environment["WPG_SOURCE_MANIFEST_SHA256"],
+        context="process source manifest hash",
+    )
+    manifest = Path(environment["WPG_SOURCE_MANIFEST"])
+    if not manifest.is_absolute() or manifest.parent.resolve() != cwd:
+        raise CloseoutValidationError(
+            "systemd MainPID cwd is not the immutable source release"
+        )
+    final_ticks = _proc_start_ticks(
+        _read_proc_bytes(proc / "stat", maximum_bytes=64 * 1024)
+    )
+    if final_ticks != initial_ticks:
+        raise CloseoutValidationError("systemd MainPID changed during /proc inspection")
+    return {
+        "pid": main_pid,
+        "start_ticks": initial_ticks,
+        "cwd": str(cwd),
+        "command": command,
+        "environment": environment,
+        "host": host,
+        "port": port,
     }
 
 
@@ -1299,10 +1681,105 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _deployment_state() -> DeploymentEvidence:
+def _expected_source_manifest_sha256(
+    project_root: Path, git_state: GitState
+) -> str:
+    """Rebuild the release manifest from Git objects, not release labels."""
+
+    try:
+        source_head, source_tree, _source_rows, payload = (
+            _current_git_source_plan(project_root)
+        )
+    except (OSError, ValueError) as exc:
+        raise CloseoutValidationError(
+            "cannot derive the immutable source release from current Git objects"
+        ) from exc
+    if (source_head, source_tree) != (git_state.head, git_state.tree):
+        raise CloseoutValidationError(
+            "Git source-release plan changed during deployment inspection"
+        )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _deployment_state(project_root: Path, git_state: GitState) -> DeploymentEvidence:
+    expected_source_manifest_sha256 = _expected_source_manifest_sha256(
+        project_root, git_state
+    )
     systemd = _parse_systemd_snapshot(_systemctl_show())
-    listeners = _parse_listener_snapshot(_ss_listeners())
-    health = _parse_health_snapshot(_fetch_loopback_health())
+    process = _process_snapshot(systemd["main_pid"])
+    listeners = _parse_listener_snapshot(
+        _ss_listeners(process["port"]),
+        expected_host=process["host"],
+        expected_port=process["port"],
+        expected_pid=systemd["main_pid"],
+    )
+    health = _parse_health_snapshot(_fetch_loopback_health(process["port"]))
+    source_environment = process["environment"]
+    expected_bindings = {
+        "source_head": git_state.head,
+        "source_tree": git_state.tree,
+        "source_manifest_sha256": expected_source_manifest_sha256,
+        "process_pid": systemd["main_pid"],
+        "process_start_ticks": process["start_ticks"],
+    }
+    for name, expected in expected_bindings.items():
+        if health[name] != expected:
+            raise CloseoutValidationError(
+                f"health, process, and current Git disagree on {name}"
+            )
+    if (
+        source_environment["WPG_SOURCE_HEAD"] != git_state.head
+        or source_environment["WPG_SOURCE_TREE"] != git_state.tree
+        or source_environment["WPG_SOURCE_MANIFEST_SHA256"]
+        != expected_source_manifest_sha256
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID source release does not equal current Git objects"
+        )
+    manifest = Path(source_environment["WPG_SOURCE_MANIFEST"])
+    release = Path(process["cwd"])
+    try:
+        release_info = release.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError(
+            "immutable source release directory is unavailable"
+        ) from exc
+    if (
+        stat.S_ISLNK(release_info.st_mode)
+        or not stat.S_ISDIR(release_info.st_mode)
+        or release_info.st_uid != os.geteuid()
+        or stat.S_IMODE(release_info.st_mode) != 0o555
+        or manifest != release / "source-release-manifest.json"
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID source release directory is unsafe"
+        )
+    try:
+        release.relative_to(project_root)
+    except ValueError:
+        pass
+    else:
+        raise CloseoutValidationError(
+            "systemd MainPID still executes from the mutable project tree"
+        )
+    if (
+        release != manifest.parent.resolve()
+        or release.name
+        != f"release-{health['source_manifest_sha256']}"
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID source release is not content-addressed"
+        )
+    _unused, manifest_snapshot = _inspect_regular_file(
+        manifest,
+        capture=False,
+        expected_mode=0o400,
+        maximum_bytes=32 * 1024 * 1024,
+    )
+    if manifest_snapshot.sha256 != health["source_manifest_sha256"]:
+        raise CloseoutValidationError(
+            "immutable source manifest hash differs from process and health"
+        )
     return DeploymentEvidence(
         active=True,
         enabled=True,
@@ -1311,13 +1788,23 @@ def _deployment_state() -> DeploymentEvidence:
         lightrag_store_hashes_verified=health[
             "lightrag_store_hashes_verified"
         ],
+        listener_scope=listeners["listener_scope"],
         main_pid=systemd["main_pid"],
         nrestarts=systemd["nrestarts"],
+        process_start_ticks=process["start_ticks"],
+        systemd_invocation_id=systemd["invocation_id"],
+        source_head=health["source_head"],
+        source_tree=health["source_tree"],
+        source_manifest_sha256=health["source_manifest_sha256"],
+        source_release=process["cwd"],
+        source_files_verified=health["source_files_verified"],
+        lightrag_file_count=health["lightrag_file_count"],
         lightrag_manifest_sha256=health["lightrag_manifest_sha256"],
         lightrag_store_binding_sha256=health[
             "lightrag_store_binding_sha256"
         ],
         systemd_snapshot_sha256=_canonical_sha256(systemd),
+        process_snapshot_sha256=_canonical_sha256(process),
         health_snapshot_sha256=_canonical_sha256(health),
         listener_snapshot_sha256=_canonical_sha256(listeners),
     )
@@ -1373,8 +1860,8 @@ def _validate_existing_test_group(
     model_focused: bool,
 ) -> None:
     if not isinstance(value, dict):
-        raise CloseoutValidationError("existing v2 test evidence must be an object")
-    _require_exact_keys(value, expected_keys, context="existing v2 test evidence")
+        raise CloseoutValidationError("existing v3 test evidence must be an object")
+    _require_exact_keys(value, expected_keys, context="existing v3 test evidence")
     public_keys = set(TEST_PUBLIC_KEYS)
     if model_focused:
         public_keys.add("model_runtime_interpreter_sha256")
@@ -1393,14 +1880,14 @@ def _validate_existing_test_group(
     for name in TRACKED_HELPERS:
         if value[name] != tracked[name]:
             raise CloseoutValidationError(
-                "existing v2 test/helper hash binding is inconsistent"
+                "existing v3 test/helper hash binding is inconsistent"
             )
 
 
 def _validate_existing_summary(
     value: Mapping[str, Any], *, directory: str
 ) -> str:
-    _require_exact_keys(value, OUTPUT_KEYS, context="existing v2 summary")
+    _require_exact_keys(value, OUTPUT_KEYS, context="existing v3 summary")
     if (
         value["schema_version"] != OUTPUT_SCHEMA_VERSION
         or value["artifact_type"] != OUTPUT_ARTIFACT_TYPE
@@ -1408,60 +1895,60 @@ def _validate_existing_summary(
         or value["aggregate_only"] is not True
         or value["contains_per_query_values"] is not False
     ):
-        raise CloseoutValidationError("existing v2 summary has invalid identity")
+        raise CloseoutValidationError("existing v3 summary has invalid identity")
     recorded_at = value["recorded_at"]
     if not isinstance(recorded_at, str):
-        raise CloseoutValidationError("existing v2 summary has invalid timestamp")
+        raise CloseoutValidationError("existing v3 summary has invalid timestamp")
     try:
         recorded = datetime.strptime(recorded_at, "%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError as exc:
         raise CloseoutValidationError(
-            "existing v2 summary has invalid timestamp"
+            "existing v3 summary has invalid timestamp"
         ) from exc
     if recorded.strftime("%Y-%m-%dT%H:%M:%S.%fZ") != recorded_at:
-        raise CloseoutValidationError("existing v2 summary timestamp is not canonical")
-    _require_sha256(value["request_sha256"], context="existing v2 request hash")
+        raise CloseoutValidationError("existing v3 summary timestamp is not canonical")
+    _require_sha256(value["request_sha256"], context="existing v3 request hash")
     git = value["git"]
     if not isinstance(git, dict):
-        raise CloseoutValidationError("existing v2 summary has invalid Git binding")
+        raise CloseoutValidationError("existing v3 summary has invalid Git binding")
     _require_exact_keys(
         git,
         {"head", "tree", "branch", "tracked_and_nonignored_worktree_clean"},
-        context="existing v2 Git binding",
+        context="existing v3 Git binding",
     )
     head = git["head"]
     if not isinstance(head, str) or HEX_COMMIT.fullmatch(head) is None:
-        raise CloseoutValidationError("existing v2 summary has invalid HEAD")
+        raise CloseoutValidationError("existing v3 summary has invalid HEAD")
     tree = git["tree"]
     if not isinstance(tree, str) or HEX_COMMIT.fullmatch(tree) is None:
-        raise CloseoutValidationError("existing v2 summary has invalid tree")
+        raise CloseoutValidationError("existing v3 summary has invalid tree")
     _validate_branch(git["branch"])
     if git["tracked_and_nonignored_worktree_clean"] is not True:
-        raise CloseoutValidationError("existing v2 summary was not clean")
+        raise CloseoutValidationError("existing v3 summary was not clean")
 
     tracked = value["tracked_implementation"]
     if not isinstance(tracked, dict):
         raise CloseoutValidationError(
-            "existing v2 tracked implementation must be an object"
+            "existing v3 tracked implementation must be an object"
         )
     _require_exact_keys(
         tracked,
         TRACKED_IMPLEMENTATION_OUTPUT_KEYS,
-        context="existing v2 tracked implementation",
+        context="existing v3 tracked implementation",
     )
     for name, digest in tracked.items():
-        _require_sha256(digest, context=f"existing v2 tracked hash {name}")
+        _require_sha256(digest, context=f"existing v3 tracked hash {name}")
 
     tests = value["tests"]
     if not isinstance(tests, dict):
-        raise CloseoutValidationError("existing v2 tests must be an object")
-    _require_exact_keys(tests, TESTS_OUTPUT_KEYS, context="existing v2 tests")
+        raise CloseoutValidationError("existing v3 tests must be an object")
+    _require_exact_keys(tests, TESTS_OUTPUT_KEYS, context="existing v3 tests")
     if (
         isinstance(tests["official_weight_inference_tests"], bool)
         or tests["official_weight_inference_tests"] != 0
     ):
         raise CloseoutValidationError(
-            "existing v2 official-weight inference count must be zero"
+            "existing v3 official-weight inference count must be zero"
         )
     _validate_existing_test_group(
         tests[FULL_TEST_KEY],
@@ -1480,16 +1967,16 @@ def _validate_existing_summary(
 
     artifacts = value["critical_artifacts"]
     if not isinstance(artifacts, dict):
-        raise CloseoutValidationError("existing v2 artifacts must be an object")
+        raise CloseoutValidationError("existing v3 artifacts must be an object")
     _require_exact_keys(
-        artifacts, set(REQUIRED_ARTIFACTS), context="existing v2 artifacts"
+        artifacts, set(REQUIRED_ARTIFACTS), context="existing v3 artifacts"
     )
     for name in REQUIRED_ARTIFACTS:
         artifact = artifacts[name]
         if not isinstance(artifact, dict):
-            raise CloseoutValidationError("existing v2 artifact must be an object")
+            raise CloseoutValidationError("existing v3 artifact must be an object")
         _require_exact_keys(
-            artifact, {"sha256", "bytes", "mode"}, context="existing v2 artifact"
+            artifact, {"sha256", "bytes", "mode"}, context="existing v3 artifact"
         )
         if (
             artifact["sha256"] != PINNED_ARTIFACT_SHA256[name]
@@ -1498,49 +1985,70 @@ def _validate_existing_summary(
             or artifact["mode"] != "0444"
         ):
             raise CloseoutValidationError(
-                "existing v2 artifact does not match fixed evidence"
+                "existing v3 artifact does not match fixed evidence"
             )
 
     deployment = value["deployment"]
     if not isinstance(deployment, dict):
-        raise CloseoutValidationError("existing v2 deployment must be an object")
+        raise CloseoutValidationError("existing v3 deployment must be an object")
     _require_exact_keys(
-        deployment, DEPLOYMENT_OUTPUT_KEYS, context="existing v2 deployment"
+        deployment, DEPLOYMENT_OUTPUT_KEYS, context="existing v3 deployment"
     )
     for name in ("active", "enabled", "ready", "bindings_current"):
         if deployment[name] is not True:
-            raise CloseoutValidationError("existing v2 deployment is not ready")
-    if not isinstance(deployment["lightrag_store_hashes_verified"], bool):
-        raise CloseoutValidationError("existing v2 LightRAG proof flag is invalid")
-    if deployment["listener_scope"] != "loopback_only":
-        raise CloseoutValidationError("existing v2 listener scope is invalid")
-    for name in ("main_pid", "nrestarts"):
+            raise CloseoutValidationError("existing v3 deployment is not ready")
+    if (
+        deployment["lightrag_store_hashes_verified"] is not True
+        or deployment["source_files_verified"] is not True
+        or deployment["lightrag_file_count"] != 6
+    ):
+        raise CloseoutValidationError(
+            "existing v3 integrity gates were not all true"
+        )
+    if deployment["listener_scope"] not in {
+        "loopback_only",
+        "all_interfaces_ipv4",
+    }:
+        raise CloseoutValidationError("existing v3 listener scope is invalid")
+    for name in ("main_pid", "nrestarts", "process_start_ticks"):
         number = deployment[name]
         if isinstance(number, bool) or not isinstance(number, int) or number < 0:
-            raise CloseoutValidationError("existing v2 process state is invalid")
+            raise CloseoutValidationError("existing v3 process state is invalid")
     if deployment["main_pid"] <= 0:
-        raise CloseoutValidationError("existing v2 process PID is invalid")
+        raise CloseoutValidationError("existing v3 process PID is invalid")
+    if deployment["process_start_ticks"] <= 0:
+        raise CloseoutValidationError("existing v3 process start ticks are invalid")
+    if (
+        not isinstance(deployment["systemd_invocation_id"], str)
+        or re.fullmatch(
+            r"[0-9a-f]{32}", deployment["systemd_invocation_id"]
+        )
+        is None
+    ):
+        raise CloseoutValidationError("existing v3 invocation identity is invalid")
+    if (
+        deployment["source_head"] != head
+        or deployment["source_tree"] != tree
+        or not isinstance(deployment["source_release"], str)
+        or not deployment["source_release"].startswith("/")
+    ):
+        raise CloseoutValidationError("existing v3 source binding is invalid")
     for name in (
         "systemd_snapshot_sha256",
+        "process_snapshot_sha256",
         "health_snapshot_sha256",
         "listener_snapshot_sha256",
+        "source_manifest_sha256",
+        "lightrag_manifest_sha256",
+        "lightrag_store_binding_sha256",
     ):
-        _require_sha256(deployment[name], context=f"existing v2 deployment {name}")
-    for name in ("lightrag_manifest_sha256", "lightrag_store_binding_sha256"):
-        digest = deployment[name]
-        if digest is not None:
-            _require_sha256(digest, context=f"existing v2 deployment {name}")
-    if deployment["lightrag_store_hashes_verified"] and (
-        deployment["lightrag_manifest_sha256"] is None
-        or deployment["lightrag_store_binding_sha256"] is None
-    ):
-        raise CloseoutValidationError("existing v2 LightRAG proof hashes are missing")
+        _require_sha256(deployment[name], context=f"existing v3 deployment {name}")
 
     external = value["external_calls"]
     if not isinstance(external, dict):
-        raise CloseoutValidationError("existing v2 external calls must be an object")
+        raise CloseoutValidationError("existing v3 external calls must be an object")
     _require_exact_keys(
-        external, EXTERNAL_CALL_OUTPUT_KEYS, context="existing v2 external calls"
+        external, EXTERNAL_CALL_OUTPUT_KEYS, context="existing v3 external calls"
     )
     if external != {
         "enforcement": "tracked_sitecustomize_nonloopback_socket_guard",
@@ -1551,13 +2059,13 @@ def _validate_existing_summary(
         "af_unix_allowed": True,
         "native_child_network_instrumented": False,
     }:
-        raise CloseoutValidationError("existing v2 external-call evidence is invalid")
+        raise CloseoutValidationError("existing v3 external-call evidence is invalid")
 
     excluded = value["excluded_actions"]
     if not isinstance(excluded, dict):
-        raise CloseoutValidationError("existing v2 excluded actions must be an object")
+        raise CloseoutValidationError("existing v3 excluded actions must be an object")
     _require_exact_keys(
-        excluded, EXCLUDED_ACTION_OUTPUT_KEYS, context="existing v2 excluded actions"
+        excluded, EXCLUDED_ACTION_OUTPUT_KEYS, context="existing v3 excluded actions"
     )
     if excluded != {
         "live_formal500_executed": False,
@@ -1567,13 +2075,13 @@ def _validate_existing_summary(
         "loopback_health_probe": "read_only",
         "scope": "validator_actions_only_not_an_absolute_network_observation",
     }:
-        raise CloseoutValidationError("existing v2 excluded-action evidence is invalid")
+        raise CloseoutValidationError("existing v3 excluded-action evidence is invalid")
 
     publication = value["publication"]
     if not isinstance(publication, dict):
-        raise CloseoutValidationError("existing v2 publication must be an object")
+        raise CloseoutValidationError("existing v3 publication must be an object")
     _require_exact_keys(
-        publication, PUBLICATION_OUTPUT_KEYS, context="existing v2 publication"
+        publication, PUBLICATION_OUTPUT_KEYS, context="existing v3 publication"
     )
     expected_directory = (
         f"{OUTPUT_PREFIX}{recorded.strftime('%Y%m%dT%H%M%S%fZ')}-{head[:12]}"
@@ -1585,10 +2093,12 @@ def _validate_existing_summary(
         "existing_directories_preserved": True,
         "overwrite_supported": False,
         "same_head_replay_supported": False,
+        "published_from_hidden_building": True,
+        "atomic_directory_rename": True,
     }:
-        raise CloseoutValidationError("existing v2 publication binding is invalid")
+        raise CloseoutValidationError("existing v3 publication binding is invalid")
     if value["threat_model_limitations"] != list(THREAT_MODEL_LIMITATIONS):
-        raise CloseoutValidationError("existing v2 threat model is invalid")
+        raise CloseoutValidationError("existing v3 threat model is invalid")
     return head
 
 
@@ -1603,24 +2113,24 @@ def _scan_existing_success(output_root: Path, *, head: str) -> None:
         try:
             directory_stat = entry.lstat()
         except OSError as exc:
-            raise CloseoutValidationError("cannot inspect prior v2 closeout") from exc
+            raise CloseoutValidationError("cannot inspect prior v3 closeout") from exc
         if (
             stat.S_ISLNK(directory_stat.st_mode)
             or not stat.S_ISDIR(directory_stat.st_mode)
             or stat.S_IMODE(directory_stat.st_mode) != 0o555
         ):
-            raise CloseoutValidationError("prior v2 closeout directory is unsafe")
+            raise CloseoutValidationError("prior v3 closeout directory is unsafe")
         try:
             names = sorted(child.name for child in entry.iterdir())
         except OSError as exc:
-            raise CloseoutValidationError("cannot enumerate prior v2 closeout") from exc
+            raise CloseoutValidationError("cannot enumerate prior v3 closeout") from exc
         if names != ["summary.json"]:
-            raise CloseoutValidationError("prior v2 closeout has unexpected entries")
+            raise CloseoutValidationError("prior v3 closeout has unexpected entries")
         summary, _snapshot = _load_json_regular(
             entry / "summary.json", expected_mode=0o444, maximum_bytes=1024 * 1024
         )
         if _validate_existing_summary(summary, directory=entry.name) == head:
-            raise CloseoutValidationError("HEAD already has a successful v2 closeout")
+            raise CloseoutValidationError("HEAD already has a successful v3 closeout")
 
 
 def _verify_published_directory(
@@ -1649,7 +2159,7 @@ def _mark_failed(output_root: Path, target: Path, name: str) -> None:
         failed = output_root / f".{name}.failed-{uuid.uuid4().hex}"
         if failed.exists() or failed.is_symlink():
             raise OSError("failed closeout destination collision")
-        os.rename(target, failed)
+        atomic_rename_noreplace(target, failed)
         _fsync_directory(output_root)
     except OSError:
         pass
@@ -1665,8 +2175,11 @@ def _write_new_directory(
     target = output_root / name
     if target.exists() or target.is_symlink():
         raise CloseoutValidationError("refusing to overwrite closeout directory")
-    target.mkdir(mode=0o700, exist_ok=False)
-    summary = target / "summary.json"
+    building = output_root / f".{name}.building-{uuid.uuid4().hex}"
+    if building.exists() or building.is_symlink():
+        raise CloseoutValidationError("hidden closeout building path collision")
+    building.mkdir(mode=0o700, exist_ok=False)
+    summary = building / "summary.json"
     encoded = _canonical_json(payload)
     expected_hash = hashlib.sha256(encoded).hexdigest()
     try:
@@ -1689,19 +2202,37 @@ def _write_new_directory(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        summary.chmod(0o444)
-        _fsync_directory(target)
-        target.chmod(0o555)
-        _fsync_directory(output_root)
+        descriptor = os.open(
+            summary,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | O_NOFOLLOW,
+        )
+        try:
+            os.fchmod(descriptor, 0o444)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(building)
+        building.chmod(0o555)
+        _fsync_directory(building)
         _verify_published_directory(
-            target, summary, expected_summary_sha256=expected_hash
+            building, summary, expected_summary_sha256=expected_hash
         )
         final_checks()
+        _verify_published_directory(
+            building, summary, expected_summary_sha256=expected_hash
+        )
+        if target.exists() or target.is_symlink():
+            raise CloseoutValidationError("refusing to overwrite closeout directory")
+        atomic_rename_noreplace(building, target)
+        _fsync_directory(output_root)
+        summary = target / "summary.json"
         _verify_published_directory(
             target, summary, expected_summary_sha256=expected_hash
         )
     except BaseException:
-        _mark_failed(output_root, target, name)
+        failed_source = building if building.exists() else target
+        if failed_source.exists():
+            _mark_failed(output_root, failed_source, name)
         raise
     return target, expected_hash
 
@@ -1775,7 +2306,7 @@ def create_closeout(
                 MODEL_TEST_KEY: validated_model_tests,
                 "official_weight_inference_tests": 0,
             }
-            deployment = _deployment_state()
+            deployment = _deployment_state(project_root, initial_git)
 
             prepublish_git = _git_state(project_root)
             if prepublish_git != initial_git:
@@ -1835,6 +2366,8 @@ def create_closeout(
                     "existing_directories_preserved": True,
                     "overwrite_supported": False,
                     "same_head_replay_supported": False,
+                    "published_from_hidden_building": True,
+                    "atomic_directory_rename": True,
                 },
                 "threat_model_limitations": list(THREAT_MODEL_LIMITATIONS),
             }
@@ -1842,7 +2375,7 @@ def create_closeout(
             def final_checks() -> None:
                 if _git_state(project_root) != initial_git:
                     raise CloseoutValidationError(
-                        "Git state changed after closeout publication"
+                        "Git state changed before closeout publication"
                     )
                 final_request, final_request_snapshot = _load_json_regular(
                     input_path, expected_mode=0o444, maximum_bytes=64 * 1024
@@ -1852,19 +2385,19 @@ def create_closeout(
                     or final_request_snapshot != request_snapshot
                 ):
                     raise CloseoutValidationError(
-                        "closeout request changed after publication"
+                        "closeout request changed before publication"
                     )
                 if _verify_artifacts(
                     project_root, request["artifacts"]
                 ) != artifacts:
                     raise CloseoutValidationError(
-                        "critical artifacts changed after publication"
+                        "critical artifacts changed before publication"
                     )
                 _reverify_test_evidence(full_tests)
                 _reverify_test_evidence(model_tests)
-                if _deployment_state() != deployment:
+                if _deployment_state(project_root, initial_git) != deployment:
                     raise CloseoutValidationError(
-                        "deployment changed after closeout publication"
+                        "deployment changed before closeout publication"
                     )
 
             return_value = _write_new_directory(
@@ -1874,26 +2407,187 @@ def create_closeout(
             return target, payload, summary_sha256
 
 
+def _load_base_closeout(
+    base_summary_path: Path, *, output_root: Path
+) -> BaseCloseoutEvidence:
+    summary_path = Path(os.path.abspath(base_summary_path))
+    if Path(os.path.realpath(summary_path)) != summary_path:
+        raise CloseoutValidationError("base closeout path must not contain a symlink")
+    directory = summary_path.parent
+    if (
+        directory.parent != output_root
+        or VERSION_DIRECTORY.fullmatch(directory.name) is None
+        or summary_path.name != "summary.json"
+    ):
+        raise CloseoutValidationError(
+            "post-deployment reproof requires one canonical v3 closeout summary"
+        )
+    _verify_published_directory(
+        directory,
+        summary_path,
+        expected_summary_sha256=_inspect_regular_file(
+            summary_path,
+            capture=False,
+            expected_mode=0o444,
+            maximum_bytes=2 * 1024 * 1024,
+        )[1].sha256,
+    )
+    summary, snapshot = _load_json_regular(
+        summary_path, expected_mode=0o444, maximum_bytes=2 * 1024 * 1024
+    )
+    _validate_existing_summary(summary, directory=directory.name)
+    git_raw = summary["git"]
+    assert isinstance(git_raw, dict)
+    git_state = GitState(
+        head=git_raw["head"],
+        tree=git_raw["tree"],
+        branch=git_raw["branch"],
+        worktree_clean=True,
+    )
+    return BaseCloseoutEvidence(
+        directory=directory,
+        summary_path=summary_path,
+        summary_snapshot=snapshot,
+        summary=summary,
+        git=git_state,
+    )
+
+
+def create_deployment_reproof(
+    *, base_summary_path: Path, project_root: Path, output_root: Path
+) -> tuple[Path, dict[str, Any], str]:
+    """Append an immutable deployment observation for an existing closeout."""
+
+    project_root = Path(os.path.abspath(project_root))
+    output_root = Path(os.path.abspath(output_root))
+    _ensure_project_and_output(project_root, output_root)
+    with _exclusive_output_lock(output_root):
+        base = _load_base_closeout(base_summary_path, output_root=output_root)
+        current_git = _git_state(project_root)
+        if current_git != base.git or not current_git.worktree_clean:
+            raise CloseoutValidationError(
+                "current clean Git state does not equal the base closeout"
+            )
+        helpers = _verify_tracked_helpers(project_root)
+        if helpers != base.summary["tracked_implementation"]:
+            raise CloseoutValidationError(
+                "current tracked implementation differs from the base closeout"
+            )
+        deployment = _deployment_state(project_root, current_git)
+        recorded_at, stamp = _utc_stamp()
+        name = f"{REPROOF_PREFIX}{stamp}-{current_git.head[:12]}"
+        base_deployment = base.summary["deployment"]
+        assert isinstance(base_deployment, dict)
+        payload: dict[str, Any] = {
+            "schema_version": REPROOF_SCHEMA_VERSION,
+            "artifact_type": REPROOF_ARTIFACT_TYPE,
+            "status": "post_deployment_reproof_complete",
+            "recorded_at": recorded_at,
+            "base_closeout": {
+                "directory": base.directory.name,
+                "summary_sha256": base.summary_snapshot.sha256,
+                "recorded_at": base.summary["recorded_at"],
+                "head": current_git.head,
+                "tree": current_git.tree,
+                "deployment_invocation_id": base_deployment[
+                    "systemd_invocation_id"
+                ],
+                "deployment_process_start_ticks": base_deployment[
+                    "process_start_ticks"
+                ],
+            },
+            "git": {
+                "head": current_git.head,
+                "tree": current_git.tree,
+                "branch": current_git.branch,
+                "tracked_and_nonignored_worktree_clean": True,
+            },
+            "tracked_implementation": helpers,
+            "deployment": deployment.as_dict(),
+            "publication": {
+                "directory": name,
+                "directory_mode": "0555",
+                "summary_mode": "0444",
+                "existing_directories_preserved": True,
+                "overwrite_supported": False,
+                "same_head_replay_supported": True,
+                "published_from_hidden_building": True,
+                "atomic_directory_rename": True,
+            },
+            "threat_model_limitations": list(
+                REPROOF_THREAT_MODEL_LIMITATIONS
+            ),
+        }
+        _require_exact_keys(
+            payload, REPROOF_OUTPUT_KEYS, context="deployment reproof"
+        )
+        _require_exact_keys(
+            payload["base_closeout"],
+            REPROOF_BASE_KEYS,
+            context="deployment reproof base",
+        )
+
+        def final_checks() -> None:
+            if _git_state(project_root) != current_git:
+                raise CloseoutValidationError(
+                    "Git state changed before reproof publication"
+                )
+            final_base = _load_base_closeout(
+                base.summary_path, output_root=output_root
+            )
+            if (
+                final_base.summary_snapshot != base.summary_snapshot
+                or final_base.summary != base.summary
+            ):
+                raise CloseoutValidationError(
+                    "base closeout changed before reproof publication"
+                )
+            if _verify_tracked_helpers(project_root) != helpers:
+                raise CloseoutValidationError(
+                    "tracked implementation changed before reproof publication"
+                )
+            if _deployment_state(project_root, current_git) != deployment:
+                raise CloseoutValidationError(
+                    "deployment changed before reproof publication"
+                )
+
+        target, summary_sha256 = _write_new_directory(
+            output_root, name, payload, final_checks=final_checks
+        )
+        return target, payload, summary_sha256
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, type=Path)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--input", type=Path)
+    operation.add_argument("--post-deployment-from", type=Path)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
-        target, _payload, summary_sha256 = create_closeout(
-            input_path=arguments.input,
-            project_root=PROJECT_ROOT,
-            output_root=DEFAULT_OUTPUT_ROOT,
-        )
+        if arguments.input is not None:
+            target, _payload, summary_sha256 = create_closeout(
+                input_path=arguments.input,
+                project_root=PROJECT_ROOT,
+                output_root=DEFAULT_OUTPUT_ROOT,
+            )
+            status = "aggregate_only_closeout_validation_complete"
+        else:
+            target, _payload, summary_sha256 = create_deployment_reproof(
+                base_summary_path=arguments.post_deployment_from,
+                project_root=PROJECT_ROOT,
+                output_root=DEFAULT_OUTPUT_ROOT,
+            )
+            status = "post_deployment_reproof_complete"
     except (CloseoutValidationError, OSError) as exc:
         raise SystemExit(str(exc)) from exc
     print(
         json.dumps(
             {
-                "status": "aggregate_only_closeout_validation_complete",
+                "status": status,
                 "directory": str(target),
                 "summary_sha256": summary_sha256,
                 "guard_observed_nonloopback_socket_attempts": 0,

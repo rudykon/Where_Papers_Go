@@ -13,6 +13,19 @@ from where_paper_go import web_app
 
 
 class WebAppTests(TestCase):
+    @staticmethod
+    def _healthy_source_identity() -> dict[str, object]:
+        return {
+            "ready": True,
+            "head": "1" * 40,
+            "tree": "2" * 40,
+            "manifest_sha256": "3" * 64,
+            "files_verified": True,
+            "file_count": 10,
+            "process_pid": 1234,
+            "process_start_ticks": 5678,
+        }
+
     def test_startup_store_verification_failure_never_activates_listener(self) -> None:
         server = Mock()
         with (
@@ -22,6 +35,11 @@ class WebAppTests(TestCase):
                 return_value=Mock(),
             ),
             patch.object(web_app, "VenueHTTPServer", return_value=server),
+            patch.object(
+                web_app.deployment_identity,
+                "require_source_identity",
+                return_value=self._healthy_source_identity(),
+            ),
             patch.object(
                 web_app._SEARCH_RUNTIME,
                 "start",
@@ -36,6 +54,26 @@ class WebAppTests(TestCase):
         start.assert_called_once_with()
         server.server_activate.assert_not_called()
         server.server_close.assert_called_once_with()
+
+    def test_startup_source_identity_failure_never_creates_listener(self) -> None:
+        with (
+            patch.object(
+                web_app.WebSecurityConfig,
+                "from_environment",
+                return_value=Mock(),
+            ),
+            patch.object(web_app, "VenueHTTPServer") as server_type,
+            patch.object(
+                web_app.deployment_identity,
+                "require_source_identity",
+                side_effect=RuntimeError("不可变源码 release 身份验证失败"),
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            web_app.main(["--host", "127.0.0.1", "--port", "8001"])
+
+        self.assertEqual(raised.exception.code, 2)
+        server_type.assert_not_called()
 
     def test_frontend_declares_brand_assets(self) -> None:
         favicon_path = web_app.WEB_DIR / "favicon.png"
@@ -90,6 +128,11 @@ class WebAppTests(TestCase):
                     },
                 ),
                 patch.object(web_app, "_config_status", return_value={"ready": True}),
+                patch.object(
+                    web_app.deployment_identity,
+                    "source_identity_status",
+                    return_value=self._healthy_source_identity(),
+                ),
             ):
                 payload = web_app._health_payload()
 
@@ -98,6 +141,9 @@ class WebAppTests(TestCase):
         self.assertEqual(payload["lightrag"]["embedding_model"], "bge-m3")
         self.assertEqual(payload["lightrag"]["dimensions"], 1024)
         self.assertTrue(payload["checks"]["bindings_current"])
+        self.assertTrue(payload["checks"]["source_identity"])
+        self.assertEqual(payload["source"]["head"], "1" * 40)
+        self.assertEqual(payload["source"]["process_pid"], 1234)
         self.assertNotIn(str(data_dir), json.dumps(payload, ensure_ascii=False))
         self.assertNotIn("api_key", json.dumps(payload, ensure_ascii=False))
 
@@ -115,6 +161,11 @@ class WebAppTests(TestCase):
             with (
                 patch.object(web_app, "DATA_DIR", data_dir),
                 patch.object(web_app, "_config_status", return_value={"ready": True}),
+                patch.object(
+                    web_app.deployment_identity,
+                    "source_identity_status",
+                    return_value=self._healthy_source_identity(),
+                ),
                 patch.object(
                     web_app,
                     "_runtime_status",

@@ -1,6 +1,6 @@
 # Where Papers Go — session handoff
 
-> Updated: 2026-08-31 (Asia/Shanghai)
+> Updated: 2026-09-01 (Asia/Shanghai)
 > Read this file before editing code, rebuilding indexes, or launching API jobs.
 > Start with the next-session checkpoint in Section 0. The remainder of Section
 > 0 is the authoritative post-P0 evidence. Sections 1 onward retain the original
@@ -20,13 +20,15 @@ estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
 - Stage A's machine-executable repository and unprivileged-host deployment work
-  is complete. The persistent user service is enabled, active, loopback-only at
-  `127.0.0.1:8001`, restart-tested, forced-process-termination recovery-tested
-  and ready with exact graph/vector/LightRAG/runtime bindings. Administrator
-  activation of the tracked TLS/authenticated reverse proxy, a literal host
-  reboot, and a separately authorized live 500-paper Search/LLM acceptance
-  remain external/manual gates, so the overall product must not be called 100%
-  complete;
+  is complete. The persistent user service is enabled and active. On
+  2026-09-01 the user explicitly authorized a direct all-client LAN binding at
+  `0.0.0.0:8765`; this host currently owns `172.22.13.155/24`, so the reachable
+  URL is <http://172.22.13.155:8765/>. The service remains restart-tested and
+  ready with exact graph/vector/LightRAG/runtime bindings. This direct listener
+  has no Nginx TLS/front-door authentication and must not be described as an
+  Internet-hardened deployment. A literal host reboot and a separately
+  authorized live 500-paper Search/LLM acceptance remain external/manual gates,
+  so the overall product must not be called 100% complete;
 - Stage B/M3 is complete on the exposed development set. The four authorized
   official Hugging Face revisions, including the active SPECTER2 proximity
   adapter, were downloaded into ignored shadow-managed assets, validated and
@@ -138,7 +140,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
 benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python -m unittest tests.test_model_runs tests.test_local_model_runtime -v
 PYTHONDONTWRITEBYTECODE=1 python -m scripts.benchmark_retrieval --format json
 systemctl --user is-active where-papers-go.service
-curl --noproxy '*' --fail --silent http://127.0.0.1:8001/api/health
+curl --noproxy '*' --fail --silent http://127.0.0.1:8765/api/health
 sha256sum benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/manifest.json
 sha256sum benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json
 ```
@@ -158,16 +160,26 @@ Suggested next-session prompt:
 > or rebuild the clean PCL corpus. The next research dependency is execution by
 > three real blinded experts, not more automated metric fitting.
 
-### Deployment checkpoint (2026-08-30; current)
+### Deployment checkpoint (2026-08-30 historical baseline)
+
+The paragraphs in this subsection freeze the 2026-08-30 loopback deployment;
+they are no longer the current network endpoint. The 2026-09-01 user-authorized
+service keeps the same private runtime generation and shared quota state but
+uses `WPG_HOST=0.0.0.0`, `WPG_PORT=8765`, and
+`WPG_ALLOWED_CLIENT_CIDRS=0.0.0.0/0,::/0`. The successor immutable-source unit,
+same-process closeout proof, and append-only deployment-reproof workflow are
+specified later in this section; use the latest immutable v3 closeout rather
+than these historical PIDs/unit hashes for current deployment identity.
 
 The audited production user unit is
 `~/.config/systemd/user/where-papers-go.service`. It is `enabled`, `active`,
-uses `Restart=on-failure`, runs under the lingering user manager and now binds
-only <http://127.0.0.1:8001/>. It is not reachable directly from the LAN. Port
-`8000` remains owned by an unrelated Docker container and was not stopped or
-modified. An explicit unit restart and a forced `SIGKILL` process failure both
-returned to `ready=true` with current bindings; these checks establish service
-and worker recovery, not a literal physical-host reboot.
+uses `Restart=on-failure`, and runs under the lingering user manager. At that
+historical checkpoint it bound only <http://127.0.0.1:8001/> and was not
+reachable directly from the LAN. Port `8000` was owned by an unrelated Docker
+container and was not stopped or modified. An explicit unit restart and a
+forced `SIGKILL` process failure both returned to `ready=true` with current
+bindings; these checks establish service and worker recovery, not a literal
+physical-host reboot.
 
 The installed unit SHA-256 is
 `c96a77e197d509cfe970fea7e9768ea5463ce39ef106121d31fc04e988ad8eaa`.
@@ -202,9 +214,11 @@ deployment validation.
 
 The repository contains the Nginx TLS/Basic-Auth/rate-limit/path-only-audit
 template and activation procedure, but Nginx is not installed and no
-hostname/certificate was provided. LAN exposure, HTTPS/auth proxy activation
-and any privileged firewall changes therefore remain administrator work. The
-loopback listener must not be described as LAN- or Internet-facing.
+hostname/certificate was provided. This paragraph describes the historical
+loopback checkpoint only. Direct LAN exposure was later explicitly authorized
+on port 8765; HTTPS/auth proxy activation and privileged firewall changes remain
+administrator work, and the direct listener must not be described as
+Internet-hardened.
 
 Final code/deployment verification ran 441 default-environment tests with zero
 failures and 27 explained skips. The 23 loopback skips then passed as host-only
@@ -961,45 +975,81 @@ the narrower 4+2 meaning above and must not be cited as six direct tests of the
 official weights. Preserve the old directory and bytes; correct the
 interpretation rather than rewriting historical evidence.
 
-New closeouts use `python -m scripts.validate_closeout --input INPUT.json` only
-after the bound commit and tracked/non-ignored worktree are clean. The strict
-schema-2 input contains only its fixed identity, the expected 40-hex HEAD, its
-matching fixed `agent/aggregate-only-closeout-20260831` branch, and the exact
-known hashes for the eight fixed aggregate artifacts. Those hashes, paths, byte sizes and
-mode-`0444` requirements are pinned in tracked validator code; the request
-cannot substitute paths or self-report tests, deployment state, external-call
-counts, group names or output fields. The validator binds the clean HEAD and
-tree plus fixed tracked implementation/doc hashes, runs full unittest discovery
-itself, and separately requires exactly 6/6 in the ignored isolated runtime:
-four test-double builder/activation tests plus two temporary random tiny-BERT
-safetensors integrations, with `official_weight_inference_tests=0`. Both runs
-inherit the tracked non-loopback socket guard and publish only aggregate counts,
-test-ID fingerprints and an empty blocked-attempt audit. The guard permits
-loopback and AF_UNIX and is inherited by Python children, not native non-Python
-executables. The evidence therefore proves zero observed non-loopback attempts
-only inside the guarded Python interpreters, not an absolute provider-call
-count; the fixed tracked suite, sanitized environment, cleared host opt-ins and
-offline dependency settings constrain that residual scope.
+New base closeouts use `python -m scripts.validate_closeout --input INPUT.json`
+only after the bound commit and tracked/non-ignored worktree are clean. The
+strict schema-2 input contains only its fixed identity, the expected 40-hex
+HEAD, the fixed `agent/aggregate-only-closeout-20260831` branch, and the exact
+known hashes for the eight fixed aggregate artifacts. Paths, hashes, sizes and
+mode-`0444` requirements remain pinned in tracked code; the request cannot
+self-report tests, deployment state, provider calls, group names or output
+fields. A schema-4 base summary is published under
+`benchmark_artifacts/final_delivery_validation_v3_<UTC>-<HEAD>/`; the historical
+schema-3 `final_delivery_validation_v2_*` directory remains byte-for-byte
+preserved and does not block the successor format.
 
-Deployment validation directly reads the fixed user service with
-`/usr/bin/systemctl`, proves that every port-8001 listener reported by
-`/usr/bin/ss` is loopback-only, and performs a read-only
-`127.0.0.1:8001/api/health` probe. It does not restart or otherwise mutate the
-production service. The deployment record also carries the observed
-`lightrag_store_hashes_verified` boolean without forcing it true; an old live
-process that has not restarted under the new startup gate must remain `false`.
-The closeout explicitly records that no live formal-500 or human-evaluation run
-occurred and that the validator requested no live external-provider workflow.
-Local loopback HTTP exercised by fixed tests and the read-only health probe are
-allowed; native-child networking and later user-authorized Git transport remain
-outside the socket observation. The separately collected systemd PID, listener
-snapshot and HTTP health response are not a cryptographic same-process binding.
-Each successful invocation exclusively creates a new ignored
-`benchmark_artifacts/final_delivery_validation_v2_<UTC>-<HEAD>/` directory with
-a mode-`0444` summary and mode-`0555` directory, then reopens and verifies the
-final bytes, hash, permissions and sole directory entry. A failed final check
-is preserved under a unique `.failed-*` name. There is no overwrite option,
-and the 2026-08-30 directory remains untouched.
+The tracked runner now emits schema 2. In addition to the complete test-ID
+fingerprint, it reports only the skipped-ID count/fingerprint and the fixed
+suite allowlist fingerprint. The successor full discovery is fixed at 489 IDs
+with SHA-256
+`ddc285a4a7b74373dd0cf92f2da5515899d382a16e3c31ccb3e27963565eccc4`.
+Full discovery permits only the two optional local
+safetensors integrations, the exact Nginx-not-installed skip, and the exact
+opt-in host-systemd skip; reason mismatches, unknown IDs, fixture skips and
+subtest skips become aggregate errors. The isolated model-focused suite has an
+empty skip allowlist and must remain exactly 6/6: four test-double
+builder/activation tests plus two temporary random tiny-BERT safetensors
+integrations, with `official_weight_inference_tests=0`. Both runs inherit the
+tracked non-loopback socket guard and publish no test names, skip reasons or
+per-query values. The guard permits loopback and AF_UNIX and covers inheriting
+Python children, not native non-Python executables, so its empty audit is scoped
+to those guarded interpreters rather than an absolute provider-call claim.
+
+Production source is no longer executed from the mutable checkout. First run
+`python -m scripts.manage_deployment prepare-source-release` in dry-run and
+then `--apply`; it reads blobs from the approved Git commit, excludes `.git`,
+`__pycache__`, `.pyc` and `.pyo`, writes a content-addressed read-only release
+under a hidden `.building` name, verifies its exact inventory, modes, sizes and
+hashes, and publishes it with Linux `renameat2(RENAME_NOREPLACE)` only after
+every check succeeds.
+`render-systemd` requires that exact release and its manifest SHA-256. The unit
+sets WorkingDirectory to the release and pins PYTHONPATH plus all four
+`WPG_SOURCE_*` bindings as command-local `/usr/bin/env` assignments, so
+`EnvironmentFile=` cannot override them. It mounts the release read-only,
+verifies source before opening the listener, and makes ExecStartPost bind health
+to `${MAINPID}`. The deployed interpreter must be the frozen
+`benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python`; with
+`PYTHONNOUSERSITE=1`, the former Miniconda/default interpreters do not provide
+the required NumPy/model stack.
+
+Closeout deployment validation is read-only and discovers host/port from the
+selected non-secret `/proc/<MainPID>/environ` fields. It binds the systemd
+MainPID and InvocationID, `/proc` process start ticks/cwd/command/source
+identity, `ss -p` listener owner, and health-reported PID/start ticks/HEAD/tree/
+source-manifest identity. The observed source must equal the current Git
+HEAD/tree, and the validator independently rebuilds the expected source
+manifest from those Git objects and requires its SHA-256 to equal the live
+release. The listener address must equal the configured host (including the
+authorized `0.0.0.0` LAN binding). The health gate must report
+`lightrag_store_hashes=true` and a required, verified proof for exactly the six
+frozen LightRAG files with valid manifest and store-binding hashes; `false` is
+no longer a successful closeout state. An identical second deployment
+observation is required while the final artifact is still hidden.
+
+Every base closeout and deployment reproof is assembled in a unique hidden
+`.building-*` directory. Bytes, hash, modes, sole-entry inventory, clean Git,
+inputs, test evidence and deployment stability are all checked before one
+atomic directory rename exposes the mode-`0555` final directory; summaries are
+mode `0444`; the final transition uses `renameat2(RENAME_NOREPLACE)`, overwrite
+is never supported, and failed builds retain only a hidden `.failed-*`
+diagnostic directory. A base closeout remains one-per-HEAD,
+but a later authorized restart or redeployment of the same HEAD is proved
+without rewriting it by running
+`python -m scripts.validate_closeout --post-deployment-from BASE/summary.json`.
+This creates an independent, append-only
+`final_delivery_deployment_reproof_v1_<UTC>-<HEAD>/` record bound to the base
+summary hash and the newly observed deployment identity. The validator itself
+does not restart the service, execute formal-500/human evaluation, or request a
+live Search/LLM/embedding workflow.
 
 The 2026-08-30 private-generation deployment subsequently passed an authorized
 host unit restart and forced-process-termination recovery with `ready=true`,

@@ -1,20 +1,111 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import hashlib
 import json
 from pathlib import Path
 import os
 import stat
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
 from scripts import manage_deployment
+from where_paper_go import deployment_identity
 from where_paper_go.tavily_pool import TavilyKeyPool
 
 
 class DeploymentManifestTests(TestCase):
+    def test_source_git_queries_ignore_host_overrides(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"value\n", stderr=b""
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "GIT_DIR": "/tmp/attacker",
+                    "GIT_WORK_TREE": "/tmp/other",
+                    "GIT_CONFIG_GLOBAL": "/tmp/config",
+                    "PATH": "/tmp/bin",
+                },
+            ),
+            patch.object(
+                manage_deployment.subprocess,
+                "run",
+                return_value=completed,
+            ) as run,
+        ):
+            self.assertEqual(
+                manage_deployment._git_output(Path("/project"), "rev-parse", "HEAD"),
+                b"value\n",
+            )
+        arguments = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(arguments[0], "/usr/bin/git")
+        self.assertNotIn("GIT_DIR", environment)
+        self.assertNotIn("GIT_WORK_TREE", environment)
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+
+    @staticmethod
+    def _source_release(root: Path) -> tuple[Path, str, dict[str, object]]:
+        head = "1" * 40
+        tree = "2" * 40
+        contents = {
+            "scripts/manage_deployment.py": b"# immutable deployment helper\n",
+            "where_paper_go/web_app.py": b"# immutable web entrypoint\n",
+        }
+        rows = [
+            {
+                "path": name,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "mode": "0444",
+            }
+            for name, payload in sorted(contents.items())
+        ]
+        binding = hashlib.sha256(
+            json.dumps(
+                {"source_head": head, "source_tree": tree, "files": rows},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        manifest: dict[str, object] = {
+            "schema_version": 1,
+            "artifact_type": deployment_identity.SOURCE_ARTIFACT_TYPE,
+            "source_head": head,
+            "source_tree": tree,
+            "source_binding_sha256": binding,
+            "file_count": len(rows),
+            "files": rows,
+            "immutable_files": True,
+            "forbidden_entries_excluded": True,
+        }
+        manifest_payload = (
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+        release = root / "source-releases" / f"release-{manifest_sha256}"
+        for name, payload in contents.items():
+            path = release / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(0o444)
+        source_manifest = release / deployment_identity.SOURCE_MANIFEST_FILE
+        source_manifest.write_bytes(manifest_payload)
+        source_manifest.chmod(0o400)
+        for directory in sorted(
+            [release, *(path for path in release.rglob("*") if path.is_dir())],
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            directory.chmod(0o555)
+        return release, manifest_sha256, manifest
+
     @staticmethod
     def _runtime_shadow(root: Path, *, data_dir: Path | None = None) -> Path:
         runtime = root / "runtime-root" / "generations" / "generation-test"
@@ -88,6 +179,7 @@ class DeploymentManifestTests(TestCase):
             "WantedBy=default.target",
             "EnvironmentFile=@@ENV_FILE@@",
             "ExecStartPost=",
+            "--expect-process-pid ${MAINPID}",
             "/api/health",
             "NoNewPrivileges=yes",
             "ProtectSystem=strict",
@@ -98,6 +190,14 @@ class DeploymentManifestTests(TestCase):
             "ReadOnlyPaths=@@RUNTIME_DIR@@/runtime-shadow-manifest.json",
             "Environment=WPG_TAVILY_STATE_FILE=@@SHARED_STATE_DIR@@/",
             "Environment=WPG_RUNTIME_MANIFEST_SHA256=@@RUNTIME_MANIFEST_SHA256@@",
+            "WorkingDirectory=@@SOURCE_RELEASE@@",
+            "ExecStart=/usr/bin/env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 "
+            "PYTHONPATH=@@SOURCE_RELEASE@@",
+            "WPG_SOURCE_HEAD=@@SOURCE_HEAD@@",
+            "WPG_SOURCE_TREE=@@SOURCE_TREE@@",
+            "WPG_SOURCE_MANIFEST=@@SOURCE_MANIFEST@@",
+            "WPG_SOURCE_MANIFEST_SHA256=@@SOURCE_MANIFEST_SHA256@@",
+            "ReadOnlyPaths=@@SOURCE_RELEASE@@",
             "Environment=WPG_DATA_DIR=@@DATA_DIR@@",
             "Environment=WPG_API_CONFIG=@@CONFIG_PATH@@",
             "Environment=WPG_MAX_CONCURRENT_CONNECTIONS=64",
@@ -106,6 +206,10 @@ class DeploymentManifestTests(TestCase):
         )
         for value in required:
             self.assertIn(value, text)
+        self.assertEqual(text.count("PYTHONPATH=@@SOURCE_RELEASE@@"), 2)
+        self.assertEqual(text.count("WPG_SOURCE_HEAD=@@SOURCE_HEAD@@"), 2)
+        self.assertNotIn("Environment=PYTHONPATH=", text)
+        self.assertNotIn("Environment=WPG_SOURCE_HEAD=", text)
         self.assertNotIn("api_key", text.casefold())
         self.assertNotIn("llmapi.json", text)
         self.assertNotIn("CapabilityBoundingSet", text)
@@ -124,9 +228,13 @@ class DeploymentManifestTests(TestCase):
             output = root / "where-papers-go.service"
             runtime = self._runtime_shadow(root)
             shared, config = self._shared_state(root)
+            source_release, source_manifest_sha256, _source_manifest = (
+                self._source_release(root)
+            )
             args = Namespace(
                 template=manage_deployment.SYSTEMD_TEMPLATE,
-                project_root=manage_deployment.PROJECT_ROOT,
+                source_release=source_release,
+                expected_source_manifest_sha256=source_manifest_sha256,
                 python=Path(sys.executable),
                 data_dir=manage_deployment.PROJECT_ROOT / "data",
                 api_config=config,
@@ -148,7 +256,8 @@ class DeploymentManifestTests(TestCase):
             backup = Path(installed["backup"])
             self.assertEqual(backup.read_text(encoding="utf-8"), "preserved predecessor\n")
             rendered = output.read_text(encoding="utf-8")
-            self.assertIn(str(manage_deployment.PROJECT_ROOT), rendered)
+            self.assertIn(str(source_release), rendered)
+            self.assertIn(f"WPG_SOURCE_HEAD={'1' * 40}", rendered)
             self.assertIn(str(Path(sys.executable).resolve()), rendered)
             self.assertNotIn("@@", rendered)
 
@@ -393,6 +502,7 @@ class DeploymentManifestTests(TestCase):
             with self.assertRaisesRegex(ValueError, "loopback health gate"):
                 manage_deployment.render_environment(args)
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_health_contract_fails_each_missing_mandatory_layer(self) -> None:
         healthy = {
             "status": "ready",
@@ -416,7 +526,29 @@ class DeploymentManifestTests(TestCase):
                     "ready": True,
                     "sha256_matched": True,
                     "path_bound": True,
+                    "actual_sha256": "3" * 64,
                 },
+                "lightrag_store_verification": {
+                    "required": True,
+                    "verified": True,
+                    "file_count": 6,
+                    "manifest_sha256": "3" * 64,
+                    "store_binding_sha256": "4" * 64,
+                },
+            },
+            "source": {
+                "ready": True,
+                "head": "1" * 40,
+                "tree": "2" * 40,
+                "manifest_sha256": "5" * 64,
+                "files_verified": True,
+                "file_count": 2,
+                "process_pid": os.getpid(),
+                "process_start_ticks": deployment_identity.process_start_ticks(),
+            },
+            "checks": {
+                "lightrag_store_hashes": True,
+                "source_identity": True,
             },
             "config": {
                 "ready": True,
@@ -428,6 +560,59 @@ class DeploymentManifestTests(TestCase):
             },
         }
         self.assertEqual(manage_deployment.validate_health_payload(healthy), [])
+        self.assertTrue(
+            manage_deployment.validate_health_payload(
+                healthy, expected_process_pid=os.getpid() + 1
+            )
+        )
+        with patch.dict(
+            os.environ,
+            {
+                deployment_identity.SOURCE_HEAD_ENV: "9" * 40,
+                "WPG_RUNTIME_MANIFEST_SHA256": "8" * 64,
+            },
+            clear=False,
+        ):
+            failures = manage_deployment.validate_health_payload(healthy)
+        self.assertTrue(
+            any("source health identity" in failure for failure in failures)
+        )
+        self.assertTrue(
+            any("runtime manifest health identity" in failure for failure in failures)
+        )
+        with TemporaryDirectory() as directory:
+            source_release, source_sha256, source_manifest = self._source_release(
+                Path(directory)
+            )
+            locally_bound = json.loads(json.dumps(healthy))
+            locally_bound["source"].update(
+                {
+                    "head": source_manifest["source_head"],
+                    "tree": source_manifest["source_tree"],
+                    "manifest_sha256": source_sha256,
+                    "file_count": source_manifest["file_count"],
+                }
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    deployment_identity.SOURCE_HEAD_ENV: str(
+                        source_manifest["source_head"]
+                    ),
+                    deployment_identity.SOURCE_TREE_ENV: str(
+                        source_manifest["source_tree"]
+                    ),
+                    deployment_identity.SOURCE_MANIFEST_ENV: str(
+                        source_release / deployment_identity.SOURCE_MANIFEST_FILE
+                    ),
+                    deployment_identity.SOURCE_MANIFEST_SHA256_ENV: source_sha256,
+                    "WPG_RUNTIME_MANIFEST_SHA256": "3" * 64,
+                },
+                clear=False,
+            ):
+                self.assertEqual(
+                    manage_deployment.validate_health_payload(locally_bound), []
+                )
 
         for top_level, field in (
             ("graph", "exists"),
@@ -443,6 +628,226 @@ class DeploymentManifestTests(TestCase):
                 manage_deployment.validate_health_payload(broken),
                 msg=f"{top_level}.{field} must fail closed",
             )
+
+        for path, value in (
+            (("runtime", "lightrag_store_verification", "required"), False),
+            (("runtime", "lightrag_store_verification", "verified"), False),
+            (("runtime", "lightrag_store_verification", "file_count"), 5),
+            (("runtime", "lightrag_store_verification", "manifest_sha256"), "x" * 64),
+            (("runtime", "lightrag_store_verification", "store_binding_sha256"), "x" * 64),
+            (("source", "ready"), False),
+            (("source", "manifest_sha256"), "x" * 64),
+            (("source", "process_pid"), 0),
+            (("source", "process_start_ticks"), 0),
+        ):
+            broken = json.loads(json.dumps(healthy))
+            target = broken
+            for component in path[:-1]:
+                target = target[component]
+            target[path[-1]] = value
+            self.assertTrue(
+                manage_deployment.validate_health_payload(broken),
+                msg=".".join(path) + " must fail closed",
+            )
+
+    def test_source_release_is_git_bound_content_addressed_atomic_and_read_only(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+
+            def git(*arguments: str) -> None:
+                subprocess.run(
+                    ["git", "-C", str(project), *arguments],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+            git("init", "-q")
+            git("config", "user.name", "Unit Test")
+            git("config", "user.email", "unit@example.invalid")
+            (project / "app.py").write_text("committed = True\n", encoding="utf-8")
+            executable = project / "run.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            git("add", "app.py", "run.sh")
+            git("commit", "-q", "-m", "source fixture")
+            (project / "app.py").write_text("dirty = True\n", encoding="utf-8")
+            ignored = project / "__pycache__"
+            ignored.mkdir()
+            (ignored / "app.cpython.pyc").write_bytes(b"not-release-input")
+
+            release_root = root / "published"
+            args = Namespace(
+                project_root=project,
+                release_root=release_root,
+                apply=False,
+            )
+            dry = manage_deployment.prepare_source_release(args)
+            self.assertEqual(dry["status"], "dry-run")
+            self.assertFalse(release_root.exists())
+
+            args.apply = True
+            built = manage_deployment.prepare_source_release(args)
+            release = Path(built["release"])
+            manifest = Path(built["manifest"])
+            self.assertEqual(built["status"], "built")
+            self.assertEqual(release.name, f"release-{built['manifest_sha256']}")
+            self.assertEqual((release / "app.py").read_text(), "committed = True\n")
+            self.assertFalse((release / ".git").exists())
+            self.assertFalse((release / "__pycache__").exists())
+            self.assertEqual(stat.S_IMODE(release.stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE((release / "app.py").stat().st_mode), 0o444)
+            self.assertEqual(stat.S_IMODE((release / "run.sh").stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o400)
+            self.assertEqual(
+                list((release_root / "releases").glob(".*.building")), []
+            )
+            identity = deployment_identity.validate_source_release(
+                manifest,
+                expected_head=built["head"],
+                expected_tree=built["tree"],
+                expected_manifest_sha256=built["manifest_sha256"],
+            )
+            self.assertTrue(identity["files_verified"])
+            status = deployment_identity.source_identity_status(
+                {
+                    deployment_identity.SOURCE_HEAD_ENV: str(built["head"]),
+                    deployment_identity.SOURCE_TREE_ENV: str(built["tree"]),
+                    deployment_identity.SOURCE_MANIFEST_ENV: str(manifest),
+                    deployment_identity.SOURCE_MANIFEST_SHA256_ENV: str(
+                        built["manifest_sha256"]
+                    ),
+                }
+            )
+            self.assertTrue(status["ready"])
+            self.assertEqual(status["process_pid"], os.getpid())
+            self.assertGreater(int(status["process_start_ticks"]), 0)
+            wrong_head_status = deployment_identity.source_identity_status(
+                {
+                    deployment_identity.SOURCE_HEAD_ENV: "9" * 40,
+                    deployment_identity.SOURCE_TREE_ENV: str(built["tree"]),
+                    deployment_identity.SOURCE_MANIFEST_ENV: str(manifest),
+                    deployment_identity.SOURCE_MANIFEST_SHA256_ENV: str(
+                        built["manifest_sha256"]
+                    ),
+                }
+            )
+            self.assertFalse(wrong_head_status["ready"])
+
+            reused = manage_deployment.prepare_source_release(args)
+            self.assertEqual(reused["status"], "already-built")
+            (release / "app.py").chmod(0o644)
+            with self.assertRaisesRegex(
+                deployment_identity.SourceIdentityError, "mode"
+            ):
+                deployment_identity.validate_source_release(
+                    manifest,
+                    expected_manifest_sha256=built["manifest_sha256"],
+                )
+            (release / "app.py").chmod(0o444)
+            with self.assertRaisesRegex(
+                deployment_identity.SourceIdentityError, "SHA-256"
+            ):
+                deployment_identity.validate_source_release(
+                    manifest,
+                    expected_manifest_sha256="f" * 64,
+                )
+            release.chmod(0o755)
+            extra = release / "unlisted.py"
+            extra.write_bytes(b"unlisted\n")
+            extra.chmod(0o444)
+            release.chmod(0o555)
+            with self.assertRaisesRegex(
+                deployment_identity.SourceIdentityError, "tree"
+            ):
+                deployment_identity.validate_source_release(
+                    manifest,
+                    expected_manifest_sha256=built["manifest_sha256"],
+                )
+            release.chmod(0o755)
+            extra.unlink()
+            release.chmod(0o555)
+            self.assertFalse(
+                deployment_identity.source_identity_status(
+                    {
+                        deployment_identity.SOURCE_HEAD_ENV: str(built["head"]),
+                        deployment_identity.SOURCE_TREE_ENV: str(built["tree"]),
+                        deployment_identity.SOURCE_MANIFEST_ENV: str(manifest),
+                        deployment_identity.SOURCE_MANIFEST_SHA256_ENV: str(
+                            built["manifest_sha256"]
+                        ),
+                    }
+                )["ready"]
+            )
+
+    def test_source_release_rename_failure_never_publishes_partial_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            subprocess.run(
+                ["git", "-C", str(project), "init", "-q"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(project), "config", "user.name", "Unit Test"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(project),
+                    "config",
+                    "user.email",
+                    "unit@example.invalid",
+                ],
+                check=True,
+            )
+            (project / "app.py").write_text("committed = True\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(project), "add", "app.py"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(project), "commit", "-q", "-m", "fixture"],
+                check=True,
+            )
+            release_root = root / "published"
+            args = Namespace(
+                project_root=project,
+                release_root=release_root,
+                apply=True,
+            )
+            with (
+                patch.object(
+                    manage_deployment,
+                    "atomic_rename_noreplace",
+                    side_effect=OSError("simulated atomic rename failure"),
+                ),
+                self.assertRaisesRegex(OSError, "atomic rename"),
+            ):
+                manage_deployment.prepare_source_release(args)
+            releases = release_root / "releases"
+            self.assertEqual(list(releases.glob("release-*")), [])
+            self.assertEqual(len(list(releases.glob(".*.building"))), 1)
+
+    def test_atomic_rename_noreplace_never_replaces_existing_target(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            published = root / "published"
+            first.write_bytes(b"first")
+            deployment_identity.atomic_rename_noreplace(first, published)
+            self.assertFalse(first.exists())
+            self.assertEqual(published.read_bytes(), b"first")
+
+            contender = root / "contender"
+            contender.write_bytes(b"contender")
+            with self.assertRaises(FileExistsError):
+                deployment_identity.atomic_rename_noreplace(contender, published)
+            self.assertEqual(contender.read_bytes(), b"contender")
+            self.assertEqual(published.read_bytes(), b"first")
 
     def test_prepare_runtime_is_private_atomic_and_preserves_prior_generation(self) -> None:
         with TemporaryDirectory() as directory:
@@ -565,10 +970,14 @@ class DeploymentManifestTests(TestCase):
                 )
             )
             self.assertEqual(environment["status"], "dry-run")
+            source_release, source_manifest_sha256, _source_manifest = (
+                self._source_release(root)
+            )
             systemd = manage_deployment.render_systemd(
                 Namespace(
                     template=manage_deployment.SYSTEMD_TEMPLATE,
-                    project_root=manage_deployment.PROJECT_ROOT,
+                    source_release=source_release,
+                    expected_source_manifest_sha256=source_manifest_sha256,
                     python=Path(sys.executable),
                     data_dir=data,
                     api_config=config,

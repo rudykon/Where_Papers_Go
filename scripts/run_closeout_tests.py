@@ -7,11 +7,17 @@ The test-ID digest is SHA-256 over this byte sequence::
     b"\\0".join(sorted(unique_test_ids_as_utf8)) + b"\\0"
 
 Neither test IDs nor failure details are written to stdout or the report.
+
+Skipped-test IDs use the independent domain
+``b"where-papers-go-closeout-skipped-test-ids-v1\\0"``.  The fixed
+suite-specific skip policy, including reason match modes and values, uses
+``b"where-papers-go-closeout-skip-allowlist-v1\\0"`` with length-prefixed
+fields.  Only their counts and digests are emitted.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import hashlib
 import json
 import os
@@ -20,6 +26,7 @@ import site
 import stat
 import subprocess
 import sys
+from types import MappingProxyType
 from typing import Any
 import unittest
 
@@ -31,11 +38,70 @@ AUDIT_ENV = "WPG_CLOSEOUT_NETWORK_AUDIT"
 ACTIVE_ENV = "WPG_CLOSEOUT_OFFLINE_GUARD_ACTIVE"
 BOOTSTRAP_ENV = "WPG_CLOSEOUT_RUNNER_BOOTSTRAPPED"
 ARTIFACT_TYPE = "where_papers_go_closeout_test_report"
+REPORT_SCHEMA_VERSION = 2
 MODEL_MODULES = ("tests.test_model_runs", "tests.test_local_model_runtime")
 ID_HASH_DOMAIN = b"where-papers-go-closeout-test-ids-v1\0"
+SKIPPED_TEST_ID_HASH_DOMAIN = (
+    b"where-papers-go-closeout-skipped-test-ids-v1\0"
+)
+SKIP_ALLOWLIST_HASH_DOMAIN = b"where-papers-go-closeout-skip-allowlist-v1\0"
 EMPTY_ID_SHA256 = hashlib.sha256(ID_HASH_DOMAIN).hexdigest()
+EMPTY_SKIPPED_TEST_ID_SHA256 = hashlib.sha256(
+    SKIPPED_TEST_ID_HASH_DOMAIN
+).hexdigest()
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+SKIP_REASON_EXACT = "exact"
+SKIP_REASON_PREFIX = "prefix"
+SkipReasonRule = tuple[str, str]
+SkipAllowlist = Mapping[str, tuple[SkipReasonRule, ...]]
+
+LOCAL_RUNTIME_SCIENTIFIC_TEST_ID = (
+    "test_local_model_runtime.LocalModelRuntimeIntegrationTests."
+    "test_scientific_cls_provider_loads_local_safetensors"
+)
+LOCAL_RUNTIME_CROSS_ENCODER_TEST_ID = (
+    "test_local_model_runtime.LocalModelRuntimeIntegrationTests."
+    "test_cross_encoder_provider_loads_local_safetensors"
+)
+NGINX_INTEGRATION_TEST_ID = (
+    "test_nginx_integration.NginxIntegrationTests."
+    "test_nginx_syntax_tls_auth_and_proxy_redaction"
+)
+SYSTEMD_HOST_INTEGRATION_TEST_ID = (
+    "test_systemd_host_integration.HostSystemdIntegrationTests."
+    "test_main_process_sigkill_is_automatically_restarted_and_ready"
+)
+LOCAL_RUNTIME_SKIP_REASON_PREFIX = (
+    "optional torch/transformers runtime unavailable: "
+)
+NGINX_UNAVAILABLE_SKIP_REASON = (
+    "Nginx is not installed; set WPG_NGINX_BIN after admin install"
+)
+SYSTEMD_HOST_OPT_IN_SKIP_REASON = (
+    "set WPG_RUN_HOST_SYSTEMD_TESTS=1 for the recoverable host test"
+)
+
+FULL_SKIP_ALLOWLIST: SkipAllowlist = MappingProxyType({
+    LOCAL_RUNTIME_SCIENTIFIC_TEST_ID: (
+        (SKIP_REASON_PREFIX, LOCAL_RUNTIME_SKIP_REASON_PREFIX),
+    ),
+    LOCAL_RUNTIME_CROSS_ENCODER_TEST_ID: (
+        (SKIP_REASON_PREFIX, LOCAL_RUNTIME_SKIP_REASON_PREFIX),
+    ),
+    NGINX_INTEGRATION_TEST_ID: (
+        (SKIP_REASON_EXACT, NGINX_UNAVAILABLE_SKIP_REASON),
+    ),
+    SYSTEMD_HOST_INTEGRATION_TEST_ID: (
+        (SKIP_REASON_EXACT, SYSTEMD_HOST_OPT_IN_SKIP_REASON),
+    ),
+})
+EMPTY_SKIP_ALLOWLIST: SkipAllowlist = MappingProxyType({})
+SUITE_SKIP_ALLOWLISTS: Mapping[str, SkipAllowlist] = MappingProxyType({
+    "full": FULL_SKIP_ALLOWLIST,
+    "model-focused": EMPTY_SKIP_ALLOWLIST,
+})
 
 REPORT_KEYS = {
     "schema_version",
@@ -50,7 +116,41 @@ REPORT_KEYS = {
     "unexpected_successes",
     "test_id_count",
     "test_id_sha256",
+    "skipped_test_id_count",
+    "skipped_test_id_sha256",
+    "skip_allowlist_sha256",
 }
+
+
+def _update_length_prefixed(digest: Any, value: str) -> None:
+    encoded = value.encode("utf-8", errors="strict")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
+def _skip_allowlist_digest(allowlist: SkipAllowlist) -> str:
+    """Bind allowed IDs, reason modes, and reason values to one digest."""
+
+    digest = hashlib.sha256()
+    digest.update(SKIP_ALLOWLIST_HASH_DOMAIN)
+    digest.update(len(allowlist).to_bytes(8, "big"))
+    for identifier in sorted(allowlist):
+        _update_length_prefixed(digest, identifier)
+        rules = tuple(sorted(allowlist[identifier]))
+        digest.update(len(rules).to_bytes(8, "big"))
+        for mode, value in rules:
+            _update_length_prefixed(digest, mode)
+            _update_length_prefixed(digest, value)
+    return digest.hexdigest()
+
+
+def _suite_skip_allowlist(name: str | None) -> SkipAllowlist:
+    if name is None:
+        return EMPTY_SKIP_ALLOWLIST
+    return SUITE_SKIP_ALLOWLISTS.get(name, EMPTY_SKIP_ALLOWLIST)
+
+
+EMPTY_SKIP_ALLOWLIST_SHA256 = _skip_allowlist_digest(EMPTY_SKIP_ALLOWLIST)
 
 
 def _trusted_user_site() -> tuple[Path, ...]:
@@ -93,9 +193,11 @@ TRUSTED_PYTHONPATH_ENTRIES = (
 )
 
 
-def _empty_report(*, guard_active: bool) -> dict[str, Any]:
+def _empty_report(
+    *, guard_active: bool, suite_name: str | None = None
+) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": REPORT_SCHEMA_VERSION,
         "artifact_type": ARTIFACT_TYPE,
         "guard_active": guard_active,
         "total": 1,
@@ -107,6 +209,11 @@ def _empty_report(*, guard_active: bool) -> dict[str, Any]:
         "unexpected_successes": 0,
         "test_id_count": 0,
         "test_id_sha256": EMPTY_ID_SHA256,
+        "skipped_test_id_count": 0,
+        "skipped_test_id_sha256": EMPTY_SKIPPED_TEST_ID_SHA256,
+        "skip_allowlist_sha256": _skip_allowlist_digest(
+            _suite_skip_allowlist(suite_name)
+        ),
     }
 
 
@@ -288,13 +395,21 @@ def _flatten_suite(suite: unittest.TestSuite) -> list[unittest.TestCase]:
     return flattened
 
 
-def _test_id_digest(test_ids: Iterable[str]) -> str:
+def _identifier_digest(test_ids: Iterable[str], domain: bytes) -> str:
     digest = hashlib.sha256()
-    digest.update(ID_HASH_DOMAIN)
+    digest.update(domain)
     for identifier in sorted(test_ids):
         digest.update(identifier.encode("utf-8", errors="strict"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _test_id_digest(test_ids: Iterable[str]) -> str:
+    return _identifier_digest(test_ids, ID_HASH_DOMAIN)
+
+
+def _skipped_test_id_digest(test_ids: Iterable[str]) -> str:
+    return _identifier_digest(test_ids, SKIPPED_TEST_ID_HASH_DOMAIN)
 
 
 class AggregateTestResult(unittest.TestResult):
@@ -313,6 +428,8 @@ class AggregateTestResult(unittest.TestResult):
         super().__init__()
         self.executed_ids: list[str] = []
         self._active: dict[int, tuple[str, str]] = {}
+        self.final_outcomes: dict[str, str] = {}
+        self.skip_observations: list[tuple[str, Any, bool]] = []
         self.counts = {name: 0 for name in self._PRECEDENCE}
         self.fixture_outcomes = 0
 
@@ -322,9 +439,12 @@ class AggregateTestResult(unittest.TestResult):
         self.executed_ids.append(identifier)
         self._active[id(test)] = (identifier, "passed")
 
-    def _mark(self, test: Any, outcome: str) -> None:
+    def _active_parent(
+        self, test: Any
+    ) -> tuple[int, tuple[str, str], bool] | None:
         key = id(test)
         current = self._active.get(key)
+        is_subtest = False
         if current is None:
             # Python 3.14 reports skipTest() inside a subTest through the
             # _SubTest wrapper.  Collapse it into the one discovered parent
@@ -332,18 +452,38 @@ class AggregateTestResult(unittest.TestResult):
             parent = getattr(test, "test_case", None)
             key = id(parent)
             current = self._active.get(key)
+            is_subtest = current is not None
         if current is None:
+            return None
+        return key, current, is_subtest
+
+    def _mark(
+        self, test: Any, outcome: str, *, skip_reason: Any = None
+    ) -> None:
+        active = self._active_parent(test)
+        if active is None:
+            # Class/module fixture outcomes have no started parent test and are
+            # never eligible for the per-test allowlist.
             self.counts[outcome] += 1
             self.fixture_outcomes += 1
             return
+        key, current, is_subtest = active
         identifier, previous = current
+        if outcome == "skipped":
+            # Retain only in memory.  The report emits the parent ID digest and
+            # validates this reason, never either plaintext value.
+            self.skip_observations.append(
+                (identifier, skip_reason, is_subtest)
+            )
         if self._PRECEDENCE[outcome] >= self._PRECEDENCE[previous]:
             self._active[key] = (identifier, outcome)
 
     def stopTest(self, test: unittest.TestCase) -> None:  # noqa: N802
         current = self._active.pop(id(test), None)
         if current is not None:
-            self.counts[current[1]] += 1
+            identifier, outcome = current
+            self.counts[outcome] += 1
+            self.final_outcomes[identifier] = outcome
         super().stopTest(test)
 
     def addSuccess(self, test: unittest.TestCase) -> None:  # noqa: N802
@@ -358,8 +498,7 @@ class AggregateTestResult(unittest.TestResult):
         self._mark(test, "errors")
 
     def addSkip(self, test: unittest.TestCase, reason: str) -> None:  # noqa: N802
-        del reason
-        self._mark(test, "skipped")
+        self._mark(test, "skipped", skip_reason=reason)
 
     def addExpectedFailure(  # noqa: N802
         self, test: unittest.TestCase, err: Any
@@ -382,12 +521,89 @@ class AggregateTestResult(unittest.TestResult):
         self._mark(test, "failures" if is_failure else "errors")
 
     def close_interrupted_tests(self) -> None:
-        for _identifier, _outcome in tuple(self._active.values()):
+        for identifier, _outcome in tuple(self._active.values()):
             self.counts["errors"] += 1
+            self.final_outcomes[identifier] = "errors"
         self._active.clear()
 
     def aggregate(self) -> dict[str, int]:
         return dict(self.counts)
+
+
+def _skip_reason_matches(
+    rules: tuple[SkipReasonRule, ...], reason: Any
+) -> bool:
+    if not isinstance(reason, str) or "\0" in reason:
+        return False
+    for mode, value in rules:
+        if mode == SKIP_REASON_EXACT and reason == value:
+            return True
+        if (
+            mode == SKIP_REASON_PREFIX
+            and reason.startswith(value)
+            and len(reason) > len(value)
+        ):
+            return True
+    return False
+
+
+def _skip_policy_evidence(
+    name: str, result: AggregateTestResult
+) -> tuple[bool, tuple[str, ...], int, str]:
+    """Validate every skip event and return aggregate-only evidence inputs."""
+
+    allowlist = SUITE_SKIP_ALLOWLISTS.get(name)
+    if allowlist is None:
+        allowlist = EMPTY_SKIP_ALLOWLIST
+        policy_valid = False
+    else:
+        policy_valid = True
+
+    skipped_ids = tuple(
+        sorted(
+            identifier
+            for identifier, outcome in result.final_outcomes.items()
+            if outcome == "skipped"
+        )
+    )
+    unbound_skip_count = max(
+        0, result.counts["skipped"] - len(skipped_ids)
+    )
+    if result.counts["skipped"] != len(skipped_ids):
+        policy_valid = False
+
+    reasons_by_id: dict[str, list[Any]] = {}
+    invalid_skipped_ids: set[str] = set()
+    for identifier, reason, is_subtest in result.skip_observations:
+        reasons_by_id.setdefault(identifier, []).append(reason)
+        final_outcome = result.final_outcomes.get(identifier)
+        if is_subtest:
+            policy_valid = False
+            if final_outcome == "skipped":
+                invalid_skipped_ids.add(identifier)
+        if final_outcome != "skipped":
+            policy_valid = False
+    for identifier in skipped_ids:
+        rules = allowlist.get(identifier)
+        reasons = reasons_by_id.get(identifier, ())
+        if (
+            rules is None
+            or not reasons
+            or not all(_skip_reason_matches(rules, reason) for reason in reasons)
+        ):
+            invalid_skipped_ids.add(identifier)
+
+    if invalid_skipped_ids:
+        policy_valid = False
+    if set(reasons_by_id) != set(skipped_ids):
+        policy_valid = False
+
+    return (
+        policy_valid,
+        skipped_ids,
+        len(invalid_skipped_ids) + unbound_skip_count,
+        _skip_allowlist_digest(allowlist),
+    )
 
 
 def _load_suite(name: str) -> unittest.TestSuite:
@@ -472,6 +688,14 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
         integrity_ok = False
     if result.fixture_outcomes:
         integrity_ok = False
+    (
+        skip_policy_ok,
+        skipped_ids,
+        invalid_skip_count,
+        skip_allowlist_sha256,
+    ) = _skip_policy_evidence(name, result)
+    if not skip_policy_ok:
+        integrity_ok = False
     try:
         final_guard_active = bool(guard_module.guard_self_check())
     except BaseException:
@@ -479,6 +703,11 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
     if not final_guard_active:
         integrity_ok = False
     counts = result.aggregate()
+    # Preserve one final outcome per discovered test while making each
+    # disallowed final skip visible as an aggregate error.
+    invalid_skip_count = min(counts["skipped"], invalid_skip_count)
+    counts["skipped"] -= invalid_skip_count
+    counts["errors"] += invalid_skip_count
     if not integrity_ok:
         _invalidate_counts(counts)
     total = sum(counts.values())
@@ -486,7 +715,7 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
         counts["errors"] = 1
         total = 1
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": REPORT_SCHEMA_VERSION,
         "artifact_type": ARTIFACT_TYPE,
         "guard_active": True,
         "total": total,
@@ -498,6 +727,9 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
         "unexpected_successes": counts["unexpected_successes"],
         "test_id_count": len(discovered_ids),
         "test_id_sha256": _test_id_digest(discovered_ids),
+        "skipped_test_id_count": len(skipped_ids),
+        "skipped_test_id_sha256": _skipped_test_id_digest(skipped_ids),
+        "skip_allowlist_sha256": skip_allowlist_sha256,
     }
     return report
 
@@ -524,7 +756,11 @@ def _write_all(descriptor: int, payload: bytes, *, synchronize: bool) -> None:
 
 def main() -> int:
     if not _bootstrap_guard():
-        payload = _encode_report(_empty_report(guard_active=False))
+        parsed = _parse_arguments(sys.argv[1:])
+        suite_name = parsed[0] if parsed is not None else None
+        payload = _encode_report(
+            _empty_report(guard_active=False, suite_name=suite_name)
+        )
         try:
             os.write(1, payload)
         except OSError:
@@ -549,7 +785,10 @@ def main() -> int:
         return 2
 
     target_fd = report_fd if report_fd is not None else saved_stdout
-    report = _empty_report(guard_active=guard_active)
+    suite_name = parsed[0] if parsed is not None else None
+    report = _empty_report(
+        guard_active=guard_active, suite_name=suite_name
+    )
     initial_audit: tuple[str, int, int, int, int, int] | None = None
     try:
         if parsed is not None and guard_module is not None:
@@ -560,7 +799,10 @@ def main() -> int:
             if audit_is_pristine and _child_inherits_guard():
                 report = _run_suite(parsed[0], guard_module)
             else:
-                report = _empty_report(guard_active=guard_active)
+                report = _empty_report(
+                    guard_active=guard_active,
+                    suite_name=parsed[0],
+                )
 
             final_audit = _audit_snapshot(guard_module)
             audit_unchanged = _audit_is_pristine_and_unchanged(

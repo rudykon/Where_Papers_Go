@@ -5,16 +5,23 @@ never rebuilds or replaces the graph, vector, LightRAG, P0, or M3 evidence.
 Every render is a dry-run unless `--apply` is explicit, and an existing unit or
 proxy file is preserved at a timestamped backup before atomic replacement.
 
-## Current boundary (deployed and verified 2026-08-30)
+## Historical boundary (deployed and verified 2026-08-30)
+
+This subsection freezes the 2026-08-30 loopback evidence. On 2026-09-01 the
+user separately authorized `0.0.0.0:8765` with an all-client CIDR policy; the
+host's current LAN address is `172.22.13.155`. That direct listener has no
+Nginx TLS/front-door authentication and is not an Internet-hardened topology.
+Use the immutable-source procedure and latest closeout below for current
+process/source identity; retain the older hashes and PIDs only as history.
 
 The production deployment is the persistent user unit
 `~/.config/systemd/user/where-papers-go.service`. It is `enabled` and
 `active/running`, and both its first startup gate and an explicit service
 restart returned the complete `ready=true` health contract. The application
-listens only on `127.0.0.1:8001`: there is no current LAN listener and port 8001
-must not be exposed by a router or public firewall. Nginx is not installed, so
-HTTPS and front-door authentication remain an administrator-owned follow-up.
-The intended public topology, once those prerequisites exist, is:
+listened only on `127.0.0.1:8001` at that historical checkpoint: there was no
+LAN listener. Nginx was not installed, so HTTPS and front-door authentication
+remained an administrator-owned follow-up. The intended public topology, once
+those prerequisites exist, is:
 
 ```text
 Internet/LAN client
@@ -64,6 +71,12 @@ separately authorized Git transport are outside that observation. The systemd
 PID, `ss` listener and HTTP health response are also separate read-only
 snapshots, not a cryptographic same-process binding.
 
+That last limitation describes the 2026-08-30 evidence only. The source-release
+workflow below requires a new unit and binds startup health to systemd
+`MainPID`, a live PID/start tuple, and the approved source release. It must not
+be claimed for the historical deployment until that unit is actually installed
+and the bound checks are recorded.
+
 Use the host user manager and journal as the service-state authority. During
 this rollout, a sandboxed process listing could not see the host PID and briefly
 suggested a false negative; `systemctl --user`, the journal, and loopback health
@@ -82,12 +95,14 @@ deployment should use Nginx authentication because both schemes use the
 ## Checked-in deployment assets
 
 - `deploy/systemd/where-papers-go.service.in`: persistent user-unit template,
-  restart policy, startup health gate, write boundary, and systemd hardening;
+  restart policy, source/runtime-bound startup health gate, write boundary, and
+  systemd hardening;
 - `deploy/env/where-papers-go.env.example`: non-secret environment template;
 - `deploy/nginx/where-papers-go.conf.in`: TLS, Basic Auth, rate limit, streaming
   proxy, security headers, and body-free JSON access log;
-- `python -m scripts.manage_deployment`: deterministic render, automatic
-  predecessor backup, restore, ready health, and SHA-256 checks.
+- `python -m scripts.manage_deployment`: immutable source-release preparation,
+  deterministic render, automatic predecessor backup, restore, ready health,
+  and SHA-256 checks.
 
 `llmapi.json`, API token files, htpasswd files, certificates, Search pool state,
 indexes, caches, and benchmark artifacts remain ignored/local. Never put their
@@ -126,9 +141,41 @@ Expected values at the 2026-08-28 production checkpoint are:
 
 Stop if any value differs. Diagnose the binding; do not rebuild in place.
 
-## Prepare and dry-run the user service
+## Prepare immutable source and runtime candidates
 
-First create a new ignored, private runtime generation. The dry-run hashes all
+Prepare the source release before preparing or rendering the service. The
+first command is a write-free plan; review its `head`, `tree`, `release`,
+`manifest_sha256`, `source_binding_sha256`, file count, and byte count. Apply
+the same plan only while `HEAD` and its tree remain the reviewed values:
+
+```bash
+python -m scripts.manage_deployment prepare-source-release
+python -m scripts.manage_deployment prepare-source-release --apply
+```
+
+`prepare-source-release` reads regular tracked blobs from the reviewed Git
+commit/tree, not mutable worktree bytes; uncommitted changes, `.git`, and
+`__pycache__` are excluded. The default target is the content-addressed
+`~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256`.
+Apply builds a private hidden `.release-*.building` tree, checks every path,
+mode, size, and SHA-256 against the complete manifest, makes files `0444` or
+`0555`, directories `0555`, and the manifest `0400`, then rechecks the Git
+HEAD/tree and the complete release before atomically renaming it to the final
+content-addressed name. It validates the published result again. A failed
+hidden `.building` tree is retained for diagnosis, and an older release is
+never replaced. Save the exact emitted values as `SOURCE_RELEASE`,
+`SOURCE_HEAD`, `SOURCE_TREE`, and `SOURCE_MANIFEST_SHA256`; placeholders with
+those names below mean those approved values.
+
+There is no source `current` selector and no `activate-source-release`
+operation. The installed unit selects exactly one source release; source
+activation occurs only when that reviewed unit is atomically installed and
+the user manager is reloaded. The unit uses the release as both
+`WorkingDirectory` and `PYTHONPATH`, places it under `ReadOnlyPaths=`, and sets
+the four `WPG_SOURCE_*` identity values after the mutable environment file so
+that file cannot redirect imports or weaken the source binding.
+
+Next create a new ignored, private runtime generation. The dry-run hashes all
 seed files but writes nothing. `--apply` clones the API/query embedding caches
 and the six manifest-bound LightRAG files through stable file descriptors and
 publishes a new `generation-*` directory. Its result is
@@ -152,15 +199,22 @@ generation is operational state, not P0/M3/formal evidence, and its initial
 manifest must not be rewritten after queries mutate caches. The unit grants
 the generation its cache write boundary but overlays the manifest itself with
 an explicit `ReadOnlyPaths=` rule; mode `0400`, the environment hash binding,
-and the startup health gate provide independent fail-closed checks. When
-`WPG_REQUIRE_RUNTIME_SHADOW=1`, worker preload first verifies the exact runtime
-manifest hash and then streams all six frozen LightRAG inputs (the import
-manifest plus five query stores) through stable, no-follow descriptors. Each
-size and SHA-256 must match its unique runtime-manifest row. Missing, replaced,
+and the startup health gate provide independent fail-closed checks.
+
+At process startup, the application first requires the four approved source
+identity values and revalidates the content-addressed release's complete
+inventory, read-only modes, sizes, and hashes. It exits before creating the
+HTTP server if the source HEAD/tree/manifest or files differ. When
+`WPG_REQUIRE_RUNTIME_SHADOW=1`, worker preload then verifies the exact runtime
+manifest hash and streams all six frozen LightRAG inputs (the import manifest
+plus five query stores) through stable, no-follow descriptors. Each size and
+SHA-256 must match its unique runtime-manifest row. Missing, replaced,
 duplicated, permission-unsafe or content-drifted stores make the worker report
 `ready=false` before the graph or LightRAG runtime opens; the parent process
-therefore never activates its listener. Readiness exposes only the aggregate
-verified file count, byte count and binding digests, not store contents.
+therefore never activates its listener. Both the immutable source gate and all
+six LightRAG bindings must pass before the selected source/runtime combination
+can become ready. Readiness exposes only aggregate verified counts and binding
+digests, not source or store contents.
 
 Validate the candidate before selection. On subsequent upgrades, once the
 shared state already exists, the preferred check on a host that permits an
@@ -169,32 +223,55 @@ explicit generation and persistent shared quota state. Merely starting the
 worker and calling health is Search-free; do not call `/api/search`:
 
 ```bash
-WPG_HOST=127.0.0.1 WPG_PORT=18001 \
-WPG_DATA_DIR=/home/wangrj/Desktop/顶会顶刊推荐系统/data \
-WPG_API_CONFIG=/home/wangrj/Desktop/顶会顶刊推荐系统/llmapi.json \
-WPG_API_CACHE_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/api_cache \
-WPG_RESULT_CACHE_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/api_cache/result \
-WPG_QUERY_EMBEDDING_CACHE=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/query_embedding_cache.json.gz \
-WPG_LIGHTRAG_EMBEDDING_CACHE=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/lightrag_embedding_cache.json.gz \
-WPG_LIGHTRAG_WORKING_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/lightrag_storage \
-WPG_GRAPH_PATH=/home/wangrj/Desktop/顶会顶刊推荐系统/data/venue_graph.json.gz \
-WPG_TAVILY_STATE_FILE=/home/wangrj/.local/state/where-papers-go/shared/.tavily_key_pool_state.json \
-WPG_RUNTIME_GENERATION=/home/wangrj/.local/state/where-papers-go/generations/GENERATION \
-WPG_RUNTIME_MANIFEST=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/runtime-shadow-manifest.json \
-WPG_RUNTIME_MANIFEST_SHA256=MANIFEST_SHA256 \
-WPG_STRICT_GRAPH_READ_ONLY=1 WPG_REQUIRE_RUNTIME_SHADOW=1 \
-/home/wangrj/miniconda3/bin/python -m where_paper_go.web_app
+APP_SOURCE_RELEASE=/home/wangrj/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256
+APP_SOURCE_HEAD=SOURCE_HEAD
+APP_SOURCE_TREE=SOURCE_TREE
+APP_SOURCE_MANIFEST_SHA256=SOURCE_MANIFEST_SHA256
+APP_PYTHON=/home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python
+(
+  cd "$APP_SOURCE_RELEASE"
+  exec env \
+    PYTHONPATH="$APP_SOURCE_RELEASE" PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 \
+    WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
+    WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
+    WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
+    WPG_HOST=127.0.0.1 WPG_PORT=18001 \
+    WPG_DATA_DIR=/home/wangrj/Desktop/顶会顶刊推荐系统/data \
+    WPG_API_CONFIG=/home/wangrj/Desktop/顶会顶刊推荐系统/llmapi.json \
+    WPG_API_CACHE_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/api_cache \
+    WPG_RESULT_CACHE_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/api_cache/result \
+    WPG_QUERY_EMBEDDING_CACHE=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/query_embedding_cache.json.gz \
+    WPG_LIGHTRAG_EMBEDDING_CACHE=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/lightrag_embedding_cache.json.gz \
+    WPG_LIGHTRAG_WORKING_DIR=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/lightrag_storage \
+    WPG_GRAPH_PATH=/home/wangrj/Desktop/顶会顶刊推荐系统/data/venue_graph.json.gz \
+    WPG_TAVILY_STATE_FILE=/home/wangrj/.local/state/where-papers-go/shared/.tavily_key_pool_state.json \
+    WPG_RUNTIME_GENERATION=/home/wangrj/.local/state/where-papers-go/generations/GENERATION \
+    WPG_RUNTIME_MANIFEST=/home/wangrj/.local/state/where-papers-go/generations/GENERATION/runtime-shadow-manifest.json \
+    WPG_RUNTIME_MANIFEST_SHA256=MANIFEST_SHA256 \
+    WPG_STRICT_GRAPH_READ_ONLY=1 WPG_REQUIRE_RUNTIME_SHADOW=1 \
+    "$APP_PYTHON" -m where_paper_go.web_app
+) &
+SHADOW_PID=$!
 
-python -m scripts.manage_deployment health \
+WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
+WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
+WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
+"$APP_PYTHON" -m scripts.manage_deployment health \
   --url http://127.0.0.1:18001/api/health \
-  --expect-sha256 /home/wangrj/.local/state/where-papers-go/generations/GENERATION/runtime-shadow-manifest.json=MANIFEST_SHA256
+  --attempts 120 --interval 1 --timeout 2 \
+  --expect-process-pid "$SHADOW_PID" \
+  --expect-sha256 /home/wangrj/.local/state/where-papers-go/generations/GENERATION/runtime-shadow-manifest.json=MANIFEST_SHA256 \
+  --expect-sha256 "$APP_SOURCE_RELEASE/source-release-manifest.json=$APP_SOURCE_MANIFEST_SHA256"
+kill -INT "$SHADOW_PID"
+wait "$SHADOW_PID"
 ```
 
-Replace `GENERATION` and `MANIFEST_SHA256` with the exact values emitted by the
-builder. Stop the shadow with `Ctrl-C` after it reports ready. If an execution
-sandbox denies the shadow socket, record that limitation and run the real
-worker plus complete health-payload validator without a listener; do not claim
-a listener-backed shadow check. That was the 2026-08-30 pre-activation path.
+Replace every uppercase placeholder with the exact source- and runtime-builder
+value. This validates the approved source release, runtime generation, shared
+state, and live shadow PID/start tuple as one candidate combination. If an
+execution sandbox denies the shadow socket, record that limitation and run the
+real worker plus complete health-payload validator without a listener; do not
+claim a listener-backed shadow check. That was the 2026-08-30 pre-activation path.
 For an initial migration, do not create/copy shared quota state while the old
 service is live merely to enable this optional listener check; use the
 no-listener validator, then follow the quiesce/migration order below. The
@@ -225,23 +302,35 @@ revision-0 primary/backup copies with identical SHA-256
 
 ## Dry-render, CAS-activate, and install
 
-Render both files against the explicit candidate generation and shared state.
-Render is dry-run by default. It validates the generation manifest's declared
-protected-data path, each immutable LightRAG binding, and both quota-state
-copies before emitting bytes:
+Render both files against the explicit candidate combination. Render is
+dry-run by default. `render-env` binds the runtime generation and shared state;
+`render-systemd` additionally requires the exact source release and approved
+source-manifest SHA-256. Before emitting bytes, the systemd renderer validates
+the release's content-addressed name, manifest SHA, HEAD/tree, complete
+inventory, read-only modes, and every file hash. It also validates the runtime
+manifest's declared protected-data path, each immutable LightRAG binding, and
+both quota-state copies. The pinned frozen-model venv is explicit because the
+unit enforces `PYTHONNOUSERSITE=1`; the former default interpreters do not expose
+the complete NumPy/model dependency stack under that restriction:
 
 ```bash
 python -m scripts.manage_deployment render-env \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 --port 8765 \
   --runtime-dir ~/.local/state/where-papers-go/generations/GENERATION \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
-  --allowed-client-cidrs 127.0.0.0/8,::1/128 \
+  --allowed-client-cidrs 0.0.0.0/0,::/0 \
   --output ~/.config/where-papers-go/runtime.env
 python -m scripts.manage_deployment render-systemd \
+  --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
+  --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
+  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
   --runtime-dir ~/.local/state/where-papers-go/generations/GENERATION \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output ~/.config/systemd/user/where-papers-go.service
 python -m scripts.manage_deployment render-systemd \
+  --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
+  --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
+  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
   --runtime-dir ~/.local/state/where-papers-go/generations/GENERATION \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output /tmp/where-papers-go.service --apply
@@ -249,11 +338,11 @@ systemd-analyze --user verify /tmp/where-papers-go.service
 ```
 
 The audited renderer accepts only `localhost`, `127.0.0.1`, or `0.0.0.0`
-because its startup gate probes `127.0.0.1`. Production currently uses
-`127.0.0.1` and a loopback-only direct-peer allowlist. Do not switch to
-`0.0.0.0` unless a separately reviewed trusted-LAN boundary explicitly
-requires it. IPv6 CIDRs remain valid in the allowlist, and IPv4-mapped IPv6
-peers are normalized before matching.
+because its startup gate probes `127.0.0.1`. The authorized direct-LAN
+production binding is `0.0.0.0:8765` with `0.0.0.0/0,::/0`; it intentionally
+admits every reachable client and has no TLS/front-door authentication. Do not
+treat that as an Internet-hardened topology. IPv6 CIDRs remain valid in the
+allowlist, and IPv4-mapped IPv6 peers are normalized before matching.
 
 Select the candidate with an explicit compare-and-swap. Use the exact
 `observed_current` emitted by `prepare-runtime` (or `none` if absent) and exact
@@ -271,19 +360,24 @@ python -m scripts.manage_deployment activate-runtime \
   --expected-current OBSERVED_CURRENT --apply
 ```
 
-Activation changes only the audited `current` selector; it does not rewrite the
-generation, start a process, or install the unit/env. Re-run the exact reviewed
-renders with `--apply`; a differing predecessor is retained before each atomic
-replacement. The environment is mode `0600`, while the unit is mode `0644`:
+Activation changes only the audited runtime `current` selector; it does not
+rewrite a generation, select source, start a process, or install the unit/env.
+The source release remains inert until the unit that names it is installed.
+Re-run the exact reviewed renders with `--apply`; a differing predecessor is
+retained before each atomic replacement. The environment is mode `0600`, while
+the unit is mode `0644`:
 
 ```bash
 python -m scripts.manage_deployment render-env \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 --port 8765 \
   --runtime-dir ~/.local/state/where-papers-go/current \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
-  --allowed-client-cidrs 127.0.0.0/8,::1/128 \
+  --allowed-client-cidrs 0.0.0.0/0,::/0 \
   --output ~/.config/where-papers-go/runtime.env --apply
 python -m scripts.manage_deployment render-systemd \
+  --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
+  --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
+  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
   --runtime-dir ~/.local/state/where-papers-go/current \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output ~/.config/systemd/user/where-papers-go.service --apply
@@ -303,17 +397,53 @@ Verify service identity, ready health, restart recovery, and enablement:
 
 ```bash
 systemctl --user show where-papers-go.service \
-  -p ActiveState -p SubState -p UnitFileState -p FragmentPath -p Restart -p NRestarts
+  -p ActiveState -p SubState -p UnitFileState -p FragmentPath \
+  -p MainPID -p InvocationID -p Restart -p NRestarts
+APP_SOURCE_RELEASE=/home/wangrj/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256
+APP_SOURCE_HEAD=SOURCE_HEAD
+APP_SOURCE_TREE=SOURCE_TREE
+APP_SOURCE_MANIFEST_SHA256=SOURCE_MANIFEST_SHA256
+SERVICE_MAIN_PID="$(systemctl --user show where-papers-go.service --property MainPID --value)"
+test "$(readlink -f "/proc/$SERVICE_MAIN_PID/cwd")" = "$APP_SOURCE_RELEASE"
+WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
+WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
+WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
 python -m scripts.manage_deployment health \
+  --expect-process-pid "$SERVICE_MAIN_PID" \
   --expect-sha256 /home/wangrj/.local/state/where-papers-go/current/runtime-shadow-manifest.json=MANIFEST_SHA256 \
+  --expect-sha256 "$APP_SOURCE_RELEASE/source-release-manifest.json=$APP_SOURCE_MANIFEST_SHA256" \
   --expect-sha256 data/venue_graph_vectors.json.gz=d3995c353b29614bac6954d895f3daaf4f2afee67d19ff0eb78089c4e3dc1cab \
   --expect-sha256 data/lightrag_storage/venue_import_manifest.json=59d59babe37703175eb6a640bbe5c480386a3359a71073588b808747659b9bb3
 systemctl --user restart where-papers-go.service
+SERVICE_MAIN_PID="$(systemctl --user show where-papers-go.service --property MainPID --value)"
+test "$(readlink -f "/proc/$SERVICE_MAIN_PID/cwd")" = "$APP_SOURCE_RELEASE"
+WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
+WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
+WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
 python -m scripts.manage_deployment health --attempts 120 --interval 1 \
-  --expect-sha256 /home/wangrj/.local/state/where-papers-go/current/runtime-shadow-manifest.json=MANIFEST_SHA256
+  --expect-process-pid "$SERVICE_MAIN_PID" \
+  --expect-sha256 /home/wangrj/.local/state/where-papers-go/current/runtime-shadow-manifest.json=MANIFEST_SHA256 \
+  --expect-sha256 "$APP_SOURCE_RELEASE/source-release-manifest.json=$APP_SOURCE_MANIFEST_SHA256"
 systemctl --user is-enabled where-papers-go.service
 loginctl show-user "$USER" -p Linger
 ```
+
+The unit's mandatory `ExecStartPost` performs the same binding automatically:
+it passes systemd's `${MAINPID}`, the approved source-manifest hash, and the
+runtime-manifest hash to the complete readiness validator. Health requires the
+response's live PID/start-ticks tuple to match that `MainPID`, revalidates the
+local read-only source release, and requires the response's HEAD, tree,
+manifest SHA, and verified file count to match the unit's `WPG_SOURCE_*`
+identity. Re-read `MainPID` after every restart; never reuse the pre-restart
+value.
+
+The same health call is also a strict six-file LightRAG gate. It accepts only
+`runtime.lightrag_store_verification.required=true`, `verified=true`, and
+`file_count=6`, with valid manifest/store-binding SHA-256 values and the store
+manifest SHA equal to the active runtime manifest. Both
+`checks.lightrag_store_hashes=true` and `checks.source_identity=true` are
+mandatory. A `ready=true` response missing any one of those exact true values
+is rejected.
 
 `enabled` restores the unit at user-manager startup. If `Linger=no`, unattended
 host-boot recovery additionally requires this administrator action:
@@ -338,9 +468,9 @@ python -m scripts.manage_deployment health
 ```
 
 `/api/health/live` is process liveness. `/api/health` is readiness and returns
-HTTP 503 when API config, graph, vector, LightRAG manifest, frozen-store hash
-verification, worker, or preloaded dependency stamps are unavailable. A failed
-Search, LLM timeout, exhausted key
+HTTP 503 when immutable source identity, API config, graph, vector, LightRAG
+manifest, the six-file frozen-store proof, worker, or preloaded dependency
+stamps are unavailable. A failed Search, LLM timeout, exhausted key
 pool, worker protocol failure, or stale index never returns a downgraded final
 recommendation. The browser may display explicitly labelled local preliminary
 recall while the mandatory remote stages are in flight, but it removes those
@@ -354,7 +484,9 @@ omit query bodies, Authorization headers, keys, and result evidence.
 deadline. A peer that continuously drip-feeds bytes can occupy one bounded
 connection slot; keep the direct-peer allowlist narrow and let the HTTPS proxy
 enforce its own header/body timeouts. `WPG_MAX_CONCURRENT_CONNECTIONS` bounds
-the residual application-side resource exposure.
+the residual application-side resource exposure. The bare `health` command
+above is useful for diagnosis, but it is not a substitute for the
+MainPID/source/runtime-bound deployment acceptance block.
 
 ## HTTPS/auth reverse proxy (administrator step)
 
@@ -415,8 +547,12 @@ python -m scripts.manage_deployment render-env \
   --trusted-proxy-cidrs 127.0.0.0/8,::1/128 \
   --output ~/.config/where-papers-go/runtime.env --apply
 systemctl --user restart where-papers-go.service
-python -m scripts.manage_deployment health --attempts 120 --interval 1
 ```
+
+The environment-only change does not rebuild or switch source. After the
+restart, re-read `MainPID` and repeat the complete source-manifest,
+runtime-manifest, and health binding block above; the unit must still report
+the same approved source release.
 
 After Nginx is installed, the repository's isolated syntax/TLS/Basic-Auth/proxy
 regression can be run without production certificates:
@@ -435,15 +571,25 @@ checks is production evidence yet.
 ## Upgrade and rollback without resetting the active worktree
 
 Before an upgrade, re-run the full tests and immutable preflight, then repeat
-the build-not-active, candidate validation, quiesce, shared-state audit,
-dry-render, CAS activation, atomic render, start, health, and restart sequence
-above. Use a separate shadow worktree/port for a source rollback candidate;
-never `reset`, `clean`, overwrite production data, or create a generation by
-editing an older one. Render the candidate unit with explicit paths:
+source-release preparation, runtime build-not-active, combined candidate
+validation, quiesce, shared-state audit, dry-render, runtime CAS activation,
+atomic env/unit render, start, bound health, and restart-health sequence above.
+Use a separate shadow worktree/port for a source rollback candidate; never
+`reset`, `clean`, overwrite production data, or create a generation by editing
+an older one. The shadow worktree is only a Git-object source for
+`prepare-source-release`; the service must run the resulting immutable release,
+not that mutable worktree. Dry-run and then build it (or revalidate and reuse an
+intact prior content-addressed release), then render the candidate unit:
 
 ```bash
+python -m scripts.manage_deployment prepare-source-release \
+  --project-root /absolute/path/to/shadow-worktree
+python -m scripts.manage_deployment prepare-source-release \
+  --project-root /absolute/path/to/shadow-worktree --apply
 python -m scripts.manage_deployment render-systemd \
-  --project-root /absolute/path/to/shadow-worktree \
+  --source-release /home/wangrj/.local/lib/where-papers-go/releases/release-PREVIOUS_SOURCE_MANIFEST_SHA256 \
+  --expected-source-manifest-sha256 PREVIOUS_SOURCE_MANIFEST_SHA256 \
+  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
   --data-dir /home/wangrj/Desktop/顶会顶刊推荐系统/data \
   --api-config /home/wangrj/Desktop/顶会顶刊推荐系统/llmapi.json \
   --runtime-dir /home/wangrj/.local/state/where-papers-go/current \
@@ -451,10 +597,14 @@ python -m scripts.manage_deployment render-systemd \
   --output /tmp/where-papers-go.rollback.service --apply
 ```
 
-Only switch after the candidate's worker/health contract and hashes pass. To
-roll back runtime state, stop the service and CAS-select an intact earlier
-generation using the currently observed selector and that earlier generation's
-own manifest hash. Dry-run first:
+Only switch after the selected source release, runtime generation, shared
+state, worker, and complete bound-health contract pass together. A source-only
+rollback does not move runtime `current`: atomically render/install a unit bound
+to the approved older source and current runtime, then reload, start, and run
+the MainPID/source/runtime-bound health checks above. To roll back runtime
+state, stop the service and CAS-select an intact earlier generation using the
+currently observed selector and that earlier generation's own manifest hash.
+Dry-run first:
 
 ```bash
 systemctl --user stop where-papers-go.service
@@ -469,12 +619,19 @@ python -m scripts.manage_deployment activate-runtime \
 ```
 
 Then dry-render and atomically install env/unit files bound to the selected
-generation, run `daemon-reload`, start, and require full health. The shared
-Tavily state path does not move backward with the generation. Never restore an
-old per-generation quota snapshot.
+source release and generation, run `daemon-reload`, start, and require full
+MainPID/source/runtime-bound health. A runtime-only rollback keeps the approved
+source release; a paired rollback names both older approved identities in the
+new render. The shared Tavily state path does not move backward with the
+generation. Never restore an old per-generation quota snapshot.
 
-To restore automatically preserved unit or environment bytes, dry-run and then
-apply. `restore` itself first preserves a differing current file:
+Prefer a fresh render from the selected source release and runtime generation.
+Restore an automatically preserved unit only after confirming it already names
+an existing, fully validated content-addressed source release and includes all
+four `WPG_SOURCE_*` bindings; never restore a unit that points at a mutable
+checkout or predates this contract. Environment backups remain subject to the
+same source/runtime combination review. Dry-run and then apply; `restore`
+itself first preserves a differing current file:
 
 ```bash
 python -m scripts.manage_deployment restore \
@@ -491,10 +648,13 @@ python -m scripts.manage_deployment restore \
   --output ~/.config/where-papers-go/runtime.env --mode 600 --apply
 systemctl --user daemon-reload
 systemctl --user start where-papers-go.service
-python -m scripts.manage_deployment health --attempts 120 --interval 1
 ```
 
-If rollback health fails, keep the failed generation, selector backup, unit/env
-backups, and logs, then return by another audited CAS/render to the last ready
-combination. Do not reduce the health contract, erase `.building` trees, reset
-shared quota state, or replace indexes in place.
+After any restore, re-read `MainPID` and run the complete bound-health block
+above; a bare readiness response is not rollback acceptance.
+
+If rollback health fails, keep the failed source/runtime `.building` trees,
+generation, source release, selector backup, unit/env backups, and logs, then
+return by another audited CAS/render to the last ready combination. Do not
+reduce the health contract, erase diagnostic trees, reset shared quota state,
+or replace indexes in place.
