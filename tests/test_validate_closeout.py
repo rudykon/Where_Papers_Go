@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -66,7 +67,12 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         )
 
     def deployment(
-        self, *, proof: bool = False, pid: int = 1234
+        self,
+        *,
+        proof: bool = True,
+        pid: int = 1234,
+        start_ticks: int = 9876,
+        invocation_id: str = "8" * 32,
     ) -> validate_closeout.DeploymentEvidence:
         return validate_closeout.DeploymentEvidence(
             active=True,
@@ -74,11 +80,21 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             ready=True,
             bindings_current=True,
             lightrag_store_hashes_verified=proof,
+            listener_scope="all_interfaces_ipv4",
             main_pid=pid,
             nrestarts=1,
-            lightrag_manifest_sha256=("b" * 64 if proof else None),
-            lightrag_store_binding_sha256=("c" * 64 if proof else None),
+            process_start_ticks=start_ticks,
+            systemd_invocation_id=invocation_id,
+            source_head=self.head,
+            source_tree="9" * 40,
+            source_manifest_sha256="f" * 64,
+            source_release="/srv/releases/release-" + "f" * 64,
+            source_files_verified=True,
+            lightrag_file_count=6,
+            lightrag_manifest_sha256="b" * 64,
+            lightrag_store_binding_sha256="c" * 64,
             systemd_snapshot_sha256="d" * 64,
+            process_snapshot_sha256="6" * 64,
             health_snapshot_sha256="e" * 64,
             listener_snapshot_sha256="a" * 64,
         )
@@ -95,7 +111,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         report_path = workspace / f"{prefix}-unittest-report.json"
         skipped = 0 if model_focused else 2
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact_type": validate_closeout.TEST_REPORT_ARTIFACT_TYPE,
             "guard_active": True,
             "total": total,
@@ -110,6 +126,17 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                 validate_closeout.MODEL_FOCUSED_TEST_ID_SHA256
                 if model_focused
                 else validate_closeout.FULL_TEST_ID_SHA256
+            ),
+            "skipped_test_id_count": skipped,
+            "skipped_test_id_sha256": validate_closeout._skipped_test_id_digest(
+                ()
+                if model_focused
+                else validate_closeout.FULL_ALLOWED_SKIP_TEST_IDS[:skipped]
+            ),
+            "skip_allowlist_sha256": (
+                validate_closeout.MODEL_SKIP_ALLOWLIST_SHA256
+                if model_focused
+                else validate_closeout.FULL_SKIP_ALLOWLIST_SHA256
             ),
         }
         report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
@@ -252,7 +279,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             set(summary["critical_artifacts"]),
             set(validate_closeout.REQUIRED_ARTIFACTS),
         )
-        self.assertFalse(summary["deployment"]["lightrag_store_hashes_verified"])
+        self.assertTrue(summary["deployment"]["lightrag_store_hashes_verified"])
         self.assertEqual(
             summary["external_calls"][
                 "guard_observed_nonloopback_socket_attempts"
@@ -298,7 +325,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
 
     def test_forged_one_of_one_runner_result_is_rejected(self) -> None:
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact_type": validate_closeout.TEST_REPORT_ARTIFACT_TYPE,
             "guard_active": True,
             "total": 1,
@@ -310,15 +337,18 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             "unexpected_successes": 0,
             "test_id_count": 1,
             "test_id_sha256": "f" * 64,
+            "skipped_test_id_count": 0,
+            "skipped_test_id_sha256": validate_closeout._skipped_test_id_digest(()),
+            "skip_allowlist_sha256": validate_closeout.FULL_SKIP_ALLOWLIST_SHA256,
         }
         with self.assertRaisesRegex(
-            validate_closeout.CloseoutValidationError, "exactly 482"
+            validate_closeout.CloseoutValidationError, "exactly 489"
         ):
             validate_closeout._validate_test_report(report)
 
     def test_full_report_requires_fixed_test_id_fingerprint(self) -> None:
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact_type": validate_closeout.TEST_REPORT_ARTIFACT_TYPE,
             "guard_active": True,
             "total": validate_closeout.FULL_TEST_COUNT,
@@ -330,15 +360,29 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             "unexpected_successes": 0,
             "test_id_count": validate_closeout.FULL_TEST_COUNT,
             "test_id_sha256": "f" * 64,
+            "skipped_test_id_count": 0,
+            "skipped_test_id_sha256": validate_closeout._skipped_test_id_digest(()),
+            "skip_allowlist_sha256": validate_closeout.FULL_SKIP_ALLOWLIST_SHA256,
         }
         with self.assertRaisesRegex(
             validate_closeout.CloseoutValidationError, "fingerprint"
         ):
             validate_closeout._validate_test_report(report)
+        report.update(
+            passed=0,
+            skipped=validate_closeout.FULL_TEST_COUNT,
+            test_id_sha256=validate_closeout.FULL_TEST_ID_SHA256,
+            skipped_test_id_count=validate_closeout.FULL_TEST_COUNT,
+            skipped_test_id_sha256="e" * 64,
+        )
+        with self.assertRaisesRegex(
+            validate_closeout.CloseoutValidationError, "fixed allowlist"
+        ):
+            validate_closeout._validate_test_report(report)
 
     def test_model_focused_report_requires_exact_six_of_six(self) -> None:
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact_type": validate_closeout.TEST_REPORT_ARTIFACT_TYPE,
             "guard_active": True,
             "total": 5,
@@ -350,6 +394,9 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             "unexpected_successes": 0,
             "test_id_count": 5,
             "test_id_sha256": "f" * 64,
+            "skipped_test_id_count": 0,
+            "skipped_test_id_sha256": validate_closeout.MODEL_SKIPPED_TEST_ID_SHA256,
+            "skip_allowlist_sha256": validate_closeout.MODEL_SKIP_ALLOWLIST_SHA256,
         }
         with self.assertRaisesRegex(
             validate_closeout.CloseoutValidationError, "exactly 6"
@@ -529,7 +576,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         with self._stack(patches):
             with self.assertRaisesRegex(
                 validate_closeout.CloseoutValidationError,
-                "deployment changed after closeout publication",
+                "deployment changed before closeout publication",
             ):
                 validate_closeout.create_closeout(
                     input_path=self.input_path,
@@ -567,7 +614,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         with self._stack(second_patches):
             with self.assertRaisesRegex(
                 validate_closeout.CloseoutValidationError,
-                "already has a successful v2 closeout",
+                "already has a successful v3 closeout",
             ):
                 validate_closeout.create_closeout(
                     input_path=self.input_path,
@@ -575,7 +622,81 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                     output_root=self.output_root,
                 )
 
-    def test_deployment_probe_sanitizes_old_and_new_lightrag_proof(self) -> None:
+    def test_hidden_building_is_checked_before_atomic_publication(self) -> None:
+        name = (
+            validate_closeout.OUTPUT_PREFIX
+            + "20260831T120000000000Z-"
+            + self.head[:12]
+        )
+        target = self.output_root / name
+        observations: list[str] = []
+
+        def final_checks() -> None:
+            self.assertFalse(target.exists())
+            building = list(self.output_root.glob(f".{name}.building-*"))
+            self.assertEqual(len(building), 1)
+            self.assertEqual(stat.S_IMODE(building[0].stat().st_mode), 0o555)
+            self.assertEqual(
+                stat.S_IMODE((building[0] / "summary.json").stat().st_mode),
+                0o444,
+            )
+            observations.append("checked")
+
+        published, _digest = validate_closeout._write_new_directory(
+            self.output_root,
+            name,
+            {"aggregate": True},
+            final_checks=final_checks,
+        )
+        self.assertEqual(observations, ["checked"])
+        self.assertEqual(published, target)
+        self.assertTrue((target / "summary.json").is_file())
+        self.assertEqual(list(self.output_root.glob(".*.building-*")), [])
+
+    def test_same_head_post_deployment_reproof_is_independent_and_immutable(self) -> None:
+        self.write_request()
+        base_target, _payload, _digest = self.create()
+        base_summary = base_target / "summary.json"
+        base_bytes = base_summary.read_bytes()
+        updated = self.deployment(
+            pid=4321,
+            start_ticks=5555,
+            invocation_id="7" * 32,
+        )
+        patches = self.create_patches(
+            _deployment_state=patch.object(
+                validate_closeout, "_deployment_state", return_value=updated
+            ),
+            _utc_stamp=patch.object(
+                validate_closeout,
+                "_utc_stamp",
+                return_value=(
+                    "2026-08-31T12:01:00.000000Z",
+                    "20260831T120100000000Z",
+                ),
+            ),
+        )
+        with self._stack(patches):
+            target, payload, digest = validate_closeout.create_deployment_reproof(
+                base_summary_path=base_summary,
+                project_root=self.root,
+                output_root=self.output_root,
+            )
+        self.assertEqual(base_summary.read_bytes(), base_bytes)
+        self.assertTrue(target.name.startswith(validate_closeout.REPROOF_PREFIX))
+        self.assertEqual(set(payload), validate_closeout.REPROOF_OUTPUT_KEYS)
+        self.assertEqual(
+            set(payload["base_closeout"]), validate_closeout.REPROOF_BASE_KEYS
+        )
+        self.assertEqual(payload["git"]["head"], self.head)
+        self.assertEqual(payload["deployment"]["main_pid"], 4321)
+        self.assertTrue(payload["publication"]["same_head_replay_supported"])
+        self.assertEqual(
+            hashlib.sha256((target / "summary.json").read_bytes()).hexdigest(),
+            digest,
+        )
+
+    def test_deployment_probe_requires_true_lightrag_and_one_process_identity(self) -> None:
         systemd = "\n".join(
             (
                 "ActiveState=active",
@@ -585,6 +706,9 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                 "NRestarts=1",
                 "Result=success",
                 "NeedDaemonReload=no",
+                "InvocationID=" + "8" * 32,
+                "ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice/where-papers-go.service",
+                "ExecMainStartTimestampMonotonic=123456",
             )
         )
         base_health = {
@@ -602,6 +726,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                     "worker",
                     "bindings_current",
                     "runtime_contract",
+                    "source_identity",
                 )
             },
             "runtime": {
@@ -609,62 +734,126 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                 "process_ready": True,
                 "bindings_current": True,
                 "ready": True,
+                "runtime_manifest": {
+                    "ready": True,
+                    "actual_sha256": "b" * 64,
+                },
+            },
+            "source": {
+                "ready": True,
+                "head": self.head,
+                "tree": "9" * 40,
+                "manifest_sha256": "f" * 64,
+                "files_verified": True,
+                "file_count": 185,
+                "process_pid": 1234,
+                "process_start_ticks": 9876,
             },
         }
-        with (
-            patch.object(validate_closeout, "_systemctl_show", return_value=systemd),
-            patch.object(
-                validate_closeout,
-                "_ss_listeners",
-                return_value="LISTEN 0 128 127.0.0.1:8001 0.0.0.0:*\n",
-            ),
-            patch.object(
-                validate_closeout,
-                "_fetch_loopback_health",
-                return_value=json.dumps(base_health).encode(),
-            ),
+        with self.assertRaisesRegex(
+            validate_closeout.CloseoutValidationError, "six-file LightRAG"
         ):
-            old = validate_closeout._deployment_state()
-        self.assertFalse(old.lightrag_store_hashes_verified)
-        self.assertIsNone(old.lightrag_manifest_sha256)
-
+            validate_closeout._parse_health_snapshot(
+                json.dumps(base_health).encode()
+            )
         base_health["checks"]["lightrag_store_hashes"] = True
         base_health["runtime"]["lightrag_store_verification"] = {
+            "required": True,
             "verified": True,
+            "file_count": 6,
             "manifest_sha256": "b" * 64,
             "store_binding_sha256": "c" * 64,
         }
+        mutable_project = self.root / "mutable-project"
+        mutable_project.mkdir()
+        release = self.root / "source-releases" / ("release-" + "f" * 64)
+        release.mkdir(parents=True)
+        release.chmod(0o555)
+        process = {
+            "pid": 1234,
+            "start_ticks": 9876,
+            "cwd": str(release),
+            "command": ["/usr/bin/python3", "-m", "where_paper_go.web_app"],
+            "environment": {
+                "WPG_HOST": "0.0.0.0",
+                "WPG_PORT": "8765",
+                "WPG_SOURCE_HEAD": self.head,
+                "WPG_SOURCE_TREE": "9" * 40,
+                "WPG_SOURCE_MANIFEST": str(
+                    release / "source-release-manifest.json"
+                ),
+                "WPG_SOURCE_MANIFEST_SHA256": "f" * 64,
+            },
+            "host": "0.0.0.0",
+            "port": 8765,
+        }
+        manifest_snapshot = validate_closeout.FileSnapshot(
+            1, 2, 3, 0o400, 4, 5, "f" * 64
+        )
         with (
             patch.object(validate_closeout, "_systemctl_show", return_value=systemd),
+            patch.object(validate_closeout, "_process_snapshot", return_value=process),
             patch.object(
                 validate_closeout,
                 "_ss_listeners",
-                return_value="LISTEN 0 128 [::1]:8001 [::]:*\n",
+                return_value=(
+                    'LISTEN 0 128 0.0.0.0:8765 0.0.0.0:* '
+                    'users:(("python3",pid=1234,fd=3))\n'
+                ),
             ),
             patch.object(
                 validate_closeout,
                 "_fetch_loopback_health",
                 return_value=json.dumps(base_health).encode(),
             ),
+            patch.object(
+                validate_closeout,
+                "_inspect_regular_file",
+                return_value=(None, manifest_snapshot),
+            ),
+            patch.object(
+                validate_closeout,
+                "_expected_source_manifest_sha256",
+                return_value="f" * 64,
+            ),
         ):
-            new = validate_closeout._deployment_state()
+            new = validate_closeout._deployment_state(
+                mutable_project, self.git_state()
+            )
+            process["environment"]["WPG_SOURCE_MANIFEST_SHA256"] = "e" * 64
+            base_health["source"]["manifest_sha256"] = "e" * 64
+            with self.assertRaisesRegex(
+                validate_closeout.CloseoutValidationError,
+                "current Git objects",
+            ):
+                validate_closeout._deployment_state(
+                    mutable_project, self.git_state()
+                )
         self.assertTrue(new.lightrag_store_hashes_verified)
+        self.assertEqual(new.main_pid, 1234)
+        self.assertEqual(new.process_start_ticks, 9876)
+        self.assertEqual(new.listener_scope, "all_interfaces_ipv4")
+        self.assertEqual(new.source_head, self.head)
         self.assertEqual(new.lightrag_manifest_sha256, "b" * 64)
         base_health["runtime"]["lightrag_store_verification"][
             "manifest_sha256"
         ] = None
         with self.assertRaisesRegex(
             validate_closeout.CloseoutValidationError,
-            "verified LightRAG stores without valid hashes",
+            "six-file LightRAG",
         ):
             validate_closeout._parse_health_snapshot(
                 json.dumps(base_health).encode()
             )
         with self.assertRaisesRegex(
-            validate_closeout.CloseoutValidationError, "not restricted to loopback"
+            validate_closeout.CloseoutValidationError, "owner"
         ):
             validate_closeout._parse_listener_snapshot(
-                "LISTEN 0 128 0.0.0.0:8001 0.0.0.0:*\n"
+                'LISTEN 0 128 0.0.0.0:8765 0.0.0.0:* '
+                'users:(("python3",pid=9999,fd=3))\n',
+                expected_host="0.0.0.0",
+                expected_port=8765,
+                expected_pid=1234,
             )
 
     def test_git_environment_ignores_repository_override_variables(self) -> None:

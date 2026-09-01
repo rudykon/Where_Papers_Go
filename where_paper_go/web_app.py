@@ -31,7 +31,7 @@ from typing import Any, Mapping
 import uuid
 from urllib.parse import unquote, urlparse
 
-from . import lightrag, recommender
+from . import deployment_identity, lightrag, recommender
 from .embeddings import (
     default_graph_embedding_cache_path,
     default_query_embedding_cache_path,
@@ -1102,6 +1102,7 @@ def _health_payload() -> dict[str, Any]:
     counts = light_info.get("counts") if isinstance(light_info, dict) else {}
     config = _config_status()
     runtime = _runtime_status()
+    source = deployment_identity.source_identity_status()
     store_verification = runtime.get("lightrag_store_verification")
     store_verification = (
         store_verification if isinstance(store_verification, dict) else {}
@@ -1123,9 +1124,26 @@ def _health_payload() -> dict[str, Any]:
         "bindings_current": bool(runtime.get("bindings_current")),
         "lightrag_store_hashes": bool(
             not runtime.get("runtime_shadow_required")
-            or store_verification.get("verified") is True
+            or (
+                store_verification.get("required") is True
+                and store_verification.get("verified") is True
+                and store_verification.get("file_count")
+                == len(lightrag.QUERY_STORAGE_FILES) + 1
+                and isinstance(
+                    store_verification.get("manifest_sha256"), str
+                )
+                and len(store_verification["manifest_sha256"]) == 64
+                and isinstance(
+                    store_verification.get("store_binding_sha256"), str
+                )
+                and len(store_verification["store_binding_sha256"]) == 64
+                and isinstance(runtime.get("runtime_manifest"), dict)
+                and runtime["runtime_manifest"].get("actual_sha256")
+                == store_verification.get("manifest_sha256")
+            )
         ),
         "runtime_contract": bool(runtime.get("ready")),
+        "source_identity": bool(source.get("ready")),
     }
     ready = all(checks.values())
     return {
@@ -1151,6 +1169,7 @@ def _health_payload() -> dict[str, Any]:
         },
         "config": config,
         "runtime": runtime,
+        "source": source,
         "backend": "lightrag_mix+property_graph_exact_vector+llm+search_api",
     }
 
@@ -1799,6 +1818,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         security_config = WebSecurityConfig.from_environment()
     except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        deployment_identity.require_source_identity()
+    except RuntimeError as exc:
         parser.error(str(exc))
     server = VenueHTTPServer(
         (args.host, args.port),

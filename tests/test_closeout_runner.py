@@ -21,25 +21,67 @@ class _HealthyGuard:
 
 class CloseoutRunnerContractTests(unittest.TestCase):
     def test_synthetic_suite_emits_only_the_exact_aggregate_schema(self) -> None:
-        class SyntheticPassingTests(unittest.TestCase):
-            def test_first(self) -> None:
-                pass
+        class SyntheticCase(unittest.TestCase):
+            def __init__(
+                self,
+                identifier: str,
+                reason: str | None = None,
+                *,
+                subtest: bool = False,
+            ) -> None:
+                super().__init__("runTest")
+                self.identifier = identifier
+                self.reason = reason
+                self.use_subtest = subtest
 
-            def test_second(self) -> None:
-                pass
+            def id(self) -> str:
+                return self.identifier
 
-            def test_skipped_subtest_is_one_parent_outcome(self) -> None:
-                with self.subTest(value="synthetic"):
-                    self.skipTest("synthetic subtest skip")
+            def runTest(self) -> None:
+                if self.reason is None:
+                    return
+                if self.use_subtest:
+                    with self.subTest(value="synthetic"):
+                        self.skipTest(self.reason)
+                    return
+                self.skipTest(self.reason)
 
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(
-            SyntheticPassingTests
+        def run_synthetic(
+            suite_name: str,
+            rows: tuple[tuple[str, str | None, bool], ...],
+        ) -> dict[str, object]:
+            suite = unittest.TestSuite(
+                SyntheticCase(identifier, reason, subtest=subtest)
+                for identifier, reason, subtest in rows
+            )
+            with patch.object(
+                run_closeout_tests, "_load_suite", return_value=suite
+            ):
+                return run_closeout_tests._run_suite(
+                    suite_name, _HealthyGuard()
+                )
+
+        allowed_parent_id = (
+            run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID
         )
-        with patch.object(run_closeout_tests, "_load_suite", return_value=suite):
-            report = run_closeout_tests._run_suite("full", _HealthyGuard())
+        allowed_prefix_reason = (
+            run_closeout_tests.LOCAL_RUNTIME_SKIP_REASON_PREFIX
+            + "ModuleNotFoundError: No module named 'torch'"
+        )
+        report = run_synthetic(
+            "full",
+            (
+                ("synthetic.first", None, False),
+                ("synthetic.second", None, False),
+                (allowed_parent_id, allowed_prefix_reason, False),
+            ),
+        )
 
         self.assertEqual(set(report), run_closeout_tests.REPORT_KEYS)
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(
+            report["schema_version"],
+            run_closeout_tests.REPORT_SCHEMA_VERSION,
+        )
         self.assertEqual(
             report["artifact_type"],
             "where_papers_go_closeout_test_report",
@@ -49,6 +91,35 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertEqual(report["passed"], 2)
         self.assertEqual(report["skipped"], 1)
         self.assertEqual(report["test_id_count"], 3)
+        self.assertEqual(report["skipped_test_id_count"], 1)
+        self.assertEqual(
+            report["skipped_test_id_sha256"],
+            run_closeout_tests._skipped_test_id_digest((allowed_parent_id,)),
+        )
+        self.assertNotEqual(
+            report["skipped_test_id_sha256"],
+            run_closeout_tests._test_id_digest((allowed_parent_id,)),
+        )
+        full_allowlist_digest = run_closeout_tests._skip_allowlist_digest(
+            run_closeout_tests.FULL_SKIP_ALLOWLIST
+        )
+        self.assertEqual(
+            full_allowlist_digest,
+            "cf862e1b9db067771bace29fc33381c603c7aca542e624b398a2808856713018",
+        )
+        self.assertEqual(
+            report["skip_allowlist_sha256"], full_allowlist_digest
+        )
+        self.assertEqual(
+            len(
+                {
+                    run_closeout_tests.ID_HASH_DOMAIN,
+                    run_closeout_tests.SKIPPED_TEST_ID_HASH_DOMAIN,
+                    run_closeout_tests.SKIP_ALLOWLIST_HASH_DOMAIN,
+                }
+            ),
+            3,
+        )
         for field in (
             "failures",
             "errors",
@@ -60,6 +131,205 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         encoded = run_closeout_tests._encode_report(report)
         self.assertEqual(json.loads(encoded), report)
         self.assertTrue(encoded.endswith(b"\n"))
+        self.assertNotIn(allowed_parent_id.encode("ascii"), encoded)
+        self.assertNotIn(allowed_prefix_reason.encode("ascii"), encoded)
+
+        expected_allowlist = {
+            run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID: (
+                (
+                    run_closeout_tests.SKIP_REASON_PREFIX,
+                    run_closeout_tests.LOCAL_RUNTIME_SKIP_REASON_PREFIX,
+                ),
+            ),
+            run_closeout_tests.LOCAL_RUNTIME_CROSS_ENCODER_TEST_ID: (
+                (
+                    run_closeout_tests.SKIP_REASON_PREFIX,
+                    run_closeout_tests.LOCAL_RUNTIME_SKIP_REASON_PREFIX,
+                ),
+            ),
+            run_closeout_tests.NGINX_INTEGRATION_TEST_ID: (
+                (
+                    run_closeout_tests.SKIP_REASON_EXACT,
+                    run_closeout_tests.NGINX_UNAVAILABLE_SKIP_REASON,
+                ),
+            ),
+            run_closeout_tests.SYSTEMD_HOST_INTEGRATION_TEST_ID: (
+                (
+                    run_closeout_tests.SKIP_REASON_EXACT,
+                    run_closeout_tests.SYSTEMD_HOST_OPT_IN_SKIP_REASON,
+                ),
+            ),
+        }
+        self.assertEqual(
+            run_closeout_tests.SUITE_SKIP_ALLOWLISTS,
+            {"full": expected_allowlist, "model-focused": {}},
+        )
+
+        allowed_report = run_synthetic(
+            "full",
+            (
+                (
+                    run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID,
+                    allowed_prefix_reason,
+                    False,
+                ),
+                (
+                    run_closeout_tests.LOCAL_RUNTIME_CROSS_ENCODER_TEST_ID,
+                    run_closeout_tests.LOCAL_RUNTIME_SKIP_REASON_PREFIX
+                    + "ImportError: synthetic optional runtime",
+                    False,
+                ),
+                (
+                    run_closeout_tests.NGINX_INTEGRATION_TEST_ID,
+                    run_closeout_tests.NGINX_UNAVAILABLE_SKIP_REASON,
+                    False,
+                ),
+                (
+                    run_closeout_tests.SYSTEMD_HOST_INTEGRATION_TEST_ID,
+                    run_closeout_tests.SYSTEMD_HOST_OPT_IN_SKIP_REASON,
+                    False,
+                ),
+            ),
+        )
+        self.assertEqual(allowed_report["total"], 4)
+        self.assertEqual(allowed_report["skipped"], 4)
+        self.assertEqual(allowed_report["errors"], 0)
+        self.assertEqual(allowed_report["skipped_test_id_count"], 4)
+        self.assertEqual(
+            allowed_report["skipped_test_id_sha256"],
+            run_closeout_tests._skipped_test_id_digest(
+                expected_allowlist
+            ),
+        )
+
+        model_pass_report = run_synthetic(
+            "model-focused", (("synthetic.model.pass", None, False),)
+        )
+        self.assertEqual(model_pass_report["passed"], 1)
+        self.assertEqual(model_pass_report["skipped_test_id_count"], 0)
+        self.assertEqual(
+            model_pass_report["skipped_test_id_sha256"],
+            run_closeout_tests.EMPTY_SKIPPED_TEST_ID_SHA256,
+        )
+        self.assertEqual(
+            run_closeout_tests.EMPTY_SKIPPED_TEST_ID_SHA256,
+            "a9f31e92ced15b4367d3e78d93aa1e820909a0fd49fb3495d0c36cce9817c3dc",
+        )
+        self.assertEqual(
+            model_pass_report["skip_allowlist_sha256"],
+            run_closeout_tests.EMPTY_SKIP_ALLOWLIST_SHA256,
+        )
+        self.assertEqual(
+            run_closeout_tests.EMPTY_SKIP_ALLOWLIST_SHA256,
+            "ecbbeafb099c4e91937fc5570d6dbf6ffdde3700e59245704340e92d8d558fed",
+        )
+        self.assertNotEqual(
+            model_pass_report["skip_allowlist_sha256"],
+            full_allowlist_digest,
+        )
+
+        invalid_skips = (
+            (
+                "full",
+                "synthetic.unknown_skip",
+                "synthetic unknown reason",
+                False,
+            ),
+            (
+                "full",
+                run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID,
+                "unexpected local runtime reason",
+                False,
+            ),
+            (
+                "full",
+                run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID,
+                run_closeout_tests.LOCAL_RUNTIME_SKIP_REASON_PREFIX,
+                False,
+            ),
+            (
+                "full",
+                run_closeout_tests.NGINX_INTEGRATION_TEST_ID,
+                "openssl is required to create an isolated test certificate",
+                False,
+            ),
+            (
+                "full",
+                run_closeout_tests.SYSTEMD_HOST_INTEGRATION_TEST_ID,
+                run_closeout_tests.SYSTEMD_HOST_OPT_IN_SKIP_REASON + "!",
+                True,
+            ),
+            (
+                "full",
+                run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID,
+                allowed_prefix_reason,
+                True,
+            ),
+            (
+                "model-focused",
+                "tests."
+                + run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID,
+                allowed_prefix_reason,
+                False,
+            ),
+        )
+        for suite_name, identifier, reason, subtest in invalid_skips:
+            with self.subTest(
+                suite_name=suite_name,
+                identifier=identifier,
+                subtest=subtest,
+            ):
+                invalid_report = run_synthetic(
+                    suite_name, ((identifier, reason, subtest),)
+                )
+                self.assertEqual(invalid_report["total"], 1)
+                self.assertEqual(invalid_report["passed"], 0)
+                self.assertEqual(invalid_report["skipped"], 0)
+                self.assertEqual(invalid_report["errors"], 1)
+                self.assertEqual(
+                    invalid_report["skipped_test_id_count"], 1
+                )
+                self.assertEqual(
+                    invalid_report["skipped_test_id_sha256"],
+                    run_closeout_tests._skipped_test_id_digest(
+                        (identifier,)
+                    ),
+                )
+                invalid_encoded = run_closeout_tests._encode_report(
+                    invalid_report
+                )
+                self.assertNotIn(identifier.encode("ascii"), invalid_encoded)
+                self.assertNotIn(reason.encode("ascii"), invalid_encoded)
+
+        class FixtureSkippedCase(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls) -> None:
+                raise unittest.SkipTest("synthetic fixture skip")
+
+            def test_never_runs(self) -> None:
+                self.fail("fixture-skipped test unexpectedly ran")
+
+        fixture_suite = unittest.TestSuite(
+            (
+                unittest.defaultTestLoader.loadTestsFromTestCase(
+                    FixtureSkippedCase
+                ),
+                SyntheticCase("synthetic.fixture.peer"),
+            )
+        )
+        with patch.object(
+            run_closeout_tests,
+            "_load_suite",
+            return_value=fixture_suite,
+        ):
+            fixture_report = run_closeout_tests._run_suite(
+                "full", _HealthyGuard()
+            )
+        self.assertEqual(fixture_report["total"], 2)
+        self.assertEqual(fixture_report["passed"], 1)
+        self.assertEqual(fixture_report["skipped"], 0)
+        self.assertEqual(fixture_report["errors"], 1)
+        self.assertEqual(fixture_report["skipped_test_id_count"], 0)
 
     def test_output_creation_is_private_and_never_overwrites(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

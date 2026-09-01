@@ -14,8 +14,9 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -28,11 +29,24 @@ try:  # pragma: no cover - the deployment target is Linux.
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
+from where_paper_go.deployment_identity import (
+    FORBIDDEN_SOURCE_COMPONENTS,
+    SOURCE_ARTIFACT_TYPE,
+    SOURCE_HEAD_ENV,
+    SOURCE_MANIFEST_ENV,
+    SOURCE_MANIFEST_FILE,
+    SOURCE_MANIFEST_SHA256_ENV,
+    SOURCE_TREE_ENV,
+    atomic_rename_noreplace,
+    process_start_ticks,
+    validate_source_release,
+)
 from where_paper_go.paths import PROJECT_ROOT
 
 
 SYSTEMD_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "where-papers-go.service.in"
 NGINX_TEMPLATE = PROJECT_ROOT / "deploy" / "nginx" / "where-papers-go.conf.in"
+GIT_BINARY = Path("/usr/bin/git")
 EXPECTED_BACKEND = "lightrag_mix+property_graph_exact_vector+llm+search_api"
 RUNTIME_MANIFEST = "runtime-shadow-manifest.json"
 TAVILY_STATE_NAME = ".tavily_key_pool_state.json"
@@ -47,6 +61,8 @@ RUNTIME_LIGHTRAG_FILES = (
 MAX_RUNTIME_SEED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RUNTIME_SEED_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_RUNTIME_SEED_FILES = 100_000
+MAX_SOURCE_RELEASE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SOURCE_RELEASE_FILES = 100_000
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -131,6 +147,316 @@ def _private_directory(path: Path, *, create: bool) -> Path:
             f"runtime directory must be owned, real, and private: {expanded}"
         )
     return expanded.resolve()
+
+
+def _git_output(project_root: Path, *arguments: str) -> bytes:
+    """Run one read-only Git object query with a bounded, explicit argv."""
+
+    completed = subprocess.run(
+        [str(GIT_BINARY), "-C", str(project_root), *arguments],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_ATTR_NOSYSTEM": "1",
+        },
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"Git source identity query failed: {detail[-1000:]}")
+    return completed.stdout
+
+
+def _source_release_path(raw_value: bytes) -> str:
+    """Decode and constrain one tracked path before creating filesystem names."""
+
+    try:
+        value = raw_value.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("source release contains a non-UTF-8 Git path") from exc
+    relative = PurePosixPath(value)
+    if (
+        not value
+        or "\\" in value
+        or relative.is_absolute()
+        or relative.as_posix() != value
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or any(part in FORBIDDEN_SOURCE_COMPONENTS for part in relative.parts)
+        or any(part == SOURCE_MANIFEST_FILE for part in relative.parts)
+        or relative.suffix.casefold() in {".pyc", ".pyo"}
+    ):
+        raise ValueError(f"source release contains an unsafe tracked path: {value!r}")
+    return value
+
+
+def _current_git_source_plan(
+    project_root: Path,
+) -> tuple[str, str, list[dict[str, Any]], bytes]:
+    """Bind the current commit/tree to SHA-256 rows read only from Git objects."""
+
+    project = project_root.expanduser().resolve()
+    try:
+        top_level = Path(
+            _git_output(project, "rev-parse", "--show-toplevel")
+            .decode("utf-8")
+            .strip()
+        ).resolve()
+    except (UnicodeError, OSError) as exc:
+        raise ValueError("Git project root is unavailable") from exc
+    if top_level != project:
+        raise ValueError("--project-root must be the Git top-level directory")
+    head = (
+        _git_output(project, "rev-parse", "--verify", "HEAD^{commit}")
+        .decode("ascii")
+        .strip()
+        .casefold()
+    )
+    tree = (
+        _git_output(project, "rev-parse", "--verify", "HEAD^{tree}")
+        .decode("ascii")
+        .strip()
+        .casefold()
+    )
+    if len(head) not in {40, 64} or len(tree) not in {40, 64}:
+        raise ValueError("Git commit/tree identity has an unsupported format")
+    if any(character not in "0123456789abcdef" for character in head + tree):
+        raise ValueError("Git commit/tree identity is not hexadecimal")
+
+    rows: list[dict[str, Any]] = []
+    total_bytes = 0
+    entries = _git_output(project, "ls-tree", "-rz", "--full-tree", head)
+    for raw_entry in entries.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            raw_mode, raw_type, raw_object = metadata.split(b" ", 2)
+        except ValueError as exc:
+            raise ValueError("Git tree returned an invalid source entry") from exc
+        mode = raw_mode.decode("ascii")
+        object_type = raw_type.decode("ascii")
+        object_id = raw_object.decode("ascii")
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise ValueError("source release supports only regular tracked files")
+        relative = _source_release_path(raw_path)
+        if len(rows) >= MAX_SOURCE_RELEASE_FILES:
+            raise ValueError("source release file count exceeds its bound")
+        try:
+            declared_bytes = int(
+                _git_output(project, "cat-file", "-s", object_id)
+                .decode("ascii")
+                .strip()
+            )
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("Git source blob size is invalid") from exc
+        if declared_bytes < 0 or total_bytes + declared_bytes > MAX_SOURCE_RELEASE_BYTES:
+            raise ValueError("source release exceeds its cumulative byte bound")
+        content = _git_output(project, "cat-file", "blob", object_id)
+        if len(content) != declared_bytes:
+            raise ValueError("Git source blob size changed while being read")
+        total_bytes += len(content)
+        rows.append(
+            {
+                "path": relative,
+                "bytes": len(content),
+                "sha256": _sha256_bytes(content),
+                "mode": "0555" if mode == "100755" else "0444",
+            }
+        )
+    rows.sort(key=lambda row: str(row["path"]))
+    if not rows or len(rows) > MAX_SOURCE_RELEASE_FILES:
+        raise ValueError("source release file count is empty or exceeds its bound")
+    if total_bytes > MAX_SOURCE_RELEASE_BYTES:
+        raise ValueError("source release exceeds its cumulative byte bound")
+    binding_payload = json.dumps(
+        {"source_head": head, "source_tree": tree, "files": rows},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    manifest = {
+        "schema_version": 1,
+        "artifact_type": SOURCE_ARTIFACT_TYPE,
+        "source_head": head,
+        "source_tree": tree,
+        "source_binding_sha256": _sha256_bytes(binding_payload),
+        "file_count": len(rows),
+        "files": rows,
+        "immutable_files": True,
+        "forbidden_entries_excluded": True,
+    }
+    manifest_payload = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    return head, tree, rows, manifest_payload
+
+
+def _write_source_blob(path: Path, payload: bytes, *, mode: int) -> None:
+    """Create and durably publish one release file without following links."""
+
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short write while publishing source release")
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def prepare_source_release(args: argparse.Namespace) -> dict[str, Any]:
+    """Build the current Git commit into an immutable content-addressed release."""
+
+    project_root = args.project_root.expanduser().resolve()
+    head, tree, rows, manifest_payload = _current_git_source_plan(project_root)
+    manifest_sha256 = _sha256_bytes(manifest_payload)
+    release_root_expanded = args.release_root.expanduser().resolve(strict=False)
+    releases_expanded = release_root_expanded / "releases"
+    release = releases_expanded / f"release-{manifest_sha256}"
+    total_bytes = sum(int(row["bytes"]) for row in rows)
+    result: dict[str, Any] = {
+        "kind": "source-release",
+        "status": "dry-run",
+        "head": head,
+        "tree": tree,
+        "manifest_sha256": manifest_sha256,
+        "source_binding_sha256": json.loads(manifest_payload)[
+            "source_binding_sha256"
+        ],
+        "file_count": len(rows),
+        "bytes": total_bytes,
+        "release": str(release),
+        "manifest": str(release / SOURCE_MANIFEST_FILE),
+    }
+    if not args.apply:
+        return result
+
+    for protected in (project_root, (project_root / "data").resolve()):
+        try:
+            release_root_expanded.relative_to(protected)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("source release root must be outside protected sources")
+    release_root = _private_directory(args.release_root, create=True)
+    releases = _private_directory(release_root / "releases", create=True)
+    release = releases / f"release-{manifest_sha256}"
+    result.update(
+        {
+            "release": str(release),
+            "manifest": str(release / SOURCE_MANIFEST_FILE),
+        }
+    )
+    if os.path.lexists(release):
+        identity = validate_source_release(
+            release / SOURCE_MANIFEST_FILE,
+            expected_head=head,
+            expected_tree=tree,
+            expected_manifest_sha256=manifest_sha256,
+        )
+        result.update({"status": "already-built", "identity": identity})
+        return result
+
+    building = releases / f".{release.name}.{_timestamp()}.building"
+    building.mkdir(mode=0o700)
+    try:
+        for row in rows:
+            content = _git_output(
+                project_root,
+                "cat-file",
+                "blob",
+                _git_output(
+                    project_root,
+                    "rev-parse",
+                    f"{head}:{row['path']}",
+                )
+                .decode("ascii")
+                .strip(),
+            )
+            if (
+                len(content) != row["bytes"]
+                or _sha256_bytes(content) != row["sha256"]
+            ):
+                raise ValueError("Git source object drifted while building release")
+            _write_source_blob(
+                building / str(row["path"]),
+                content,
+                mode=int(str(row["mode"]), 8),
+            )
+        _write_source_blob(
+            building / SOURCE_MANIFEST_FILE,
+            manifest_payload,
+            mode=0o400,
+        )
+        directories = [building, *(path for path in building.rglob("*") if path.is_dir())]
+        for directory in sorted(
+            directories, key=lambda path: len(path.parts), reverse=True
+        ):
+            os.chmod(directory, 0o555)
+            _fsync_directory(directory)
+        validate_source_release(
+            building / SOURCE_MANIFEST_FILE,
+            expected_head=head,
+            expected_tree=tree,
+            expected_manifest_sha256=manifest_sha256,
+            require_content_addressed_name=False,
+        )
+        current_head = (
+            _git_output(project_root, "rev-parse", "--verify", "HEAD^{commit}")
+            .decode("ascii")
+            .strip()
+            .casefold()
+        )
+        current_tree = (
+            _git_output(project_root, "rev-parse", "--verify", "HEAD^{tree}")
+            .decode("ascii")
+            .strip()
+            .casefold()
+        )
+        if (current_head, current_tree) != (head, tree):
+            raise ValueError("Git HEAD/tree changed while building source release")
+        atomic_rename_noreplace(building, release)
+        _fsync_directory(releases)
+    except BaseException:
+        # Preserve a private partial tree for diagnosis; never alter an older
+        # content-addressed release.
+        raise
+    identity = validate_source_release(
+        release / SOURCE_MANIFEST_FILE,
+        expected_head=head,
+        expected_tree=tree,
+        expected_manifest_sha256=manifest_sha256,
+    )
+    result.update({"status": "built", "identity": identity})
+    return result
 
 
 def _runtime_seed_sources(data_dir: Path) -> list[tuple[Path, Path]]:
@@ -437,7 +763,7 @@ def _prepare_shared_tavily_state(
         else:
             _tavily_pool_for_state(api_config, state_file).summary()
         _fsync_directory(building)
-        os.rename(building, shared_expanded)
+        atomic_rename_noreplace(building, shared_expanded)
         _fsync_directory(runtime_root)
     except BaseException:
         # Preserve ambiguous or partial state for diagnosis; never reset it.
@@ -698,7 +1024,7 @@ def prepare_runtime(args: argparse.Namespace) -> dict[str, Any]:
         ):
             _fsync_directory(directory)
         _fsync_directory(building)
-        os.rename(building, generation)
+        atomic_rename_noreplace(building, generation)
         _fsync_directory(generations)
     except BaseException:
         # Preserve the private .building tree for diagnosis. Never erase a
@@ -891,20 +1217,27 @@ def _render_result(
 
 
 def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
-    project_root = args.project_root.resolve()
     python = args.python.resolve()
     data_dir = args.data_dir.expanduser().resolve()
     runtime_dir = _validated_runtime_shadow(args.runtime_dir, data_dir=data_dir)
     shared_state_dir = _private_directory(args.shared_state_dir, create=False)
     _validate_shared_tavily_state(shared_state_dir, api_config=args.api_config)
-    if not project_root.is_dir():
-        raise ValueError(f"project root is not a directory: {project_root}")
+    source_release = args.source_release.expanduser().resolve()
+    source_manifest_sha256 = args.expected_source_manifest_sha256.casefold()
+    source_identity = validate_source_release(
+        source_release / SOURCE_MANIFEST_FILE,
+        expected_manifest_sha256=source_manifest_sha256,
+    )
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError(f"python executable is unavailable: {python}")
     payload = render_template(
         args.template,
         {
-            "PROJECT_ROOT": project_root,
+            "SOURCE_RELEASE": source_release,
+            "SOURCE_HEAD": source_identity["head"],
+            "SOURCE_TREE": source_identity["tree"],
+            "SOURCE_MANIFEST": source_release / SOURCE_MANIFEST_FILE,
+            "SOURCE_MANIFEST_SHA256": source_manifest_sha256,
             "PYTHON": python,
             "DATA_DIR": data_dir,
             "CONFIG_PATH": args.api_config.expanduser().resolve(),
@@ -1073,7 +1406,18 @@ def _read_health_token(path: Path | None) -> str | None:
     return token
 
 
-def validate_health_payload(payload: Any) -> list[str]:
+def _lower_hex(value: Any, *lengths: int) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) in lengths
+        and value == value.casefold()
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_health_payload(
+    payload: Any, *, expected_process_pid: int | None = None
+) -> list[str]:
     failures: list[str] = []
     if not isinstance(payload, dict):
         return ["health payload is not an object"]
@@ -1118,6 +1462,108 @@ def validate_health_payload(payload: Any) -> list[str]:
             or manifest.get("path_bound") is not True
         ):
             failures.append("runtime manifest is not bound to the running generation")
+        store_verification = runtime.get("lightrag_store_verification")
+        runtime_manifest_sha256 = (
+            manifest.get("actual_sha256") if isinstance(manifest, dict) else None
+        )
+        if not (
+            isinstance(store_verification, dict)
+            and store_verification.get("required") is True
+            and store_verification.get("verified") is True
+            and store_verification.get("file_count")
+            == len(RUNTIME_LIGHTRAG_FILES)
+            and _lower_hex(store_verification.get("manifest_sha256"), 64)
+            and _lower_hex(store_verification.get("store_binding_sha256"), 64)
+            and _lower_hex(runtime_manifest_sha256, 64)
+            and store_verification.get("manifest_sha256")
+            == runtime_manifest_sha256
+        ):
+            failures.append("frozen LightRAG store proof is absent or invalid")
+        expected_runtime_manifest = os.environ.get(
+            "WPG_RUNTIME_MANIFEST_SHA256", ""
+        ).strip().casefold()
+        if expected_runtime_manifest and (
+            not _lower_hex(expected_runtime_manifest, 64)
+            or runtime_manifest_sha256 != expected_runtime_manifest
+        ):
+            failures.append("runtime manifest health identity differs from environment")
+    source = payload.get("source")
+    source_ready = bool(
+        isinstance(source, dict)
+        and source.get("ready") is True
+        and source.get("files_verified") is True
+        and isinstance(source.get("file_count"), int)
+        and not isinstance(source.get("file_count"), bool)
+        and source.get("file_count") > 0
+        and _lower_hex(source.get("head"), 40, 64)
+        and _lower_hex(source.get("tree"), 40, 64)
+        and _lower_hex(source.get("manifest_sha256"), 64)
+        and isinstance(source.get("process_pid"), int)
+        and not isinstance(source.get("process_pid"), bool)
+        and source.get("process_pid") > 0
+        and isinstance(source.get("process_start_ticks"), int)
+        and not isinstance(source.get("process_start_ticks"), bool)
+        and source.get("process_start_ticks") > 0
+    )
+    if not source_ready:
+        failures.append("immutable source/process identity is absent or invalid")
+    elif isinstance(source, dict):
+        source_pid = int(source["process_pid"])
+        try:
+            observed_start_ticks = process_start_ticks(source_pid)
+        except ValueError:
+            observed_start_ticks = None
+        if observed_start_ticks != source.get("process_start_ticks"):
+            failures.append("source process start identity is not live/current")
+        if expected_process_pid is not None and source_pid != expected_process_pid:
+            failures.append("health response process is not the expected service MainPID")
+        for environment_name, field in (
+            (SOURCE_HEAD_ENV, "head"),
+            (SOURCE_TREE_ENV, "tree"),
+            (SOURCE_MANIFEST_SHA256_ENV, "manifest_sha256"),
+        ):
+            expected = os.environ.get(environment_name, "").strip().casefold()
+            if expected and source.get(field) != expected:
+                failures.append(
+                    "source health identity differs from the service environment"
+                )
+                break
+        configured_source = {
+            "head": os.environ.get(SOURCE_HEAD_ENV, "").strip().casefold(),
+            "tree": os.environ.get(SOURCE_TREE_ENV, "").strip().casefold(),
+            "manifest": os.environ.get(SOURCE_MANIFEST_ENV, "").strip(),
+            "manifest_sha256": os.environ.get(
+                SOURCE_MANIFEST_SHA256_ENV, ""
+            ).strip().casefold(),
+        }
+        if any(configured_source.values()):
+            try:
+                local_source = validate_source_release(
+                    Path(configured_source["manifest"]),
+                    expected_head=configured_source["head"],
+                    expected_tree=configured_source["tree"],
+                    expected_manifest_sha256=configured_source["manifest_sha256"],
+                )
+            except (OSError, ValueError):
+                failures.append("local immutable source release validation failed")
+            else:
+                if (
+                    source.get("file_count") != local_source["file_count"]
+                    or source.get("head") != local_source["head"]
+                    or source.get("tree") != local_source["tree"]
+                    or source.get("manifest_sha256")
+                    != local_source["manifest_sha256"]
+                ):
+                    failures.append(
+                        "health source proof differs from the local approved release"
+                    )
+    checks = payload.get("checks")
+    if (
+        not isinstance(checks, dict)
+        or checks.get("lightrag_store_hashes") is not True
+        or checks.get("source_identity") is not True
+    ):
+        failures.append("mandatory integrity health checks are not true")
     config = payload.get("config")
     if not isinstance(config, dict) or config.get("ready") is not True:
         failures.append("LLM/embedding/Search configuration is incomplete")
@@ -1153,7 +1599,10 @@ def health_check(args: argparse.Namespace) -> dict[str, Any]:
         try:
             with urllib.request.urlopen(request, timeout=args.timeout) as response:
                 payload = json.load(response)
-            failures = validate_health_payload(payload)
+            failures = validate_health_payload(
+                payload,
+                expected_process_pid=getattr(args, "expect_process_pid", None),
+            )
             if not failures:
                 break
             last_failure = "; ".join(failures)
@@ -1176,6 +1625,7 @@ def health_check(args: argparse.Namespace) -> dict[str, Any]:
         "url": args.url,
         "attempt": attempt,
         "backend": payload.get("backend"),
+        "source": payload.get("source"),
         "runtime": payload.get("runtime"),
         "hashes": hashes,
     }
@@ -1187,7 +1637,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     systemd = subparsers.add_parser("render-systemd", help="render the user unit")
     systemd.add_argument("--template", type=Path, default=SYSTEMD_TEMPLATE)
-    systemd.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    systemd.add_argument(
+        "--source-release",
+        type=Path,
+        required=True,
+        help="explicit content-addressed release from prepare-source-release",
+    )
+    systemd.add_argument(
+        "--expected-source-manifest-sha256",
+        required=True,
+        help="approved source manifest SHA-256 from prepare-source-release",
+    )
     systemd.add_argument("--python", type=Path, default=Path(sys.executable))
     systemd.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     systemd.add_argument(
@@ -1260,6 +1720,21 @@ def build_parser() -> argparse.ArgumentParser:
     environment.add_argument("--api-token-file", type=Path)
     environment.add_argument("--apply", action="store_true")
     environment.set_defaults(handler=render_environment)
+
+    source_release = subparsers.add_parser(
+        "prepare-source-release",
+        help="build the current Git commit/tree into an immutable source release",
+    )
+    source_release.add_argument(
+        "--project-root", type=Path, default=PROJECT_ROOT
+    )
+    source_release.add_argument(
+        "--release-root",
+        type=Path,
+        default=Path("~/.local/lib/where-papers-go"),
+    )
+    source_release.add_argument("--apply", action="store_true")
+    source_release.set_defaults(handler=prepare_source_release)
 
     runtime = subparsers.add_parser(
         "prepare-runtime",
@@ -1335,6 +1810,11 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--attempts", type=int, default=1)
     health.add_argument("--interval", type=float, default=1.0)
     health.add_argument("--timeout", type=float, default=5.0)
+    health.add_argument(
+        "--expect-process-pid",
+        type=int,
+        help="require the health response to come from this live PID/start tuple",
+    )
     health.add_argument("--expect-sha256", action="append", default=[])
     health.set_defaults(handler=health_check)
     return parser
@@ -1351,6 +1831,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--upstream-port must be between 1 and 65535")
     if not 1 <= getattr(args, "port", 1) <= 65_535:
         parser.error("--port must be between 1 and 65535")
+    expected_process_pid = getattr(args, "expect_process_pid", None)
+    if expected_process_pid is not None and expected_process_pid <= 0:
+        parser.error("--expect-process-pid must be positive")
     for name in (
         "rate_limit_requests",
         "rate_limit_window_seconds",
@@ -1361,12 +1844,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         if getattr(args, name, 1) < 1:
             parser.error("--" + name.replace("_", "-") + " must be positive")
-    expected_manifest = getattr(args, "expected_manifest_sha256", None)
-    if expected_manifest is not None and (
-        len(expected_manifest) != 64
-        or any(character not in "0123456789abcdefABCDEF" for character in expected_manifest)
+    for attribute, flag in (
+        ("expected_manifest_sha256", "--expected-manifest-sha256"),
+        (
+            "expected_source_manifest_sha256",
+            "--expected-source-manifest-sha256",
+        ),
     ):
-        parser.error("--expected-manifest-sha256 must be 64 hexadecimal characters")
+        expected_manifest = getattr(args, attribute, None)
+        if expected_manifest is not None and (
+            len(expected_manifest) != 64
+            or any(
+                character not in "0123456789abcdefABCDEF"
+                for character in expected_manifest
+            )
+        ):
+            parser.error(f"{flag} must be 64 hexadecimal characters")
     try:
         result = args.handler(args)
     except (OSError, ValueError, RuntimeError) as exc:
