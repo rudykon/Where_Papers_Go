@@ -1016,10 +1016,18 @@ sets WorkingDirectory to the release and pins PYTHONPATH plus all four
 `WPG_SOURCE_*` bindings as command-local `/usr/bin/env` assignments, so
 `EnvironmentFile=` cannot override them. It mounts the release read-only,
 verifies source before opening the listener, and makes ExecStartPost bind health
-to `${MAINPID}`. The deployed interpreter must be the frozen
-`benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python`; with
-`PYTHONNOUSERSITE=1`, the former Miniconda/default interpreters do not provide
-the required NumPy/model stack.
+to `${MAINPID}`. Production uses `/home/wangrj/miniconda3/bin/python3.14` with
+the explicit dependency root
+`/home/wangrj/.local/lib/python3.14/site-packages`; automatic user-site
+discovery remains disabled. Before rendering, an import probe requires the app
+to resolve from the immutable source release and LightRAG, nano-vectordb,
+NumPy, and NetworkX from that dependency root. It fail-closes all installer
+entry points and subprocess launch, then initializes/finalizes the four
+configured LightRAG stores and completes one bypass query in a temporary
+directory. The ignored frozen model venv remains the isolated 6/6
+closeout-test interpreter, not the service launcher. The renderer also
+preserves a launcher's lexical path instead of resolving a possible venv
+`bin/python` symlink to its base interpreter.
 
 Closeout deployment validation is read-only and discovers host/port from the
 selected non-secret `/proc/<MainPID>/environ` fields. It binds the systemd

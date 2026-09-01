@@ -1578,6 +1578,61 @@ def _proc_start_ticks(raw: bytes) -> int:
     return value
 
 
+_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "WPG_HOST",
+        "WPG_PORT",
+        "WPG_SOURCE_HEAD",
+        "WPG_SOURCE_TREE",
+        "WPG_SOURCE_MANIFEST",
+        "WPG_SOURCE_MANIFEST_SHA256",
+        "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+    }
+)
+_FORBIDDEN_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {"PYTHONHOME", "PYTHONPLATLIBDIR"}
+)
+
+
+def _parse_process_environment(raw: bytes) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        key, separator, value = item.partition(b"=")
+        if not separator:
+            raise CloseoutValidationError("invalid systemd MainPID environment")
+        try:
+            name = key.decode("ascii")
+        except UnicodeError as exc:
+            raise CloseoutValidationError(
+                "invalid systemd MainPID environment name"
+            ) from exc
+        if name in _FORBIDDEN_PROCESS_ENVIRONMENT_KEYS:
+            raise CloseoutValidationError(
+                f"forbidden systemd MainPID environment variable: {name}"
+            )
+        if name in _PROCESS_ENVIRONMENT_KEYS:
+            if name in environment:
+                raise CloseoutValidationError(
+                    "duplicate systemd MainPID source environment"
+                )
+            try:
+                environment[name] = value.decode("utf-8", errors="strict")
+            except UnicodeError as exc:
+                raise CloseoutValidationError(
+                    "invalid systemd MainPID source environment"
+                ) from exc
+    _require_exact_keys(
+        environment,
+        _PROCESS_ENVIRONMENT_KEYS,
+        context="systemd MainPID source environment",
+    )
+    return environment
+
+
 def _process_snapshot(main_pid: int) -> dict[str, Any]:
     proc = Path("/proc") / str(main_pid)
     initial_ticks = _proc_start_ticks(
@@ -1601,42 +1656,8 @@ def _process_snapshot(main_pid: int) -> dict[str, Any]:
         raise CloseoutValidationError(
             "systemd MainPID command is not the tracked web application"
         )
-    environment: dict[str, str] = {}
-    selected = {
-        "WPG_HOST",
-        "WPG_PORT",
-        "WPG_SOURCE_HEAD",
-        "WPG_SOURCE_TREE",
-        "WPG_SOURCE_MANIFEST",
-        "WPG_SOURCE_MANIFEST_SHA256",
-    }
-    for item in _read_proc_bytes(
-        proc / "environ", maximum_bytes=4 * 1024 * 1024
-    ).split(b"\0"):
-        if not item:
-            continue
-        key, separator, value = item.partition(b"=")
-        if not separator:
-            raise CloseoutValidationError("invalid systemd MainPID environment")
-        try:
-            name = key.decode("ascii")
-        except UnicodeError as exc:
-            raise CloseoutValidationError(
-                "invalid systemd MainPID environment name"
-            ) from exc
-        if name in selected:
-            if name in environment:
-                raise CloseoutValidationError(
-                    "duplicate systemd MainPID source environment"
-                )
-            try:
-                environment[name] = value.decode("utf-8", errors="strict")
-            except UnicodeError as exc:
-                raise CloseoutValidationError(
-                    "invalid systemd MainPID source environment"
-                ) from exc
-    _require_exact_keys(
-        environment, selected, context="systemd MainPID source environment"
+    environment = _parse_process_environment(
+        _read_proc_bytes(proc / "environ", maximum_bytes=4 * 1024 * 1024)
     )
     try:
         port = int(environment["WPG_PORT"])
@@ -1657,6 +1678,37 @@ def _process_snapshot(main_pid: int) -> dict[str, Any]:
     if not manifest.is_absolute() or manifest.parent.resolve() != cwd:
         raise CloseoutValidationError(
             "systemd MainPID cwd is not the immutable source release"
+        )
+    python_paths = environment["PYTHONPATH"].split(os.pathsep)
+    if (
+        environment["PYTHONNOUSERSITE"] != "1"
+        or environment["PYTHONSAFEPATH"] != "1"
+        or len(python_paths) != 2
+        or Path(python_paths[0]).resolve() != cwd
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID Python import root is not source-bound"
+        )
+    dependency_path = Path(python_paths[1])
+    try:
+        dependency_info = dependency_path.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError(
+            "systemd MainPID Python dependency root is unavailable"
+        ) from exc
+    if (
+        not dependency_path.is_absolute()
+        or stat.S_ISLNK(dependency_info.st_mode)
+        or not stat.S_ISDIR(dependency_info.st_mode)
+        or dependency_info.st_uid != os.geteuid()
+        or stat.S_IMODE(dependency_info.st_mode) & stat.S_IWOTH
+        or (
+            stat.S_IMODE(dependency_info.st_mode) & stat.S_IWGRP
+            and dependency_info.st_gid != os.getegid()
+        )
+    ):
+        raise CloseoutValidationError(
+            "systemd MainPID Python dependency root is unsafe"
         )
     final_ticks = _proc_start_ticks(
         _read_proc_bytes(proc / "stat", maximum_bytes=64 * 1024)

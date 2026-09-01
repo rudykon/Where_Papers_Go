@@ -227,11 +227,13 @@ APP_SOURCE_RELEASE=/home/wangrj/.local/lib/where-papers-go/releases/release-SOUR
 APP_SOURCE_HEAD=SOURCE_HEAD
 APP_SOURCE_TREE=SOURCE_TREE
 APP_SOURCE_MANIFEST_SHA256=SOURCE_MANIFEST_SHA256
-APP_PYTHON=/home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python
+APP_PYTHON=/home/wangrj/miniconda3/bin/python3.14
+APP_PYTHON_DEPENDENCIES=/home/wangrj/.local/lib/python3.14/site-packages
 (
   cd "$APP_SOURCE_RELEASE"
-  exec env \
-    PYTHONPATH="$APP_SOURCE_RELEASE" PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 \
+  exec env -u PYTHONHOME -u PYTHONPLATLIBDIR \
+    PYTHONPATH="$APP_SOURCE_RELEASE:$APP_PYTHON_DEPENDENCIES" \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
     WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
     WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
     WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
@@ -253,9 +255,12 @@ APP_PYTHON=/home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_
 ) &
 SHADOW_PID=$!
 
+env -u PYTHONHOME -u PYTHONPLATLIBDIR \
 WPG_SOURCE_HEAD="$APP_SOURCE_HEAD" WPG_SOURCE_TREE="$APP_SOURCE_TREE" \
 WPG_SOURCE_MANIFEST="$APP_SOURCE_RELEASE/source-release-manifest.json" \
 WPG_SOURCE_MANIFEST_SHA256="$APP_SOURCE_MANIFEST_SHA256" \
+PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
+PYTHONPATH="$APP_SOURCE_RELEASE:$APP_PYTHON_DEPENDENCIES" \
 "$APP_PYTHON" -m scripts.manage_deployment health \
   --url http://127.0.0.1:18001/api/health \
   --attempts 120 --interval 1 --timeout 2 \
@@ -309,9 +314,16 @@ source-manifest SHA-256. Before emitting bytes, the systemd renderer validates
 the release's content-addressed name, manifest SHA, HEAD/tree, complete
 inventory, read-only modes, and every file hash. It also validates the runtime
 manifest's declared protected-data path, each immutable LightRAG binding, and
-both quota-state copies. The pinned frozen-model venv is explicit because the
-unit enforces `PYTHONNOUSERSITE=1`; the former default interpreters do not expose
-the complete NumPy/model dependency stack under that restriction:
+both quota-state copies. Production uses the existing Miniconda Python 3.14 and
+an explicit Python 3.14 dependency root while `PYTHONNOUSERSITE=1` disables
+automatic user-site discovery. Before emitting a unit, the renderer launches
+that exact combination and requires Where Papers Go to resolve from the source
+release and LightRAG, nano-vectordb, NumPy, and NetworkX to resolve from the
+explicit dependency root. The offline probe disables installers and subprocess
+launch, initializes all four configured LightRAG stores in a temporary
+directory, completes one bypass query, and finalizes them without touching the
+production stores or providers. It also preserves a launcher's lexical path
+instead of resolving a possible venv symlink:
 
 ```bash
 python -m scripts.manage_deployment render-env \
@@ -323,14 +335,16 @@ python -m scripts.manage_deployment render-env \
 python -m scripts.manage_deployment render-systemd \
   --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
   --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
-  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  --python /home/wangrj/miniconda3/bin/python3.14 \
+  --python-dependency-path /home/wangrj/.local/lib/python3.14/site-packages \
   --runtime-dir ~/.local/state/where-papers-go/generations/GENERATION \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output ~/.config/systemd/user/where-papers-go.service
 python -m scripts.manage_deployment render-systemd \
   --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
   --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
-  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  --python /home/wangrj/miniconda3/bin/python3.14 \
+  --python-dependency-path /home/wangrj/.local/lib/python3.14/site-packages \
   --runtime-dir ~/.local/state/where-papers-go/generations/GENERATION \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output /tmp/where-papers-go.service --apply
@@ -377,7 +391,8 @@ python -m scripts.manage_deployment render-env \
 python -m scripts.manage_deployment render-systemd \
   --source-release ~/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256 \
   --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256 \
-  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  --python /home/wangrj/miniconda3/bin/python3.14 \
+  --python-dependency-path /home/wangrj/.local/lib/python3.14/site-packages \
   --runtime-dir ~/.local/state/where-papers-go/current \
   --shared-state-dir ~/.local/state/where-papers-go/shared \
   --output ~/.config/systemd/user/where-papers-go.service --apply
@@ -589,7 +604,8 @@ python -m scripts.manage_deployment prepare-source-release \
 python -m scripts.manage_deployment render-systemd \
   --source-release /home/wangrj/.local/lib/where-papers-go/releases/release-PREVIOUS_SOURCE_MANIFEST_SHA256 \
   --expected-source-manifest-sha256 PREVIOUS_SOURCE_MANIFEST_SHA256 \
-  --python /home/wangrj/Desktop/顶会顶刊推荐系统/benchmark_artifacts/m3_model_runtime_20260828/venv/bin/python \
+  --python /home/wangrj/miniconda3/bin/python3.14 \
+  --python-dependency-path /home/wangrj/.local/lib/python3.14/site-packages \
   --data-dir /home/wangrj/Desktop/顶会顶刊推荐系统/data \
   --api-config /home/wangrj/Desktop/顶会顶刊推荐系统/llmapi.json \
   --runtime-dir /home/wangrj/.local/state/where-papers-go/current \
