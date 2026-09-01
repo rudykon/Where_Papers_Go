@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/Where-Papers-Go.png" width="520" alt="Where Papers Go brand mark">
+  <img src="docs/Where-Papers-Go.svg" width="520" alt="Where Papers Go brand mark">
 </p>
 <h1 align="center">Where Shoud Your Papers Go ?</h1>
 
