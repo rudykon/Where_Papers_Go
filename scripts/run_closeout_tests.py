@@ -77,7 +77,7 @@ LOCAL_RUNTIME_SKIP_REASON_PREFIX = (
     "optional torch/transformers runtime unavailable: "
 )
 NGINX_UNAVAILABLE_SKIP_REASON = (
-    "Nginx is not installed; set WPG_NGINX_BIN after admin install"
+    "set WPG_NGINX_BIN to opt into the isolated Nginx integration"
 )
 SYSTEMD_HOST_OPT_IN_SKIP_REASON = (
     "set WPG_RUN_HOST_SYSTEMD_TESTS=1 for the recoverable host test"

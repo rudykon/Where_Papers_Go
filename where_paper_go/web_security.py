@@ -32,6 +32,9 @@ _LABELED_SECRET = re.compile(
 _BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 _URL_USERINFO = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
 _MAX_API_TOKEN_FILE_BYTES = 64 * 1024
+_API_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~-]{32,256}\Z")
+_IPV4_LOOPBACK = ipaddress.ip_network("127.0.0.0/8")
+_IPV6_LOOPBACK = ipaddress.ip_network("::1/128")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -77,7 +80,16 @@ def _env_networks(
     return networks
 
 
+def _network_is_loopback(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> bool:
+    expected = _IPV4_LOOPBACK if network.version == 4 else _IPV6_LOOPBACK
+    return network.subnet_of(expected)
+
+
 def _read_api_token(path: Path) -> str:
+    if not path.is_absolute():
+        raise ValueError("WPG_API_TOKEN_FILE must be absolute")
     flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -93,6 +105,8 @@ def _read_api_token(path: Path) -> str:
         mode = stat.S_IMODE(before.st_mode)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("WPG_API_TOKEN_FILE must name a regular file")
+        if before.st_nlink != 1:
+            raise ValueError("WPG_API_TOKEN_FILE must have exactly one hard link")
         if before.st_uid != os.getuid():
             raise ValueError("WPG_API_TOKEN_FILE must be owned by the current user")
         if mode & 0o077:
@@ -122,6 +136,7 @@ def _read_api_token(path: Path) -> str:
         identity_before = (
             before.st_dev,
             before.st_ino,
+            before.st_nlink,
             before.st_size,
             before.st_mtime_ns,
             before.st_ctime_ns,
@@ -129,6 +144,7 @@ def _read_api_token(path: Path) -> str:
         identity_after = (
             after.st_dev,
             after.st_ino,
+            after.st_nlink,
             after.st_size,
             after.st_mtime_ns,
             after.st_ctime_ns,
@@ -145,8 +161,12 @@ def _read_api_token(path: Path) -> str:
         token = raw.decode("utf-8").strip()
     except UnicodeDecodeError as exc:
         raise ValueError("WPG_API_TOKEN_FILE must contain valid UTF-8") from exc
-    if len(token) < 32 or any(character.isspace() for character in token):
-        raise ValueError("WPG_API_TOKEN_FILE must contain one token of at least 32 characters")
+    if raw not in {token.encode("utf-8"), (token + "\n").encode("utf-8")}:
+        raise ValueError("WPG_API_TOKEN_FILE must contain exactly one token")
+    if _API_TOKEN_PATTERN.fullmatch(token) is None:
+        raise ValueError(
+            "WPG_API_TOKEN_FILE must contain one 32..256 character URL-safe token"
+        )
     return token
 
 
@@ -184,26 +204,51 @@ class WebSecurityConfig:
             raise ValueError(
                 "WPG_REQUIRE_API_AUTH is enabled but WPG_API_TOKEN_FILE is not configured"
             )
+        trust_proxy_headers = _env_bool("WPG_TRUST_PROXY_HEADERS", False)
         trusted_proxy_cidrs = _env_networks(
             "WPG_TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128"
         )
         allowed_client_cidrs = _env_networks(
             "WPG_ALLOWED_CLIENT_CIDRS", "127.0.0.0/8,::1/128"
         )
-        return cls(
+        config = cls(
             rate_limit_requests=_env_int("WPG_RATE_LIMIT_REQUESTS", 6),
             rate_limit_window_seconds=_env_int("WPG_RATE_LIMIT_WINDOW_SECONDS", 60),
             max_concurrent_connections=_env_int("WPG_MAX_CONCURRENT_CONNECTIONS", 64),
             max_concurrent_searches=_env_int("WPG_MAX_CONCURRENT_SEARCHES", 2),
             request_body_limit=_env_int("WPG_REQUEST_BODY_LIMIT", 200_000),
             request_read_timeout_seconds=_env_int("WPG_REQUEST_READ_TIMEOUT", 30),
-            trust_proxy_headers=_env_bool("WPG_TRUST_PROXY_HEADERS", False),
+            trust_proxy_headers=trust_proxy_headers,
             trusted_proxy_cidrs=trusted_proxy_cidrs,
             allowed_client_cidrs=allowed_client_cidrs,
             api_token=token,
             require_api_auth=require_auth,
             audit_enabled=_env_bool("WPG_AUDIT_LOG", True),
         )
+        config.validate_proxy_topology(os.environ.get("WPG_HOST", "127.0.0.1"))
+        return config
+
+    def validate_proxy_topology(self, host: str) -> None:
+        """Reject forwarded-header trust outside the local reverse proxy."""
+
+        if not self.trust_proxy_headers:
+            return
+        if str(host).strip() != "127.0.0.1":
+            raise ValueError(
+                "trusted proxy headers require WPG_HOST/--host=127.0.0.1"
+            )
+        if not self.require_api_auth or self.api_token is None:
+            raise ValueError(
+                "trusted proxy headers require application bearer authentication"
+            )
+        for name, networks in (
+            ("WPG_TRUSTED_PROXY_CIDRS", self.trusted_proxy_cidrs),
+            ("WPG_ALLOWED_CLIENT_CIDRS", self.allowed_client_cidrs),
+        ):
+            if any(not _network_is_loopback(network) for network in networks):
+                raise ValueError(
+                    f"{name} must contain only loopback networks when proxy trust is enabled"
+                )
 
     @property
     def api_auth_configured(self) -> bool:

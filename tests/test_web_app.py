@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from http import HTTPStatus
 import hashlib
 import json
@@ -9,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+from scripts import manage_deployment
 from where_paper_go import web_app
 
 
@@ -26,6 +28,124 @@ class WebAppTests(TestCase):
             "process_start_ticks": 5678,
         }
 
+    @staticmethod
+    def _healthy_python_runtime_identity() -> dict[str, object]:
+        return {
+            "ready": True,
+            "manifest_sha256": "4" * 64,
+            "runtime_tree_sha256": "5" * 64,
+            "python_executable_sha256": "6" * 64,
+            "python_version": "3.14.5",
+            "python_soabi": "cpython-314-x86_64-linux-gnu",
+            "python_platform": "linux-x86_64",
+            "wheel_count": 59,
+            "elf_audit_sha256": "7" * 64,
+            "system_library_count": 10,
+            "system_directory_count": 8,
+            "system_abi_stat_verified": True,
+            "files_verified": True,
+            "proc_exe_matches": True,
+            "process_pid": 1234,
+            "process_start_ticks": 5678,
+        }
+
+    @staticmethod
+    def _healthy_worker_stamp(
+    ) -> web_app.deployment_identity.ProcessExecutableStamp:
+        return web_app.deployment_identity.ProcessExecutableStamp(
+            pid=4321,
+            start_ticks=8765,
+            executable_sha256="6" * 64,
+        )
+
+    @staticmethod
+    def _healthy_worker_environment() -> dict[str, str]:
+        return {
+            name: web_app._WORKER_EXACT_SECURITY_ENVIRONMENT.get(
+                name, f"synthetic-{name.casefold()}"
+            )
+            for name in web_app._WORKER_BOUND_ENVIRONMENT_NAMES
+        }
+
+    @classmethod
+    def _healthy_worker_snapshot(
+        cls,
+    ) -> web_app.deployment_identity.ProcessIdentitySnapshot:
+        executable = str(Path(web_app.sys.executable).resolve())
+        return web_app.deployment_identity.ProcessIdentitySnapshot(
+            process=cls._healthy_worker_stamp(),
+            parent_pid=os.getpid(),
+            command_line=(executable, *web_app._WORKER_COMMAND_SUFFIX),
+            working_directory=str(web_app.ROOT.resolve()),
+            working_directory_identity=(1, 2, 3, 4, 5, 6, 7, 8),
+            selected_environment=tuple(
+                sorted(cls._healthy_worker_environment().items())
+            ),
+            environment_sha256="8" * 64,
+            forbidden_environment_clear=True,
+        )
+
+    @classmethod
+    def _healthy_worker_expectation(cls) -> dict[str, dict[str, object]]:
+        source = cls._healthy_source_identity()
+        python_runtime = cls._healthy_python_runtime_identity()
+        return {
+            "interpreter": {
+                "argv_exact": True,
+                "no_site": True,
+                "safe_path": True,
+                "dont_write_bytecode": True,
+            },
+            "source": {
+                "head": source["head"],
+                "tree": source["tree"],
+                "manifest_sha256": source["manifest_sha256"],
+                "files_verified": True,
+            },
+            "python_runtime": {
+                key: python_runtime[key]
+                for key in (
+                    "manifest_sha256",
+                    "runtime_tree_sha256",
+                    "python_executable_sha256",
+                    "python_version",
+                    "python_soabi",
+                    "python_platform",
+                    "wheel_count",
+                    "elf_audit_sha256",
+                    "system_library_count",
+                    "system_directory_count",
+                    "files_verified",
+                    "proc_exe_matches",
+                    "system_abi_stat_verified",
+                )
+            },
+        }
+
+    @classmethod
+    def _healthy_worker_identity(cls) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "exact": True,
+            "process": web_app.deployment_identity.process_executable_stamp_payload(
+                cls._healthy_worker_stamp()
+            ),
+            **cls._healthy_worker_expectation(),
+        }
+
+    @classmethod
+    def _healthy_worker_ready(
+        cls, bindings: dict[str, str], *, preload_ms: int = 1
+    ) -> str:
+        return json.dumps(
+            {
+                "ready": True,
+                "preload_ms": preload_ms,
+                "bindings": bindings,
+                "worker_identity": cls._healthy_worker_identity(),
+            }
+        )
+
     def test_startup_store_verification_failure_never_activates_listener(self) -> None:
         server = Mock()
         with (
@@ -39,6 +159,11 @@ class WebAppTests(TestCase):
                 web_app.deployment_identity,
                 "require_source_identity",
                 return_value=self._healthy_source_identity(),
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "require_python_runtime_identity",
+                return_value=self._healthy_python_runtime_identity(),
             ),
             patch.object(
                 web_app._SEARCH_RUNTIME,
@@ -125,6 +250,10 @@ class WebAppTests(TestCase):
                         "bindings_current": True,
                         "ready": True,
                         "preload_ms": 1,
+                        "worker_process": {
+                            "exact": True,
+                            "proc_exe_verified": True,
+                        },
                     },
                 ),
                 patch.object(web_app, "_config_status", return_value={"ready": True}),
@@ -132,6 +261,11 @@ class WebAppTests(TestCase):
                     web_app.deployment_identity,
                     "source_identity_status",
                     return_value=self._healthy_source_identity(),
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "python_runtime_identity_status",
+                    return_value=self._healthy_python_runtime_identity(),
                 ),
             ):
                 payload = web_app._health_payload()
@@ -142,8 +276,13 @@ class WebAppTests(TestCase):
         self.assertEqual(payload["lightrag"]["dimensions"], 1024)
         self.assertTrue(payload["checks"]["bindings_current"])
         self.assertTrue(payload["checks"]["source_identity"])
+        self.assertTrue(payload["checks"]["python_runtime_identity"])
+        self.assertTrue(payload["checks"]["worker_process_identity"])
         self.assertEqual(payload["source"]["head"], "1" * 40)
         self.assertEqual(payload["source"]["process_pid"], 1234)
+        self.assertEqual(payload["python_runtime"]["manifest_sha256"], "4" * 64)
+        self.assertTrue(payload["python_runtime"]["proc_exe_matches"])
+        self.assertTrue(payload["python_runtime"]["system_abi_stat_verified"])
         self.assertNotIn(str(data_dir), json.dumps(payload, ensure_ascii=False))
         self.assertNotIn("api_key", json.dumps(payload, ensure_ascii=False))
 
@@ -167,6 +306,11 @@ class WebAppTests(TestCase):
                     return_value=self._healthy_source_identity(),
                 ),
                 patch.object(
+                    web_app.deployment_identity,
+                    "python_runtime_identity_status",
+                    return_value=self._healthy_python_runtime_identity(),
+                ),
+                patch.object(
                     web_app,
                     "_runtime_status",
                     return_value={
@@ -175,6 +319,10 @@ class WebAppTests(TestCase):
                         "bindings_current": False,
                         "ready": False,
                         "preload_ms": 1,
+                        "worker_process": {
+                            "exact": False,
+                            "proc_exe_verified": False,
+                        },
                     },
                 ),
             ):
@@ -184,6 +332,175 @@ class WebAppTests(TestCase):
         self.assertEqual(payload["status"], "incomplete")
         self.assertFalse(payload["checks"]["worker"])
         self.assertFalse(payload["checks"]["bindings_current"])
+        self.assertFalse(payload["checks"]["worker_process_identity"])
+
+        drifted_runtime = self._healthy_python_runtime_identity()
+        drifted_runtime["ready"] = False
+        drifted_runtime["system_abi_stat_verified"] = False
+        with TemporaryDirectory() as abi_temp_dir:
+            abi_data_dir = Path(abi_temp_dir)
+            (abi_data_dir / "venue_graph.json.gz").touch()
+            (abi_data_dir / "venue_graph_vectors.json.gz").touch()
+            abi_lightrag_dir = abi_data_dir / "lightrag_storage"
+            abi_lightrag_dir.mkdir()
+            (abi_lightrag_dir / "venue_import_manifest.json").write_text(
+                json.dumps({"query_mode": "mix", "counts": {}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(web_app, "DATA_DIR", abi_data_dir),
+                patch.object(web_app, "_config_status", return_value={"ready": True}),
+                patch.object(
+                    web_app.deployment_identity,
+                    "source_identity_status",
+                    return_value=self._healthy_source_identity(),
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "python_runtime_identity_status",
+                    return_value=drifted_runtime,
+                ),
+                patch.object(
+                    web_app,
+                    "_runtime_status",
+                    return_value={
+                        "process_ready": True,
+                        "bindings_current": True,
+                        "ready": True,
+                        "worker_process": {
+                            "exact": True,
+                            "proc_exe_verified": True,
+                        },
+                    },
+                ),
+            ):
+                abi_drift_payload = web_app._health_payload()
+        self.assertFalse(abi_drift_payload["ready"])
+        self.assertFalse(abi_drift_payload["checks"]["python_runtime_identity"])
+
+        root_info = Path("/").lstat()
+        root_fields = list(root_info)
+        root_fields[4] = 0
+        root_owned_info = os.stat_result(root_fields)
+        original_lstat = Path.lstat
+
+        def root_owned_lstat(path: Path) -> os.stat_result:
+            if path == Path("/"):
+                return root_owned_info
+            return original_lstat(path)
+
+        abi_manifest_payload = json.dumps(
+            {
+                "elf_audit": {
+                    "system_directory_count": 1,
+                    "system_directories": [
+                        {
+                            "path": "/",
+                            "owner_uid": 0,
+                            "mode": f"{root_owned_info.st_mode & 0o7777:04o}",
+                        }
+                    ],
+                    "system_library_count": 0,
+                    "system_libraries": [],
+                }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        abi_manifest_sha256 = hashlib.sha256(abi_manifest_payload).hexdigest()
+        with TemporaryDirectory() as runtime_parent:
+            runtime = (
+                Path(runtime_parent)
+                / f"python-runtime-{abi_manifest_sha256}"
+            )
+            runtime.mkdir()
+            runtime_manifest = (
+                runtime / web_app.deployment_identity.PYTHON_RUNTIME_MANIFEST_FILE
+            )
+            runtime_manifest.write_bytes(abi_manifest_payload)
+            runtime_manifest.chmod(0o400)
+            runtime.chmod(0o555)
+            runtime_stamp = web_app.deployment_identity._python_runtime_stat_stamp(
+                runtime
+            )
+            with patch.object(Path, "lstat", root_owned_lstat):
+                abi_stamp = web_app.deployment_identity._system_abi_stat_stamp(
+                    abi_manifest_payload
+                )
+            cached_identity = {
+                **self._healthy_python_runtime_identity(),
+                "runtime": str(runtime),
+                "manifest": str(runtime_manifest),
+                "python_executable": "/synthetic/python",
+            }
+            environment = {
+                web_app.deployment_identity.PYTHON_RUNTIME_ENV: str(runtime),
+                web_app.deployment_identity.PYTHON_RUNTIME_MANIFEST_ENV: str(
+                    runtime_manifest
+                ),
+                web_app.deployment_identity.PYTHON_RUNTIME_MANIFEST_SHA256_ENV: (
+                    abi_manifest_sha256
+                ),
+                web_app.deployment_identity.PYTHON_RUNTIME_TREE_SHA256_ENV: "5" * 64,
+            }
+            binding = (
+                str(runtime),
+                str(runtime_manifest),
+                abi_manifest_sha256,
+                "5" * 64,
+            )
+            with (
+                patch.object(
+                    web_app.deployment_identity,
+                    "_CACHED_PYTHON_RUNTIME_BINDING",
+                    binding,
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "_CACHED_PYTHON_RUNTIME_IDENTITY",
+                    cached_identity,
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "_CACHED_PYTHON_RUNTIME_STAMP",
+                    runtime_stamp,
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "_CACHED_PYTHON_SYSTEM_ABI_STAMP",
+                    abi_stamp,
+                ),
+                patch.object(
+                    web_app.deployment_identity,
+                    "process_start_ticks",
+                    return_value=5678,
+                ),
+                patch.object(
+                    manage_deployment,
+                    "_process_executable_identity",
+                    return_value=("/synthetic/python", "6" * 64),
+                ),
+                patch.object(Path, "lstat", root_owned_lstat),
+            ):
+                stable_status = (
+                    web_app.deployment_identity.python_runtime_identity_status(
+                        environment
+                    )
+                )
+                with patch.object(
+                    web_app.deployment_identity,
+                    "_system_abi_stat_stamp",
+                    return_value=abi_stamp + (("directory-drift",),),
+                ):
+                    drifted_status = (
+                        web_app.deployment_identity.python_runtime_identity_status(
+                            environment
+                        )
+                    )
+            self.assertTrue(stable_status["ready"])
+            self.assertTrue(stable_status["system_abi_stat_verified"])
+            self.assertFalse(drifted_status["ready"])
+            self.assertFalse(drifted_status["system_abi_stat_verified"])
 
     def test_config_status_recognizes_tavily_key_pool_without_exposing_keys(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -355,6 +672,10 @@ class WebAppTests(TestCase):
                     ready=True,
                     preload_ms=1,
                     runtime_bindings=expected,
+                    worker_process={
+                        "exact": True,
+                        "proc_exe_verified": True,
+                    },
                 )
                 with patch.object(web_app, "_SEARCH_RUNTIME", search_runtime):
                     status = web_app._runtime_status()
@@ -429,6 +750,10 @@ class WebAppTests(TestCase):
                     ready=True,
                     preload_ms=1,
                     runtime_bindings=expected,
+                    worker_process={
+                        "exact": True,
+                        "proc_exe_verified": True,
+                    },
                 )
                 with patch.object(web_app, "_SEARCH_RUNTIME", search_runtime):
                     status = web_app._runtime_status()
@@ -541,9 +866,15 @@ class WebAppTests(TestCase):
         manager = web_app.RetrievalWorkerManager()
         process = Mock()
         process.poll.return_value = None
+        process.pid = 4321
         process.stdin = Mock()
         process.wait.return_value = 0
         manager._process = process
+        worker_snapshot = self._healthy_worker_snapshot()
+        worker_stamp = worker_snapshot.process
+        manager._worker_process_stamp = worker_stamp
+        manager._worker_process_snapshot = worker_snapshot
+        manager.worker_identity = self._healthy_worker_identity()
         old_stamp = [("graph", 1, 1, 1, 1, 10)]
         new_stamp = [("graph", 1, 2, 1, 2, 10)]
         manager._dependency_stamp = old_stamp
@@ -566,6 +897,11 @@ class WebAppTests(TestCase):
             patch.object(manager, "start"),
             patch.object(manager, "_readline", side_effect=response_with_request_id),
             patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=worker_snapshot,
+            ),
+            patch.object(
                 web_app,
                 "_result_dependency_stamp",
                 side_effect=[old_stamp, new_stamp],
@@ -574,6 +910,47 @@ class WebAppTests(TestCase):
         ):
             manager._round_trip(command, 5)
 
+        self.assertIsNone(manager._process)
+        process.terminate.assert_called_once()
+        manager.close()
+
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        manager._process = process
+        manager._worker_process_stamp = worker_stamp
+        manager._worker_process_snapshot = worker_snapshot
+        manager.worker_identity = self._healthy_worker_identity()
+        manager._dependency_stamp = old_stamp
+        drifted_worker_stamp = web_app.deployment_identity.ProcessExecutableStamp(
+            pid=worker_stamp.pid,
+            start_ticks=worker_stamp.start_ticks,
+            executable_sha256="8" * 64,
+        )
+        drifted_worker_snapshot = replace(
+            worker_snapshot, process=drifted_worker_stamp
+        )
+
+        def second_response(_timeout: float) -> str:
+            request = json.loads(process.stdin.write.call_args.args[0])
+            return json.dumps(
+                {"request_id": request["request_id"], "returncode": 0, "stdout": "{}"}
+            )
+
+        with (
+            patch.object(manager, "start"),
+            patch.object(manager, "_readline", side_effect=second_response),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                side_effect=[worker_snapshot, drifted_worker_snapshot],
+            ),
+            patch.object(web_app, "_result_dependency_stamp", return_value=old_stamp),
+            self.assertRaisesRegex(RuntimeError, "通信失败"),
+        ):
+            manager._round_trip(command, 5)
         self.assertIsNone(manager._process)
         process.terminate.assert_called_once()
         manager.close()
@@ -630,19 +1007,79 @@ class WebAppTests(TestCase):
         manager = web_app.RetrievalWorkerManager()
 
         class AliveProcess:
+            pid = 4321
+
             def poll(self):
                 return None
 
         manager._process = AliveProcess()
+        worker_snapshot = self._healthy_worker_snapshot()
+        worker_stamp = worker_snapshot.process
+        manager._worker_process_stamp = worker_stamp
+        manager._worker_process_snapshot = worker_snapshot
+        manager.worker_identity = self._healthy_worker_identity()
         manager._dependency_stamp = [("graph", 1, 1)]
-        with patch.object(
-            web_app,
-            "_result_dependency_stamp",
-            return_value=[("graph", 2, 1)],
+        with (
+            patch.object(
+                web_app,
+                "_result_dependency_stamp",
+                return_value=[("graph", 2, 1)],
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=worker_snapshot,
+            ),
         ):
             self.assertTrue(manager.process_ready)
             self.assertFalse(manager.bindings_current)
             self.assertFalse(manager.ready)
+        drifted_worker_stamp = web_app.deployment_identity.ProcessExecutableStamp(
+            pid=worker_stamp.pid,
+            start_ticks=worker_stamp.start_ticks + 1,
+            executable_sha256=worker_stamp.executable_sha256,
+        )
+        selected_environment = dict(worker_snapshot.selected_environment)
+        selected_environment[
+            web_app.deployment_identity.SOURCE_HEAD_ENV
+        ] = "9" * 40
+        same_pid_drifts = {
+            "start": replace(worker_snapshot, process=drifted_worker_stamp),
+            "ppid": replace(
+                worker_snapshot, parent_pid=worker_snapshot.parent_pid + 1
+            ),
+            "cmdline": replace(
+                worker_snapshot,
+                command_line=(*worker_snapshot.command_line[:-1], "other.worker"),
+            ),
+            "cwd": replace(
+                worker_snapshot,
+                working_directory="/synthetic/drifted-source",
+                working_directory_identity=(9, 2, 3, 4, 5, 6, 7, 8),
+            ),
+            "environment": replace(
+                worker_snapshot,
+                selected_environment=tuple(sorted(selected_environment.items())),
+                environment_sha256="9" * 64,
+            ),
+            "forbidden-environment": replace(
+                worker_snapshot,
+                environment_sha256="a" * 64,
+                forbidden_environment_clear=False,
+            ),
+        }
+        for drift_name, drifted_snapshot in same_pid_drifts.items():
+            with (
+                self.subTest(drift=drift_name),
+                patch.object(
+                    web_app.deployment_identity,
+                    "process_identity_snapshot",
+                    return_value=drifted_snapshot,
+                ),
+            ):
+                self.assertFalse(manager.process_ready)
+                self.assertFalse(manager.bindings_current)
+                self.assertFalse(manager.worker_process["exact"])
         manager._process = None
         manager.close()
 
@@ -650,26 +1087,37 @@ class WebAppTests(TestCase):
         manager = web_app.RetrievalWorkerManager()
         first = Mock()
         first.poll.return_value = None
+        first.pid = 4321
         first.stdin = Mock()
         first.wait.return_value = 0
         second = Mock()
         second.poll.return_value = None
+        second.pid = 4321
         second.stdin = Mock()
         second.wait.return_value = 0
         expected_bindings = {"graph_path": "/synthetic/graph"}
-        ready_line = json.dumps(
-            {
-                "ready": True,
-                "preload_ms": 7,
-                "bindings": expected_bindings,
-            }
-        )
+        ready_line = self._healthy_worker_ready(expected_bindings, preload_ms=7)
+        worker_snapshot = self._healthy_worker_snapshot()
+        expected_identity = self._healthy_worker_expectation()
         stamp = [("graph", 1, 1)]
         with (
             patch.object(web_app, "_result_dependency_stamp", return_value=stamp),
             patch.object(
                 web_app, "_expected_worker_bindings", return_value=expected_bindings
             ),
+            patch.object(
+                web_app, "_expected_worker_identity", return_value=expected_identity
+            ),
+            patch.object(
+                web_app,
+                "_expected_worker_process_environment",
+                return_value=self._healthy_worker_environment(),
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=worker_snapshot,
+            ) as snapshot_capture,
             patch.object(web_app.subprocess, "Popen", side_effect=[first, second]) as popen,
             patch.object(manager, "_readline", side_effect=[ready_line, ready_line]),
         ):
@@ -679,6 +1127,36 @@ class WebAppTests(TestCase):
             manager.start()
             self.assertTrue(manager.ready)
             self.assertEqual(popen.call_count, 2)
+            self.assertEqual(
+                popen.call_args_list[0].args[0],
+                [
+                    web_app.sys.executable,
+                    "-S",
+                    "-P",
+                    "-B",
+                    "-m",
+                    "where_paper_go.worker",
+                ],
+            )
+            self.assertTrue(manager.worker_process["exact"])
+            snapshot_contract = snapshot_capture.call_args_list[0].kwargs
+            executable = str(Path(web_app.sys.executable).resolve())
+            self.assertEqual(snapshot_contract["expected_parent_pid"], os.getpid())
+            self.assertEqual(
+                snapshot_contract["expected_command_line"],
+                (executable, *web_app._WORKER_COMMAND_SUFFIX),
+            )
+            self.assertEqual(
+                snapshot_contract["expected_working_directory"], web_app.ROOT
+            )
+            self.assertEqual(
+                snapshot_contract["expected_environment"],
+                self._healthy_worker_environment(),
+            )
+            self.assertEqual(
+                snapshot_contract["forbidden_environment_names"],
+                web_app._WORKER_FORBIDDEN_ENVIRONMENT_NAMES,
+            )
             first.wait.assert_called()
         manager.close()
 
@@ -700,11 +1178,11 @@ class WebAppTests(TestCase):
                 manager = web_app.RetrievalWorkerManager()
                 process = Mock()
                 process.poll.return_value = None
+                process.pid = 4321
                 process.stdin = Mock()
                 process.wait.return_value = 0
-                ready_line = json.dumps(
-                    {"ready": True, "preload_ms": 1, "bindings": bindings}
-                )
+                ready_line = self._healthy_worker_ready(bindings)
+                worker_snapshot = self._healthy_worker_snapshot()
                 with (
                     patch.object(
                         web_app,
@@ -713,6 +1191,21 @@ class WebAppTests(TestCase):
                     ),
                     patch.object(
                         web_app, "_expected_worker_bindings", return_value=expected
+                    ),
+                    patch.object(
+                        web_app,
+                        "_expected_worker_identity",
+                        return_value=self._healthy_worker_expectation(),
+                    ),
+                    patch.object(
+                        web_app,
+                        "_expected_worker_process_environment",
+                        return_value=self._healthy_worker_environment(),
+                    ),
+                    patch.object(
+                        web_app.deployment_identity,
+                        "process_identity_snapshot",
+                        return_value=worker_snapshot,
                     ),
                     patch.object(web_app.subprocess, "Popen", return_value=process),
                     patch.object(manager, "_readline", return_value=ready_line),
@@ -723,10 +1216,54 @@ class WebAppTests(TestCase):
                 process.terminate.assert_called_once()
                 manager.close()
 
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        invalid_identity = self._healthy_worker_identity()
+        invalid_identity["exact"] = False
+        ready_line = json.dumps(
+            {
+                "ready": True,
+                "preload_ms": 1,
+                "bindings": expected,
+                "worker_identity": invalid_identity,
+            }
+        )
+        with (
+            patch.object(
+                web_app, "_result_dependency_stamp", return_value=[("graph", 1, 1)]
+            ),
+            patch.object(web_app, "_expected_worker_bindings", return_value=expected),
+            patch.object(
+                web_app,
+                "_expected_worker_identity",
+                return_value=self._healthy_worker_expectation(),
+            ),
+            patch.object(
+                web_app,
+                "_expected_worker_process_environment",
+                return_value=self._healthy_worker_environment(),
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=self._healthy_worker_snapshot(),
+            ),
+            patch.object(web_app.subprocess, "Popen", return_value=process),
+            patch.object(manager, "_readline", return_value=ready_line),
+            self.assertRaisesRegex(RuntimeError, "identity proof"),
+        ):
+            manager.start()
+        self.assertIsNone(manager._process)
+        manager.close()
+
     def test_required_runtime_rejects_worker_without_frozen_store_proof(self) -> None:
         manager = web_app.RetrievalWorkerManager()
         process = Mock()
         process.poll.return_value = None
+        process.pid = 4321
         process.stdin = Mock()
         process.wait.return_value = 0
         expected = {
@@ -736,9 +1273,7 @@ class WebAppTests(TestCase):
             "query_embedding_cache": "/synthetic/query",
             "lightrag_embedding_cache": "/synthetic/lightrag",
         }
-        ready_line = json.dumps(
-            {"ready": True, "preload_ms": 1, "bindings": expected}
-        )
+        ready_line = self._healthy_worker_ready(expected)
         environment = {
             "WPG_REQUIRE_RUNTIME_SHADOW": "1",
             web_app.RUNTIME_MANIFEST_SHA256_ENV: "1" * 64,
@@ -749,6 +1284,21 @@ class WebAppTests(TestCase):
                 web_app, "_result_dependency_stamp", return_value=[("graph", 1, 1)]
             ),
             patch.object(web_app, "_expected_worker_bindings", return_value=expected),
+            patch.object(
+                web_app,
+                "_expected_worker_identity",
+                return_value=self._healthy_worker_expectation(),
+            ),
+            patch.object(
+                web_app,
+                "_expected_worker_process_environment",
+                return_value=self._healthy_worker_environment(),
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=self._healthy_worker_snapshot(),
+            ),
             patch.object(web_app.subprocess, "Popen", return_value=process),
             patch.object(manager, "_readline", return_value=ready_line),
             self.assertRaisesRegex(RuntimeError, "LightRAG store"),
@@ -762,6 +1312,7 @@ class WebAppTests(TestCase):
         manager = web_app.RetrievalWorkerManager()
         process = Mock()
         process.poll.return_value = None
+        process.pid = 4321
         process.stdin = Mock()
         process.wait.return_value = 0
         with (
@@ -771,6 +1322,19 @@ class WebAppTests(TestCase):
                 return_value=[("graph", 1, 1)],
             ),
             patch.object(web_app.subprocess, "Popen", return_value=process),
+            patch.object(
+                web_app, "_expected_worker_identity", return_value=self._healthy_worker_expectation()
+            ),
+            patch.object(
+                web_app,
+                "_expected_worker_process_environment",
+                return_value=self._healthy_worker_environment(),
+            ),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=self._healthy_worker_snapshot(),
+            ),
             patch.object(manager, "_readline", return_value="not-json\n"),
         ):
             with self.assertRaisesRegex(RuntimeError, "启动协议无效"):
@@ -783,9 +1347,15 @@ class WebAppTests(TestCase):
         manager = web_app.RetrievalWorkerManager()
         process = Mock()
         process.poll.return_value = None
+        process.pid = 4321
         process.stdin = Mock()
         process.wait.return_value = 0
         manager._process = process
+        worker_snapshot = self._healthy_worker_snapshot()
+        worker_stamp = worker_snapshot.process
+        manager._worker_process_stamp = worker_stamp
+        manager._worker_process_snapshot = worker_snapshot
+        manager.worker_identity = self._healthy_worker_identity()
         stamp = [("graph", 1, 1, 1, 1, 10)]
         manager._dependency_stamp = stamp
         command = [
@@ -799,6 +1369,11 @@ class WebAppTests(TestCase):
         with (
             patch.object(manager, "start"),
             patch.object(manager, "_readline", side_effect=timeout),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                return_value=worker_snapshot,
+            ),
             patch.object(web_app, "_result_dependency_stamp", return_value=stamp),
             self.assertRaises(__import__("subprocess").TimeoutExpired),
         ):
@@ -846,6 +1421,74 @@ class WebAppTests(TestCase):
             ["accepted", "progress", "results", "complete"],
         )
         self.assertEqual(events[-1]["payload"]["results"][0]["name"], "MobiCom")
+
+        manager = web_app.RetrievalWorkerManager()
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.stdin = Mock()
+        process.wait.return_value = 0
+        manager._process = process
+        worker_snapshot = self._healthy_worker_snapshot()
+        worker_stamp = worker_snapshot.process
+        manager._worker_process_stamp = worker_stamp
+        manager._worker_process_snapshot = worker_snapshot
+        manager.worker_identity = self._healthy_worker_identity()
+        dependency_stamp = [("graph", 1, 1, 1, 1, 10)]
+        manager._dependency_stamp = dependency_stamp
+        drifted_stamp = web_app.deployment_identity.ProcessExecutableStamp(
+            pid=worker_stamp.pid,
+            start_ticks=worker_stamp.start_ticks + 1,
+            executable_sha256=worker_stamp.executable_sha256,
+        )
+        drifted_snapshot = replace(worker_snapshot, process=drifted_stamp)
+        line_number = 0
+
+        def worker_stream_line(_timeout: float) -> str:
+            nonlocal line_number
+            request = json.loads(process.stdin.write.call_args.args[0])
+            line_number += 1
+            if line_number == 1:
+                return json.dumps(
+                    {
+                        "request_id": request["request_id"],
+                        "event": {"type": "progress", "stage": "retrieval"},
+                    }
+                )
+            return json.dumps(
+                {
+                    "request_id": request["request_id"],
+                    "final": True,
+                    "returncode": 0,
+                    "stdout": "{}",
+                }
+            )
+
+        buffered_events: list[dict[str, object]] = []
+        command = [
+            web_app.sys.executable,
+            "-m",
+            "where_paper_go.recommender",
+            "--query",
+            "wireless systems",
+        ]
+        with (
+            patch.object(manager, "start"),
+            patch.object(manager, "_readline", side_effect=worker_stream_line),
+            patch.object(
+                web_app.deployment_identity,
+                "process_identity_snapshot",
+                side_effect=[worker_snapshot, worker_snapshot, drifted_snapshot],
+            ),
+            patch.object(
+                web_app, "_result_dependency_stamp", return_value=dependency_stamp
+            ),
+            self.assertRaisesRegex(RuntimeError, "流式通信失败"),
+        ):
+            manager.stream(command, buffered_events.append, timeout=5)
+        self.assertEqual(buffered_events, [])
+        self.assertIsNone(manager._process)
+        process.terminate.assert_called_once()
+        manager.close()
 
     def test_stream_failure_has_no_complete_event_or_cached_partial_result(self) -> None:
         failed = __import__("subprocess").CompletedProcess(
