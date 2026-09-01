@@ -16,7 +16,7 @@ import time
 import traceback
 from typing import Any, Callable, Mapping, TextIO
 
-from . import lightrag, recommender
+from . import deployment_identity, lightrag, recommender
 from .embeddings import (
     default_graph_embedding_cache_path,
     default_query_embedding_cache_path,
@@ -453,6 +453,85 @@ def _emit(payload: dict[str, Any], stream: TextIO | None = None) -> None:
     target.flush()
 
 
+def _verified_worker_identity() -> dict[str, Any]:
+    """Prove this worker's source, Python runtime, and live proc identity."""
+
+    interpreter = {
+        "argv_exact": True,
+        "no_site": sys.flags.no_site == 1,
+        "safe_path": sys.flags.safe_path is True,
+        "dont_write_bytecode": sys.flags.dont_write_bytecode == 1,
+    }
+    if (
+        interpreter
+        != {
+            "argv_exact": True,
+            "no_site": True,
+            "safe_path": True,
+            "dont_write_bytecode": True,
+        }
+        or __spec__ is None
+        or __spec__.name != "where_paper_go.worker"
+    ):
+        raise RuntimeError("worker interpreter invocation flags are not exact")
+    source = deployment_identity.require_source_identity()
+    python_runtime = deployment_identity.require_python_runtime_identity()
+    executable_sha256 = python_runtime.get("python_executable_sha256")
+    if not isinstance(executable_sha256, str):
+        raise RuntimeError("Python runtime executable identity is incomplete")
+    process = deployment_identity.process_executable_stamp(
+        os.getpid(),
+        expected_executable=Path(sys.executable),
+        expected_sha256=executable_sha256,
+    )
+    if (
+        source.get("ready") is not True
+        or source.get("files_verified") is not True
+        or source.get("process_pid") != process.pid
+        or source.get("process_start_ticks") != process.start_ticks
+        or python_runtime.get("ready") is not True
+        or python_runtime.get("files_verified") is not True
+        or python_runtime.get("proc_exe_matches") is not True
+        or python_runtime.get("system_abi_stat_verified") is not True
+        or python_runtime.get("process_pid") != process.pid
+        or python_runtime.get("process_start_ticks") != process.start_ticks
+        or python_runtime.get("python_executable_sha256")
+        != process.executable_sha256
+    ):
+        raise RuntimeError("worker immutable identity proofs do not agree")
+    return {
+        "schema_version": 1,
+        "exact": True,
+        "interpreter": interpreter,
+        "process": deployment_identity.process_executable_stamp_payload(process),
+        "source": {
+            "head": source.get("head"),
+            "tree": source.get("tree"),
+            "manifest_sha256": source.get("manifest_sha256"),
+            "files_verified": True,
+        },
+        "python_runtime": {
+            "manifest_sha256": python_runtime.get("manifest_sha256"),
+            "runtime_tree_sha256": python_runtime.get("runtime_tree_sha256"),
+            "python_executable_sha256": python_runtime.get(
+                "python_executable_sha256"
+            ),
+            "python_version": python_runtime.get("python_version"),
+            "python_soabi": python_runtime.get("python_soabi"),
+            "python_platform": python_runtime.get("python_platform"),
+            "wheel_count": python_runtime.get("wheel_count"),
+            "elf_audit_sha256": python_runtime.get("elf_audit_sha256"),
+            "system_library_count": python_runtime.get("system_library_count"),
+            "system_directory_count": python_runtime.get(
+                "system_directory_count"
+            ),
+            "files_verified": True,
+            "proc_exe_matches": True,
+            "system_abi_stat_verified": True,
+        },
+    }
+
+
 def _preload(bindings: WorkerCacheBindings | None = None) -> dict[str, Any]:
     bindings = bindings or _worker_cache_bindings()
     started = time.perf_counter()
@@ -529,10 +608,15 @@ def main() -> int:
     os.umask(0o077)
     protocol_stdout = sys.stdout
     try:
+        worker_identity_before = _verified_worker_identity()
         cache_bindings = _worker_cache_bindings()
         # Keep third-party startup chatter away from the JSON-lines protocol.
         with redirect_stdout(sys.stderr):
             runtime = _preload(cache_bindings)
+        worker_identity_after = _verified_worker_identity()
+        if worker_identity_before != worker_identity_after:
+            raise RuntimeError("worker identity changed during preload")
+        runtime["worker_identity"] = worker_identity_after
     except BaseException:
         _emit({"op": "ready", "ready": False, "error": traceback.format_exc()})
         return 1

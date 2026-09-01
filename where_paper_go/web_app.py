@@ -16,6 +16,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -63,6 +64,10 @@ RESULT_CACHE_SCHEMA_VERSION = "4"
 RESULT_CACHE_TTL_SECONDS = 6 * 60 * 60
 MAX_QUERY_CHARS = 8_000
 MAX_LIMIT = 50
+_JSON_CONTENT_TYPE = re.compile(
+    r'application/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*\Z',
+    re.IGNORECASE,
+)
 RUNTIME_GENERATION_ENV = "WPG_RUNTIME_GENERATION"
 RUNTIME_MANIFEST_ENV = "WPG_RUNTIME_MANIFEST"
 RUNTIME_MANIFEST_SHA256_ENV = "WPG_RUNTIME_MANIFEST_SHA256"
@@ -70,6 +75,99 @@ RUNTIME_MANIFEST_FILE = "runtime-shadow-manifest.json"
 RUNTIME_MANIFEST_MAX_BYTES = 16 * 1024 * 1024
 TARGET_ORDER = {"ccf": 0, "th_cpl": 1, "cas": 2, "jcr": 3}
 TARGET_PREFIX = {"ccf": "CCF", "th_cpl": "TH-CPL", "cas": "CAS", "jcr": "JCR"}
+_WORKER_COMMAND_SUFFIX = ("-S", "-P", "-B", "-m", "where_paper_go.worker")
+_WORKER_BOUND_ENVIRONMENT_NAMES = frozenset(
+    {
+        deployment_identity.SOURCE_HEAD_ENV,
+        deployment_identity.SOURCE_TREE_ENV,
+        deployment_identity.SOURCE_MANIFEST_ENV,
+        deployment_identity.SOURCE_MANIFEST_SHA256_ENV,
+        deployment_identity.PYTHON_RUNTIME_ENV,
+        deployment_identity.PYTHON_RUNTIME_MANIFEST_ENV,
+        deployment_identity.PYTHON_RUNTIME_MANIFEST_SHA256_ENV,
+        deployment_identity.PYTHON_RUNTIME_TREE_SHA256_ENV,
+        "PATH",
+        "PYTHONPATH",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+        "PIP_NO_INDEX",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "UV_OFFLINE",
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+    }
+)
+_WORKER_EXACT_SECURITY_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONSAFEPATH": "1",
+    "PIP_NO_INDEX": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "UV_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+}
+_WORKER_FORBIDDEN_ENVIRONMENT_NAMES = frozenset(
+    {
+        "GCONV_PATH",
+        "GLIBC_TUNABLES",
+        "LD_ASSUME_KERNEL",
+        "LD_AUDIT",
+        "LD_BIND_NOT",
+        "LD_BIND_NOW",
+        "LD_DEBUG",
+        "LD_DEBUG_OUTPUT",
+        "LD_DYNAMIC_WEAK",
+        "LD_HWCAP_MASK",
+        "LD_LIBRARY_PATH",
+        "LD_ORIGIN_PATH",
+        "LD_PREFER_MAP_32BIT_EXEC",
+        "LD_PRELOAD",
+        "LD_PROFILE",
+        "LD_SHOW_AUXV",
+        "LD_TRACE_LOADED_OBJECTS",
+        "OPENSSL_CONF",
+        "OPENSSL_CONF_INCLUDE",
+        "OPENSSL_ENGINES",
+        "OPENSSL_MODULES",
+        "SSLKEYLOGFILE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "AWS_CA_BUNDLE",
+        "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "PYTHONBREAKPOINT",
+        "PYTHONCASEOK",
+        "PYTHONDEBUG",
+        "PYTHONDEVMODE",
+        "PYTHONDUMPREFS",
+        "PYTHONEXECUTABLE",
+        "PYTHONFAULTHANDLER",
+        "PYTHONHASHSEED",
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONMALLOC",
+        "PYTHONOPTIMIZE",
+        "PYTHONPLATLIBDIR",
+        "PYTHONPROFILEIMPORTTIME",
+        "PYTHONPYCACHEPREFIX",
+        "PYTHONSTARTUP",
+        "PYTHONTRACEMALLOC",
+        "PYTHONUSERBASE",
+        "PYTHONWARNINGS",
+    }
+)
 
 
 class RequestBodyTooLarge(ValueError):
@@ -81,6 +179,12 @@ class RetrievalWorkerManager:
 
     def __init__(self) -> None:
         self._process: subprocess.Popen[str] | None = None
+        self._worker_process_stamp: (
+            deployment_identity.ProcessExecutableStamp | None
+        ) = None
+        self._worker_process_snapshot: (
+            deployment_identity.ProcessIdentitySnapshot | None
+        ) = None
         self._dependency_stamp: list[tuple[str, int, int, int, int, int]] | None = None
         self._transport_lock = threading.RLock()
         self._inflight_lock = threading.Lock()
@@ -91,11 +195,97 @@ class RetrievalWorkerManager:
         self.preload_ms: int | None = None
         self.runtime_bindings: dict[str, str] = {}
         self.lightrag_store_verification: dict[str, Any] = {}
+        self.worker_identity: dict[str, Any] = {}
+
+    def _capture_worker_snapshot(
+        self,
+        *,
+        expected_environment: Mapping[str, str],
+        expected_executable_sha256: str,
+    ) -> deployment_identity.ProcessIdentitySnapshot:
+        process = self._process
+        if process is None or process.poll() is not None:
+            raise RuntimeError("worker process is not live")
+        executable = Path(sys.executable).expanduser().resolve(strict=True)
+        return deployment_identity.process_identity_snapshot(
+            process.pid,
+            expected_parent_pid=os.getpid(),
+            expected_executable=executable,
+            expected_sha256=expected_executable_sha256,
+            expected_command_line=(str(executable), *_WORKER_COMMAND_SUFFIX),
+            expected_working_directory=ROOT,
+            expected_environment=expected_environment,
+            forbidden_environment_names=_WORKER_FORBIDDEN_ENVIRONMENT_NAMES,
+        )
+
+    def _live_worker_snapshot(
+        self,
+    ) -> deployment_identity.ProcessIdentitySnapshot | None:
+        process = self._process
+        expected_stamp = self._worker_process_stamp
+        expected_snapshot = self._worker_process_snapshot
+        if (
+            process is None
+            or process.poll() is not None
+            or expected_stamp is None
+            or expected_snapshot is None
+        ):
+            return None
+        try:
+            current = self._capture_worker_snapshot(
+                expected_environment=dict(expected_snapshot.selected_environment),
+                expected_executable_sha256=expected_stamp.executable_sha256,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return current if current == expected_snapshot else None
+
+    def _require_live_worker_snapshot(
+        self,
+    ) -> deployment_identity.ProcessIdentitySnapshot:
+        current = self._live_worker_snapshot()
+        if current is None:
+            raise RuntimeError("worker live process identity drifted")
+        return current
 
     @property
     def process_ready(self) -> bool:
-        process = self._process
-        return process is not None and process.poll() is None
+        return self._live_worker_snapshot() is not None
+
+    @property
+    def worker_process(self) -> dict[str, Any]:
+        stored = self._worker_process_stamp
+        stored_snapshot = self._worker_process_snapshot
+        current_snapshot = self._live_worker_snapshot()
+        reported_process = self.worker_identity.get("process")
+        expected_process = (
+            deployment_identity.process_executable_stamp_payload(stored)
+            if stored is not None
+            else {}
+        )
+        exact = bool(
+            stored is not None
+            and stored_snapshot is not None
+            and current_snapshot == stored_snapshot
+            and stored_snapshot.process == stored
+            and self.worker_identity.get("schema_version") == 1
+            and self.worker_identity.get("exact") is True
+            and reported_process == expected_process
+        )
+        return {
+            "exact": exact,
+            "pid": stored.pid if stored is not None else None,
+            "start_ticks": stored.start_ticks if stored is not None else None,
+            "executable_sha256": (
+                stored.executable_sha256 if stored is not None else None
+            ),
+            "proc_exe_verified": exact,
+            "interpreter": dict(self.worker_identity.get("interpreter") or {}),
+            "source": dict(self.worker_identity.get("source") or {}),
+            "python_runtime": dict(
+                self.worker_identity.get("python_runtime") or {}
+            ),
+        }
 
     @property
     def bindings_current(self) -> bool:
@@ -145,9 +335,12 @@ class RetrievalWorkerManager:
 
         process = self._process
         self._process = None
+        self._worker_process_stamp = None
+        self._worker_process_snapshot = None
         self._dependency_stamp = None
         self.runtime_bindings = {}
         self.lightrag_store_verification = {}
+        self.worker_identity = {}
         if process is None:
             return
         if process.poll() is not None:
@@ -188,8 +381,22 @@ class RetrievalWorkerManager:
                 self._dispose_process(graceful=self.process_ready)
                 dependency_before = _result_dependency_stamp()
                 expected_bindings_before = _expected_worker_bindings()
+                expected_identity_before = _expected_worker_identity()
+                expected_process_environment_before = (
+                    _expected_worker_process_environment()
+                )
+                expected_executable_sha256 = expected_identity_before[
+                    "python_runtime"
+                ]["python_executable_sha256"]
                 self._process = subprocess.Popen(
-                    [sys.executable, "-m", "where_paper_go.worker"],
+                    [
+                        sys.executable,
+                        "-S",
+                        "-P",
+                        "-B",
+                        "-m",
+                        "where_paper_go.worker",
+                    ],
                     cwd=ROOT,
                     text=True,
                     encoding="utf-8",
@@ -197,6 +404,10 @@ class RetrievalWorkerManager:
                     stdout=subprocess.PIPE,
                     stderr=None,
                     bufsize=1,
+                )
+                worker_snapshot_before = self._capture_worker_snapshot(
+                    expected_environment=expected_process_environment_before,
+                    expected_executable_sha256=expected_executable_sha256,
                 )
                 line = self._readline(180)
                 ready = json.loads(line)
@@ -211,6 +422,28 @@ class RetrievalWorkerManager:
                 expected_bindings_after = _expected_worker_bindings()
                 if expected_bindings_before != expected_bindings_after:
                     raise RuntimeError("检索运行时绑定在预热期间发生变化")
+                expected_identity_after = _expected_worker_identity()
+                if expected_identity_before != expected_identity_after:
+                    raise RuntimeError("worker immutable identity changed during preload")
+                expected_process_environment_after = (
+                    _expected_worker_process_environment()
+                )
+                if (
+                    expected_process_environment_before
+                    != expected_process_environment_after
+                ):
+                    raise RuntimeError("worker environment changed during preload")
+                worker_snapshot_after = self._capture_worker_snapshot(
+                    expected_environment=expected_process_environment_after,
+                    expected_executable_sha256=expected_executable_sha256,
+                )
+                if worker_snapshot_before != worker_snapshot_after:
+                    raise RuntimeError("worker process identity changed during preload")
+                worker_identity = _validated_worker_identity(
+                    ready.get("worker_identity"),
+                    process_stamp=worker_snapshot_after.process,
+                    expected_identity=expected_identity_after,
+                )
                 bindings = ready.get("bindings")
                 if not (
                     isinstance(bindings, dict)
@@ -244,6 +477,9 @@ class RetrievalWorkerManager:
                 self.preload_ms = int(ready.get("preload_ms") or 0)
                 self.runtime_bindings = dict(bindings)
                 self.lightrag_store_verification = dict(store_verification)
+                self._worker_process_stamp = worker_snapshot_after.process
+                self._worker_process_snapshot = worker_snapshot_after
+                self.worker_identity = worker_identity
             except (
                 OSError,
                 ValueError,
@@ -264,6 +500,7 @@ class RetrievalWorkerManager:
                 self.start()
                 process = self._process
                 assert process is not None and process.stdin is not None
+                request_worker_snapshot = self._require_live_worker_snapshot()
                 request_stamp = list(self._dependency_stamp or ())
                 if request_stamp != _result_dependency_stamp():
                     raise RuntimeError(
@@ -283,6 +520,13 @@ class RetrievalWorkerManager:
                 )
                 process.stdin.flush()
                 response = json.loads(self._readline(timeout))
+                if (
+                    self._require_live_worker_snapshot()
+                    != request_worker_snapshot
+                ):
+                    raise RuntimeError(
+                        "worker process identity changed during request"
+                    )
                 if request_stamp != _result_dependency_stamp():
                     raise RuntimeError(
                         "检索依赖在请求期间发生变化，已丢弃结果"
@@ -342,6 +586,7 @@ class RetrievalWorkerManager:
                 self.start()
                 process = self._process
                 assert process is not None and process.stdin is not None
+                request_worker_snapshot = self._require_live_worker_snapshot()
                 request_stamp = list(self._dependency_stamp or ())
                 if request_stamp != _result_dependency_stamp():
                     raise RuntimeError(
@@ -362,11 +607,19 @@ class RetrievalWorkerManager:
                 )
                 process.stdin.flush()
                 deadline = time.monotonic() + timeout
+                buffered_events: list[dict[str, Any]] = []
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(command, timeout)
                     response = json.loads(self._readline(remaining))
+                    if (
+                        self._require_live_worker_snapshot()
+                        != request_worker_snapshot
+                    ):
+                        raise RuntimeError(
+                            "worker process identity changed during streaming request"
+                        )
                     if request_stamp != _result_dependency_stamp():
                         raise RuntimeError(
                             "检索依赖在流式请求期间发生变化，已中止结果"
@@ -377,15 +630,25 @@ class RetrievalWorkerManager:
                         raise RuntimeError("检索工作进程流式响应与请求不匹配")
                     event = response.get("event")
                     if isinstance(event, dict):
-                        on_event(event)
+                        buffered_events.append(event)
                         continue
                     if response.get("final"):
-                        return subprocess.CompletedProcess(
+                        if (
+                            self._require_live_worker_snapshot()
+                            != request_worker_snapshot
+                        ):
+                            raise RuntimeError(
+                                "worker process identity changed before stream completion"
+                            )
+                        completed = subprocess.CompletedProcess(
                             args=command,
                             returncode=int(response.get("returncode", 1)),
                             stdout=str(response.get("stdout") or ""),
                             stderr=str(response.get("stderr") or ""),
                         )
+                        for buffered_event in buffered_events:
+                            on_event(buffered_event)
+                        return completed
             except subprocess.TimeoutExpired:
                 self._dispose_process(graceful=False)
                 raise
@@ -457,6 +720,179 @@ def _expected_worker_bindings() -> dict[str, str]:
         "query_embedding_cache": str(query_cache),
         "lightrag_embedding_cache": str(lightrag_cache),
     }
+
+
+def _expected_worker_process_environment() -> dict[str, str]:
+    """Return the exact source/runtime/offline environment inherited by worker."""
+
+    environment = {
+        name: os.environ.get(name, "") for name in _WORKER_BOUND_ENVIRONMENT_NAMES
+    }
+    if any(not environment[name] for name in _WORKER_BOUND_ENVIRONMENT_NAMES):
+        raise RuntimeError("worker bound environment is incomplete")
+    if any(
+        environment.get(name) != expected
+        for name, expected in _WORKER_EXACT_SECURITY_ENVIRONMENT.items()
+    ):
+        raise RuntimeError("worker offline security environment differs")
+
+    try:
+        source_manifest = Path(
+            environment[deployment_identity.SOURCE_MANIFEST_ENV]
+        ).expanduser().resolve(strict=True)
+        source_release = source_manifest.parent
+        python_runtime = Path(
+            environment[deployment_identity.PYTHON_RUNTIME_ENV]
+        ).expanduser().resolve(strict=True)
+        python_manifest = Path(
+            environment[deployment_identity.PYTHON_RUNTIME_MANIFEST_ENV]
+        ).expanduser().resolve(strict=True)
+        executable = Path(sys.executable).expanduser().resolve(strict=True)
+        raw_import_paths = environment["PYTHONPATH"].split(os.pathsep)
+        if any(not value for value in raw_import_paths):
+            raise RuntimeError("worker import path contains an empty entry")
+        import_paths = tuple(
+            Path(value).expanduser().resolve(strict=True)
+            for value in raw_import_paths
+        )
+    except OSError as exc:
+        raise RuntimeError("worker bound environment path is unavailable") from exc
+    if (
+        source_release != ROOT.resolve(strict=True)
+        or source_manifest
+        != source_release / deployment_identity.SOURCE_MANIFEST_FILE
+        or python_manifest
+        != python_runtime / deployment_identity.PYTHON_RUNTIME_MANIFEST_FILE
+        or executable.parent.parent != python_runtime
+        or len(import_paths) < 2
+        or import_paths[0] != source_release
+    ):
+        raise RuntimeError("worker source/runtime environment path differs")
+    try:
+        for path in import_paths[1:]:
+            path.relative_to(python_runtime)
+    except ValueError as exc:
+        raise RuntimeError("worker import path escapes Python runtime") from exc
+    return environment
+
+
+def _expected_worker_identity() -> dict[str, dict[str, Any]]:
+    """Return the path-free source/runtime proof the child must echo exactly."""
+
+    source = deployment_identity.require_source_identity()
+    python_runtime = deployment_identity.require_python_runtime_identity()
+    source_values = (
+        source.get("head"),
+        source.get("tree"),
+        source.get("manifest_sha256"),
+    )
+    runtime_hashes = (
+        python_runtime.get("manifest_sha256"),
+        python_runtime.get("runtime_tree_sha256"),
+        python_runtime.get("python_executable_sha256"),
+        python_runtime.get("elf_audit_sha256"),
+    )
+    runtime_strings = (
+        python_runtime.get("python_version"),
+        python_runtime.get("python_soabi"),
+        python_runtime.get("python_platform"),
+    )
+    runtime_counts = (
+        python_runtime.get("wheel_count"),
+        python_runtime.get("system_library_count"),
+        python_runtime.get("system_directory_count"),
+    )
+    interpreter = {
+        "argv_exact": True,
+        "no_site": sys.flags.no_site == 1,
+        "safe_path": sys.flags.safe_path is True,
+        "dont_write_bytecode": sys.flags.dont_write_bytecode == 1,
+    }
+    if (
+        interpreter
+        != {
+            "argv_exact": True,
+            "no_site": True,
+            "safe_path": True,
+            "dont_write_bytecode": True,
+        }
+        or source.get("ready") is not True
+        or source.get("files_verified") is not True
+        or not all(
+            isinstance(value, str)
+            and len(value) in ({40, 64} if index < 2 else {64})
+            and all(character in "0123456789abcdef" for character in value)
+            for index, value in enumerate(source_values)
+        )
+        or python_runtime.get("ready") is not True
+        or python_runtime.get("files_verified") is not True
+        or python_runtime.get("proc_exe_matches") is not True
+        or python_runtime.get("system_abi_stat_verified") is not True
+        or not all(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+            for value in runtime_hashes
+        )
+        or not all(isinstance(value, str) and bool(value) for value in runtime_strings)
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in runtime_counts
+        )
+        or python_runtime.get("wheel_count", 0) <= 0
+    ):
+        raise RuntimeError("parent immutable identity proof is incomplete")
+    return {
+        "interpreter": interpreter,
+        "source": {
+            "head": source["head"],
+            "tree": source["tree"],
+            "manifest_sha256": source["manifest_sha256"],
+            "files_verified": True,
+        },
+        "python_runtime": {
+            "manifest_sha256": python_runtime["manifest_sha256"],
+            "runtime_tree_sha256": python_runtime["runtime_tree_sha256"],
+            "python_executable_sha256": python_runtime[
+                "python_executable_sha256"
+            ],
+            "python_version": python_runtime["python_version"],
+            "python_soabi": python_runtime["python_soabi"],
+            "python_platform": python_runtime["python_platform"],
+            "wheel_count": python_runtime["wheel_count"],
+            "elf_audit_sha256": python_runtime["elf_audit_sha256"],
+            "system_library_count": python_runtime["system_library_count"],
+            "system_directory_count": python_runtime[
+                "system_directory_count"
+            ],
+            "files_verified": True,
+            "proc_exe_matches": True,
+            "system_abi_stat_verified": True,
+        },
+    }
+
+
+def _validated_worker_identity(
+    raw_identity: Any,
+    *,
+    process_stamp: deployment_identity.ProcessExecutableStamp,
+    expected_identity: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Accept only the exact worker proof constructed independently by parent."""
+
+    expected = {
+        "schema_version": 1,
+        "exact": True,
+        "process": deployment_identity.process_executable_stamp_payload(
+            process_stamp
+        ),
+        "interpreter": dict(expected_identity["interpreter"]),
+        "source": dict(expected_identity["source"]),
+        "python_runtime": dict(expected_identity["python_runtime"]),
+    }
+    if not isinstance(raw_identity, dict) or raw_identity != expected:
+        raise RuntimeError("worker immutable identity proof differs from parent")
+    return expected
 
 
 def _configured_result_cache_dir() -> Path:
@@ -1037,8 +1473,12 @@ def _runtime_status() -> dict[str, Any]:
     worker_bindings_match = _SEARCH_RUNTIME.runtime_bindings == expected
     process_ready = _SEARCH_RUNTIME.process_ready
     bindings_current = _SEARCH_RUNTIME.bindings_current
+    worker_process = getattr(_SEARCH_RUNTIME, "worker_process", {})
+    if not isinstance(worker_process, dict):
+        worker_process = {}
     runtime_contract = bool(
         _SEARCH_RUNTIME.ready
+        and worker_process.get("exact") is True
         and (
             not runtime_shadow_required
             or (write_isolated and manifest_status["ready"])
@@ -1086,6 +1526,7 @@ def _runtime_status() -> dict[str, Any]:
             "expected_keys": sorted(expected),
             "reported_keys": sorted(_SEARCH_RUNTIME.runtime_bindings),
         },
+        "worker_process": worker_process,
     }
 
 
@@ -1103,6 +1544,7 @@ def _health_payload() -> dict[str, Any]:
     config = _config_status()
     runtime = _runtime_status()
     source = deployment_identity.source_identity_status()
+    python_runtime = deployment_identity.python_runtime_identity_status()
     store_verification = runtime.get("lightrag_store_verification")
     store_verification = (
         store_verification if isinstance(store_verification, dict) else {}
@@ -1121,6 +1563,11 @@ def _health_payload() -> dict[str, Any]:
             else True
         ),
         "worker": bool(runtime.get("process_ready")),
+        "worker_process_identity": bool(
+            isinstance(runtime.get("worker_process"), dict)
+            and runtime["worker_process"].get("exact") is True
+            and runtime["worker_process"].get("proc_exe_verified") is True
+        ),
         "bindings_current": bool(runtime.get("bindings_current")),
         "lightrag_store_hashes": bool(
             not runtime.get("runtime_shadow_required")
@@ -1144,6 +1591,7 @@ def _health_payload() -> dict[str, Any]:
         ),
         "runtime_contract": bool(runtime.get("ready")),
         "source_identity": bool(source.get("ready")),
+        "python_runtime_identity": bool(python_runtime.get("ready")),
     }
     ready = all(checks.values())
     return {
@@ -1170,6 +1618,7 @@ def _health_payload() -> dict[str, Any]:
         "config": config,
         "runtime": runtime,
         "source": source,
+        "python_runtime": python_runtime,
         "backend": "lightrag_mix+property_graph_exact_vector+llm+search_api",
     }
 
@@ -1462,6 +1911,8 @@ class VenueHandler(BaseHTTPRequestHandler):
             return False
         if not self._authorize_search():
             return False
+        if not self._authorize_json_content_type():
+            return False
         try:
             self._content_length()
         except RequestBodyTooLarge as exc:
@@ -1502,11 +1953,21 @@ class VenueHandler(BaseHTTPRequestHandler):
                 and getattr(self, "requestline", "")
             ):
                 peer = str(self.client_address[0]) if self.client_address else "unknown"
-                identity = client_ip(
-                    peer,
-                    getattr(self, "headers", {}),
-                    self.server.security_config,
-                )
+                security = self.server.security_config
+                if (
+                    security.trust_proxy_headers
+                    and self._network_state == "accepted"
+                    and self._auth_state == "accepted"
+                ):
+                    identity = client_ip(
+                        peer,
+                        getattr(self, "headers", {}),
+                        security,
+                    )
+                else:
+                    # Forwarded identity is trustworthy only after both the
+                    # direct proxy peer and its private bearer are accepted.
+                    identity = client_ip(peer, {}, security)
                 path = urlparse(getattr(self, "path", "")).path or "/"
                 record = audit_record(
                     request_id=self._request_id,
@@ -1619,10 +2080,24 @@ class VenueHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         if len(raw) != length:
             raise ValueError("请求体长度与 Content-Length 不一致")
-        body = json.loads(raw or b"{}")
+        text = raw.decode("utf-8", errors="strict")
+        body = json.loads(text or "{}")
         if not isinstance(body, dict):
             raise ValueError("请求体必须是 JSON 对象")
         return body
+
+    def _authorize_json_content_type(self) -> bool:
+        """Accept only an explicit JSON media type before reading/admission."""
+
+        values = self.headers.get_all("Content-Type", failobj=[])
+        if len(values) == 1 and _JSON_CONTENT_TYPE.fullmatch(values[0].strip()):
+            return True
+        self._send_json(
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+            {"error": "Content-Type 必须为 application/json"},
+            close_connection=True,
+        )
+        return False
 
     def _authorize_search(self) -> bool:
         security = self.server.security_config
@@ -1645,8 +2120,14 @@ class VenueHandler(BaseHTTPRequestHandler):
         """Fail closed on the direct TCP peer before reading a request body."""
 
         peer = str(self.client_address[0]) if self.client_address else "invalid"
-        if self.server.security_config.client_allowed(peer):
+        security = self.server.security_config
+        if security.client_allowed(peer):
             self._network_state = "accepted"
+            # Forwarded identity is security-sensitive.  A bearer known only
+            # to the local proxy prevents another host user from bypassing the
+            # front-door Basic Auth or forging X-Forwarded-For on loopback.
+            if security.trust_proxy_headers:
+                return self._authorize_search()
             return True
         self._network_state = "rejected"
         self._send_json(
@@ -1733,6 +2214,17 @@ class VenueHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health/live":
             self._send_json(HTTPStatus.OK, {"status": "alive", "alive": True})
             return
+        if parsed.path == "/api/health/ready":
+            detailed = _health_payload()
+            ready = bool(
+                detailed.get("ready") is True
+                and detailed.get("status") == "ready"
+            )
+            self._send_json(
+                HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
+                {"status": "ready" if ready else "incomplete", "ready": ready},
+            )
+            return
         if parsed.path == "/api/health":
             payload = _health_payload()
             status = HTTPStatus.OK if payload["ready"] else HTTPStatus.SERVICE_UNAVAILABLE
@@ -1764,7 +2256,29 @@ class VenueHandler(BaseHTTPRequestHandler):
                 close_connection=True,
             )
             return
-        if not self._authorize_search() or not self._admit_search():
+        if not self._authorize_search():
+            return
+        # Framing is header-only and must fail deterministically before media
+        # type admission, rate accounting, or any body read.
+        try:
+            self._content_length()
+        except RequestBodyTooLarge as exc:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": str(exc)},
+                close_connection=True,
+            )
+            return
+        except ValueError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": str(exc)},
+                close_connection=True,
+            )
+            return
+        if not self._authorize_json_content_type():
+            return
+        if not self._admit_search():
             return
         stream_response_sent = False
         close_response = False
@@ -1817,10 +2331,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"缺少前端目录：{WEB_DIR}")
     try:
         security_config = WebSecurityConfig.from_environment()
+        security_config.validate_proxy_topology(args.host)
     except ValueError as exc:
         parser.error(str(exc))
     try:
         deployment_identity.require_source_identity()
+        deployment_identity.require_python_runtime_identity()
     except RuntimeError as exc:
         parser.error(str(exc))
     server = VenueHTTPServer(

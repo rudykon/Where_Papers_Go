@@ -19,14 +19,16 @@ evaluation. The current exit-gate state supersedes the earlier percentage
 estimates:
 
 - P0-A through P0-C remain complete and all exit gates passed;
-- Stage A's machine-executable repository and unprivileged-host deployment work
-  is complete. The persistent user service is enabled and active. On
-  2026-09-01 the user explicitly authorized a direct all-client LAN binding at
-  `0.0.0.0:8765`; this host currently owns `172.22.13.155/24`, so the reachable
-  URL is <http://172.22.13.155:8765/>. The service remains restart-tested and
-  ready with exact graph/vector/LightRAG/runtime bindings. This direct listener
-  has no Nginx TLS/front-door authentication and must not be described as an
-  Internet-hardened deployment. A literal host reboot and a separately
+- Stage A's historical user service remains enabled and active. On 2026-09-01
+  the user explicitly authorized its temporary direct all-client LAN binding at
+  `0.0.0.0:8765`; the current host address is `172.22.13.155/24`. That installed
+  predecessor still has no Nginx TLS/front-door authentication. Do not restart
+  it into the successor loopback configuration until the proxy is active, and
+  never describe the direct listener as Internet-hardened. The current successor
+  branch implements the fail-closed P0 front door and P1 immutable Python
+  runtime, but it has not been merged into `main` or installed. Nginx, a trusted
+  certificate, an approved htpasswd identity and the privileged firewall change
+  remain administrator prerequisites. A literal host reboot and a separately
   authorized live 500-paper Search/LLM acceptance remain external/manual gates,
   so the overall product must not be called 100% complete;
 - Stage B/M3 is complete on the exposed development set. The four authorized
@@ -118,7 +120,14 @@ Continue in this order unless the user changes the objective:
    source, authorization, full-denominator and resume/closeout gates. No new
    live 500-paper run is authorized; the legacy mode-`0664` files are formally
    inadmissible and must not be relabeled;
-10. **human/manual next gates:** three real experts must complete the blinded
+10. **code complete, publication/deployment pending:** preserve the P0/P1
+    successor, fixed PR gates and v4 closeout/reproof implementation. Create a
+    PR without merging it; only after explicit merge authorization may the
+    merged `main` commit replace the installed service. The user's authorization
+    for `systemctl --user daemon-reload` and service restart does not itself
+    authorize merging `main`, installing administrator-owned Nginx/TLS files or
+    performing a physical reboot;
+11. **human/manual next gates:** three real experts must complete the blinded
     annotations. Administrator TLS activation, a literal host reboot and any
     live 500-paper Search/LLM acceptance also remain external/manual. Never
     synthesize human labels or infer those gates from offline completion.
@@ -166,10 +175,12 @@ The paragraphs in this subsection freeze the 2026-08-30 loopback deployment;
 they are no longer the current network endpoint. The 2026-09-01 user-authorized
 service keeps the same private runtime generation and shared quota state but
 uses `WPG_HOST=0.0.0.0`, `WPG_PORT=8765`, and
-`WPG_ALLOWED_CLIENT_CIDRS=0.0.0.0/0,::/0`. The successor immutable-source unit,
-same-process closeout proof, and append-only deployment-reproof workflow are
-specified later in this section; use the latest immutable v3 closeout rather
-than these historical PIDs/unit hashes for current deployment identity.
+an unrestricted historical client CIDR. That policy is recorded only to explain
+the installed predecessor and must not be copied into a new render; the bounded
+direct fallback is `172.22.13.0/24`. The successor immutable-source/runtime
+unit, process closeout proof, and append-only deployment-reproof workflow are
+specified later in this section. The immutable v3 closeout proves only the
+predecessor; no successor v4 closeout exists before merge and deployment.
 
 The audited production user unit is
 `~/.config/systemd/user/where-papers-go.service`. It is `enabled`, `active`,
@@ -975,27 +986,40 @@ the narrower 4+2 meaning above and must not be cited as six direct tests of the
 official weights. Preserve the old directory and bytes; correct the
 interpretation rather than rewriting historical evidence.
 
-New base closeouts use `python -m scripts.validate_closeout --input INPUT.json`
-only after the bound commit and tracked/non-ignored worktree are clean. The
-strict schema-2 input contains only its fixed identity, the expected 40-hex
-HEAD, the fixed `agent/aggregate-only-closeout-20260831` branch, and the exact
-known hashes for the eight fixed aggregate artifacts. Paths, hashes, sizes and
-mode-`0444` requirements remain pinned in tracked code; the request cannot
-self-report tests, deployment state, provider calls, group names or output
-fields. A schema-4 base summary is published under
-`benchmark_artifacts/final_delivery_validation_v3_<UTC>-<HEAD>/`; the historical
-schema-3 `final_delivery_validation_v2_*` directory remains byte-for-byte
-preserved and does not block the successor format.
+The latest completed historical base closeout is
+`benchmark_artifacts/final_delivery_validation_v3_20260901T133830568248Z-a3e1414c4960/summary.json`:
+mode `0444`, 10,278 bytes, SHA-256
+`4083ea95562aeb85e416516aaefeb953293901a408c88b844f259a60d307195f`.
+Its same-HEAD deployment reproof is
+`benchmark_artifacts/final_delivery_deployment_reproof_v1_20260901T133935691356Z-a3e1414c4960/summary.json`:
+mode `0444`, 5,858 bytes, SHA-256
+`8f85451a95c64a9d80f5a443da65326f1fcaf11877a67ee8ac2876edede3f2d9`.
+Both are immutable history for the predecessor deployment; neither proves the
+P0/P1 successor.
+
+Successor base closeouts use
+`python -m scripts.validate_closeout --input INPUT.json` only after the bound
+commit, tracked/non-ignored worktree and deployed service all match. The strict
+schema-2 request contains only its fixed identity, expected 40-hex HEAD, fixed
+`agent/aggregate-only-closeout-20260831` branch, and exact known hashes for the
+eight fixed aggregate artifacts. Paths, hashes, sizes and mode-`0444`
+requirements remain pinned in tracked code; the request cannot self-report
+tests, deployment state, provider calls, group names or output fields. A
+schema-5 base summary is published under
+`benchmark_artifacts/final_delivery_validation_v4_<UTC>-<HEAD>/`. Historical
+v2/v3 directories remain byte-for-byte preserved and do not block the successor
+format.
 
 The tracked runner now emits schema 2. In addition to the complete test-ID
 fingerprint, it reports only the skipped-ID count/fingerprint and the fixed
 suite allowlist fingerprint. The successor full discovery is fixed at 489 IDs
 with SHA-256
 `ddc285a4a7b74373dd0cf92f2da5515899d382a16e3c31ccb3e27963565eccc4`.
-Full discovery permits only the two optional local
-safetensors integrations, the exact Nginx-not-installed skip, and the exact
-opt-in host-systemd skip; reason mismatches, unknown IDs, fixture skips and
-subtest skips become aggregate errors. The isolated model-focused suite has an
+Full discovery permits only the two optional local safetensors integrations,
+the exact explicit-`WPG_NGINX_BIN` opt-in skip, and the exact opt-in host-systemd
+skip; reason mismatches, unknown IDs, fixture skips and subtest skips become
+aggregate errors. Merely finding an installed Nginx no longer changes the skip
+contract. The isolated model-focused suite has an
 empty skip allowlist and must remain exactly 6/6: four test-double
 builder/activation tests plus two temporary random tiny-BERT safetensors
 integrations, with `official_weight_inference_tests=0`. Both runs inherit the
@@ -1011,37 +1035,60 @@ then `--apply`; it reads blobs from the approved Git commit, excludes `.git`,
 under a hidden `.building` name, verifies its exact inventory, modes, sizes and
 hashes, and publishes it with Linux `renameat2(RENAME_NOREPLACE)` only after
 every check succeeds.
-`render-systemd` requires that exact release and its manifest SHA-256. The unit
-sets WorkingDirectory to the release and pins PYTHONPATH plus all four
-`WPG_SOURCE_*` bindings as command-local `/usr/bin/env` assignments, so
-`EnvironmentFile=` cannot override them. It mounts the release read-only,
-verifies source before opening the listener, and makes ExecStartPost bind health
-to `${MAINPID}`. Production uses `/home/wangrj/miniconda3/bin/python3.14` with
-the explicit dependency root
-`/home/wangrj/.local/lib/python3.14/site-packages`; automatic user-site
-discovery remains disabled. Before rendering, an import probe requires the app
-to resolve from the immutable source release and LightRAG, nano-vectordb,
-NumPy, and NetworkX from that dependency root. It fail-closes all installer
-entry points and subprocess launch, then initializes/finalizes the four
-configured LightRAG stores and completes one bypass query in a temporary
-directory. The ignored frozen model venv remains the isolated 6/6
-closeout-test interpreter, not the service launcher. The renderer also
-preserves a launcher's lexical path instead of resolving a possible venv
-`bin/python` symlink to its base interpreter.
+The tracked production dependency lock
+`deploy/python/selected-wheels-cpython-3.14.5-linux-x86_64.json` is canonical
+JSON, binds CPython `3.14.5`/SOABI/platform and exactly 59 wheel archives, and
+has SHA-256
+`f5057fc74abe9390884d4fe5a3ab77d01c2aa599ac50bf36d7bacd745c4d0f8b`.
+`uv.lock` is a separate project/CI resolution lock; it does not replace the
+selected production-wheel lock.
+
+`prepare-python-runtime` scans a symlink- and hardlink-free CPython prefix,
+requires the exact locked wheelhouse, verifies installed distributions and
+every RECORD row, audits every ELF object's loader/RPATH/DT_NEEDED/`ldd`
+closure, and binds the owner/mode/hash/stat identity of the permitted host
+system ABI libraries and their directories. It copies the complete prefix,
+selected lock and all 59 wheel archives into a unique hidden `.building`
+directory, makes the final tree read-only, repeats the full tree, RECORD, ELF,
+system-ABI and live interpreter probe, and only then uses
+`renameat2(RENAME_NOREPLACE)` to expose the content-addressed runtime. It never
+overwrites an existing runtime. The pre-publication proof candidate had runtime
+manifest `3cd2227de2753fa4d561c211b2c16dc6e10c6f01484f6e6062e09f341cb12345`,
+tree `df57064370a35169b18e116559084c25774b6716af4f894d0d2c5f850b35bb4f`
+and ELF binding
+`e48abc474130ed82a4d94108dc92a92fe549acbdd8bdcfd0fd3f067a986ff83e`.
+Because that proof copy is under `/tmp`, it is not the installed production
+runtime and must not be selected by a unit with `PrivateTmp=yes`; publish and
+revalidate the same addressed object under the approved persistent runtime root
+after merge authorization.
+
+`render-systemd` requires the exact immutable source and Python runtime plus
+both manifest SHA-256 values. The unit uses the runtime's own interpreter with
+exact `-S -P -B`, renders every security/path/runtime binding directly into the
+reviewed unit, deliberately consumes no mutable `EnvironmentFile`, repeats its
+import and source/runtime identities at the exec boundary, clears loader/Python/
+OpenSSL/proxy/CA injection variables, mounts both releases read-only, and makes
+`ExecStartPost` bind health to `${MAINPID}` and the fixed passwd-home backend
+token. The application independently validates the parent and
+persistent worker PID/start/executable, exact worker argv/PPid/cwd/environment,
+source tree, runtime tree and cached system-ABI stat stamp before readiness and
+before accepting a completed worker result. The ignored frozen model venv
+remains only the isolated 6/6 test interpreter, never the service launcher.
 
 Closeout deployment validation is read-only and discovers host/port from the
-selected non-secret `/proc/<MainPID>/environ` fields. It binds the systemd
-MainPID and InvocationID, `/proc` process start ticks/cwd/command/source
-identity, `ss -p` listener owner, and health-reported PID/start ticks/HEAD/tree/
-source-manifest identity. The observed source must equal the current Git
-HEAD/tree, and the validator independently rebuilds the expected source
-manifest from those Git objects and requires its SHA-256 to equal the live
-release. The listener address must equal the configured host (including the
-authorized `0.0.0.0` LAN binding). The health gate must report
-`lightrag_store_hashes=true` and a required, verified proof for exactly the six
-frozen LightRAG files with valid manifest and store-binding hashes; `false` is
-no longer a successful closeout state. An identical second deployment
-observation is required while the final artifact is still hidden.
+selected non-secret `/proc/<MainPID>/environ` fields. V4 rejects wildcard
+listeners: the application must be loopback-only behind the authenticated TLS
+proxy. It binds the systemd MainPID and InvocationID, race-resistant `/proc`
+start/executable/cwd/argv/environment evidence, current Git HEAD/tree and source
+release, independently revalidates the complete Python runtime and tracked
+selected-wheel lock, verifies the worker PPid/PID/start/executable/argv/cwd/
+environment/source/runtime proof, and binds the `ss -p` listener owner to
+health. The health gate requires `checks.lightrag_store_hashes=true`,
+`checks.source_identity=true`, `checks.python_runtime_identity=true` and
+`checks.worker_process_identity=true`, plus a required and verified proof for
+exactly the six frozen LightRAG files. `false`, missing or extra identity fields
+are failures. An identical second complete deployment observation is required
+while the final artifact is still hidden.
 
 Every base closeout and deployment reproof is assembled in a unique hidden
 `.building-*` directory. Bytes, hash, modes, sole-entry inventory, clean Git,
@@ -1054,18 +1101,24 @@ but a later authorized restart or redeployment of the same HEAD is proved
 without rewriting it by running
 `python -m scripts.validate_closeout --post-deployment-from BASE/summary.json`.
 This creates an independent, append-only
-`final_delivery_deployment_reproof_v1_<UTC>-<HEAD>/` record bound to the base
-summary hash and the newly observed deployment identity. The validator itself
-does not restart the service, execute formal-500/human evaluation, or request a
-live Search/LLM/embedding workflow.
+`final_delivery_deployment_reproof_v2_<UTC>-<HEAD>/` schema-2 record bound to
+the base summary hash and the newly observed deployment identity. The validator
+itself does not restart the service, execute formal-500/human evaluation, or
+request a live Search/LLM/embedding workflow.
 
-The 2026-08-30 private-generation deployment subsequently passed an authorized
+The 2026-08-30 private-generation predecessor subsequently passed an authorized
 host unit restart and forced-process-termination recovery with `ready=true`,
 `bindings_current=true`, the persistent worker ready and the exact runtime,
 vector and LightRAG bindings recorded above. The unit remains `active/running`,
 `enabled`, and under the lingering user manager. No `/api/search`, Search, LLM
-or embedding call was made by deployment validation. This verifies process
-recovery, not a physical host reboot.
+or embedding call was made by deployment validation. This verifies predecessor
+process recovery, not the P0/P1 successor and not a physical host reboot.
+
+The Search-free local retrieval baseline was rerun as 7/7 with micro Recall@K
+`1.0`: graph load 3,895.504 ms, mean/median/max query latency
+21.635/12.835/47.225 ms and peak RSS 559,588 KiB. This measures deterministic
+local dataset retrieval only. It is not an end-to-end recommendation SLA and
+contains no real Search/LLM/provider latency or quality evidence.
 
 Expert tooling and materials are implemented and frozen; real three-rater
 annotations remain manual and must never be synthesized.

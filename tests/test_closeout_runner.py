@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts import run_closeout_tests
+from scripts import run_closeout_tests, validate_pr_gates
 
 
 class _HealthyGuard:
@@ -105,7 +105,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         )
         self.assertEqual(
             full_allowlist_digest,
-            "cf862e1b9db067771bace29fc33381c603c7aca542e624b398a2808856713018",
+            "d970d6124c58fd064d3241a151dfc2001b2c841c003c2c2bba3dfecaf71a246b",
         )
         self.assertEqual(
             report["skip_allowlist_sha256"], full_allowlist_digest
@@ -227,6 +227,73 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             model_pass_report["skip_allowlist_sha256"],
             full_allowlist_digest,
         )
+
+        fixed_full_report = dict(report)
+        fixed_full_report.update(
+            {
+                "total": 489,
+                "passed": 485,
+                "skipped": 4,
+                "failures": 0,
+                "errors": 0,
+                "expected_failures": 0,
+                "unexpected_successes": 0,
+                "test_id_count": 489,
+                "test_id_sha256": validate_pr_gates.FULL_TEST_ID_SHA256,
+                "skipped_test_id_count": 4,
+                "skipped_test_id_sha256": (
+                    validate_pr_gates.FULL_SKIPPED_TEST_ID_SHA256
+                ),
+                "skip_allowlist_sha256": (
+                    validate_pr_gates.FULL_SKIP_ALLOWLIST_SHA256
+                ),
+            }
+        )
+        validated_full = validate_pr_gates._validate_test_report(
+            fixed_full_report, suite="full"
+        )
+        self.assertEqual(
+            (validated_full["total"], validated_full["passed"], validated_full["skipped"]),
+            (489, 485, 4),
+        )
+        fixed_model_report = dict(model_pass_report)
+        fixed_model_report.update(
+            {
+                "total": 6,
+                "passed": 6,
+                "skipped": 0,
+                "failures": 0,
+                "errors": 0,
+                "expected_failures": 0,
+                "unexpected_successes": 0,
+                "test_id_count": 6,
+                "test_id_sha256": validate_pr_gates.MODEL_TEST_ID_SHA256,
+                "skipped_test_id_count": 0,
+                "skipped_test_id_sha256": (
+                    validate_pr_gates.MODEL_SKIPPED_TEST_ID_SHA256
+                ),
+                "skip_allowlist_sha256": (
+                    validate_pr_gates.MODEL_SKIP_ALLOWLIST_SHA256
+                ),
+            }
+        )
+        validated_model = validate_pr_gates._validate_test_report(
+            fixed_model_report, suite="model-focused"
+        )
+        self.assertEqual(
+            (validated_model["total"], validated_model["passed"], validated_model["skipped"]),
+            (6, 6, 0),
+        )
+        drifted_full_report = dict(fixed_full_report)
+        drifted_full_report["passed"] = 484
+        drifted_full_report["skipped"] = 5
+        drifted_full_report["skipped_test_id_count"] = 5
+        with self.assertRaisesRegex(
+            validate_pr_gates.PrGateError, "fixed full report drifted"
+        ):
+            validate_pr_gates._validate_test_report(
+                drifted_full_report, suite="full"
+            )
 
         invalid_skips = (
             (
@@ -401,6 +468,296 @@ class CloseoutRunnerContractTests(unittest.TestCase):
                 ["--suite", "full", "--output", "first", "--output", "second"]
             )
         )
+        with patch.object(
+            validate_pr_gates.importlib.util, "find_spec", return_value=None
+        ), patch.dict(os.environ, {"WPG_NGINX_BIN": ""}, clear=False):
+            with self.assertRaisesRegex(
+                validate_pr_gates.PrGateError, "WPG_NGINX_BIN to be unset"
+            ):
+                validate_pr_gates._runtime_preflight("full")
+
+        codeowners = (
+            validate_pr_gates.PROJECT_ROOT / ".github" / "CODEOWNERS"
+        ).read_text(encoding="utf-8")
+        for protected_path in (
+            "/.github/ @rudykon",
+            "/scripts/validate_pr_gates.py @rudykon",
+            "/scripts/run_closeout_tests.py @rudykon",
+            "/scripts/run_linux_offline_gate.sh @rudykon",
+            "/scripts/validate_closeout.py @rudykon",
+            "/deploy/ @rudykon",
+            "/uv.lock @rudykon",
+        ):
+            self.assertIn(protected_path, codeowners)
+
+        workflow = (
+            validate_pr_gates.PROJECT_ROOT
+            / ".github"
+            / "workflows"
+            / "tests.yml"
+        ).read_text(encoding="utf-8")
+        for job in (
+            "  fixed-static:",
+            "  fixed-full:",
+            "  fixed-retrieval:",
+            "  fixed-model:",
+            "  fixed-pr-gates:",
+        ):
+            self.assertIn(job, workflow)
+        self.assertIn(
+            "needs: [fixed-static, fixed-full, fixed-retrieval, fixed-model]",
+            workflow,
+        )
+        self.assertEqual(workflow.count("enable-cache: false"), 5)
+        self.assertNotIn("enable-cache: true", workflow)
+        self.assertEqual(workflow.count("-I -S"), 10)
+        self.assertNotIn("-m scripts.validate_pr_gates", workflow)
+        self.assertNotIn("pip install -e", workflow)
+        self.assertIn("terminal offline step", workflow)
+        self.assertEqual(workflow.count('= "Python 3.12.3"'), 4)
+        self.assertEqual(workflow.count("Reverify fixed inputs"), 3)
+        self.assertEqual(workflow.count("--require-os-isolation"), 3)
+        self.assertIn("--no-install-project --no-build", workflow)
+        self.assertIn("--preview-features pylock --require-hashes --strict", workflow)
+        self.assertIn("--no-deps --only-binary :all: --no-index", workflow)
+        self.assertIn(".github/pylock.wpg-wheel-build.toml", workflow)
+        self.assertIn("git -c core.hooksPath=/dev/null archive", workflow)
+        self.assertIn("permissions: {}", workflow)
+
+        model_lock = validate_pr_gates.MODEL_LOCK_PATH.read_bytes()
+        self.assertEqual(
+            validate_pr_gates._sha256(model_lock),
+            validate_pr_gates.MODEL_LOCK_SHA256,
+        )
+        self.assertEqual(len(validate_pr_gates.MODEL_LOCK_VERSIONS), 25)
+        wheel_build_lock = validate_pr_gates.WHEEL_BUILD_LOCK_PATH.read_bytes()
+        self.assertEqual(
+            validate_pr_gates._sha256(wheel_build_lock),
+            validate_pr_gates.WHEEL_BUILD_LOCK_SHA256,
+        )
+        if sys.version_info >= (3, 11):
+            self.assertEqual(
+                validate_pr_gates._wheel_build_lock_versions(),
+                validate_pr_gates.WHEEL_BUILD_LOCK_VERSIONS,
+            )
+        self.assertIn(
+            "scripts/__init__.py",
+            validate_pr_gates.REQUIRED_CRITICAL_PATHS,
+        )
+        self.assertEqual(
+            validate_pr_gates._sha256(
+                validate_pr_gates.RUN_CLOSEOUT_TESTS_PATH.read_bytes()
+            ),
+            validate_pr_gates.RUN_CLOSEOUT_TESTS_SHA256,
+        )
+
+        manifest = validate_pr_gates._load_manifest()
+        validate_pr_gates._validate_manifest(manifest)
+        self.assertEqual(validate_pr_gates._manifest_template(), manifest)
+        self.assertEqual(
+            manifest["logo_protection"],
+            {
+                "path": "docs/Where-Papers-Go.png",
+                "git_blob_sha1": "42b021f7088e08c165fa615a8d3b7bd60af25fd1",
+                "sha256": "80266c537c4a8251766e1d8e53c5a1e9def90e34080b76d8a3e00be770ba3b11",
+            },
+        )
+        self.assertEqual(manifest["retrieval"]["case_count"], 7)
+        canonical_cases, case_digest = validate_pr_gates._retrieval_definition()
+        self.assertEqual(
+            case_digest,
+            validate_pr_gates.RETRIEVAL_CASE_DEFINITION_SHA256,
+        )
+        self.assertEqual(
+            list(validate_pr_gates._credential_findings()),
+            manifest["credential_scan"]["allowed_findings"],
+        )
+        self.assertEqual(
+            list(validate_pr_gates._credential_findings(source="worktree")),
+            manifest["credential_scan"]["allowed_findings"],
+        )
+        offline_wrapper = (
+            validate_pr_gates.PROJECT_ROOT
+            / "scripts"
+            / "run_linux_offline_gate.sh"
+        ).read_text(encoding="utf-8")
+        for required_fragment in (
+            "/usr/bin/unshare",
+            "--mount-proc",
+            "--kill-child=KILL",
+            "--clear-groups",
+            "--no-new-privs",
+            "--inh-caps=-all",
+            "--ambient-caps=-all",
+            "--bounding-set=-all",
+            "wpg-run /run",
+            "wpg-tmp /tmp",
+            "cd /",
+            "readonly_bind_exec \"$caller_home\"",
+            "readonly_bind \"$project_root\"",
+            "cd -- \"$project_root\"",
+            "command is below the noexec checkout",
+            "[[ ! -w scripts/validate_pr_gates.py ]]",
+            "WPG_PR_RUNNER_TOOL_CACHE",
+            "GITHUB_ENV+x",
+        ):
+            self.assertIn(required_fragment, offline_wrapper)
+        self.assertNotIn("--init-groups", offline_wrapper)
+        self.assertNotIn("iptables", offline_wrapper)
+
+        locked_status = """\
+Pid:\t1
+Uid:\t1001\t1001\t1001\t1001
+Gid:\t1002\t1002\t1002\t1002
+Groups:\t
+CapInh:\t0000000000000000
+CapPrm:\t0000000000000000
+CapEff:\t0000000000000000
+CapBnd:\t0000000000000000
+CapAmb:\t0000000000000000
+NoNewPrivs:\t1
+"""
+        self.assertTrue(
+            validate_pr_gates._sandbox_status_is_unprivileged(
+                locked_status, 1001, 1002
+            )
+        )
+        self.assertFalse(
+            validate_pr_gates._sandbox_status_is_unprivileged(
+                locked_status.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+                1001,
+                1002,
+            )
+        )
+        project_root = os.fspath(validate_pr_gates.PROJECT_ROOT)
+        caller_home = os.fspath(validate_pr_gates.PROJECT_ROOT.parents[1])
+        runner_tool_cache = "/opt/hostedtoolcache"
+        mountinfo = "\n".join(
+            (
+                "1 0 0:1 / /proc rw,nosuid,nodev,noexec - proc proc rw",
+                "2 0 0:2 / /run rw,nosuid,nodev,noexec - tmpfs wpg-run rw",
+                "3 0 0:3 / /tmp rw,nosuid,nodev - tmpfs wpg-tmp rw",
+                "4 0 0:4 / /dev/shm rw,nosuid,nodev,noexec - tmpfs wpg-shm rw",
+                f"5 0 0:5 / {project_root} ro,nosuid,nodev,noexec - ext4 /dev/root ro",
+                f"6 0 0:6 / {caller_home} ro,nosuid,nodev - ext4 /dev/root ro",
+                f"7 0 0:7 / {runner_tool_cache} ro,nosuid,nodev - ext4 /dev/root ro",
+            )
+        )
+        self.assertTrue(
+            validate_pr_gates._sandbox_mounts_are_private(
+                mountinfo,
+                project_root=project_root,
+                caller_home=caller_home,
+                runner_commands_dir="/nonexistent",
+                runner_tool_cache=runner_tool_cache,
+            )
+        )
+        self.assertFalse(
+            validate_pr_gates._sandbox_mounts_are_private(
+                mountinfo.replace("/tmp rw,nosuid,nodev", "/tmp rw,nosuid"),
+                project_root=project_root,
+                caller_home=caller_home,
+                runner_commands_dir="/nonexistent",
+                runner_tool_cache=runner_tool_cache,
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                validate_pr_gates.OS_OFFLINE_ENV: (
+                    validate_pr_gates.OS_OFFLINE_TOKEN
+                )
+            },
+        ), patch.object(
+            validate_pr_gates, "_sandbox_attestation", return_value=True
+        ):
+            self.assertTrue(
+                validate_pr_gates._os_network_isolation_active(required=True)
+            )
+        with patch.dict(
+            os.environ,
+            {
+                validate_pr_gates.OS_OFFLINE_ENV: (
+                    validate_pr_gates.OS_OFFLINE_TOKEN
+                )
+            },
+        ), patch.object(
+            validate_pr_gates, "_sandbox_attestation", return_value=False
+        ):
+            with self.assertRaisesRegex(
+                validate_pr_gates.PrGateError, "sandbox isolation is inactive"
+            ):
+                validate_pr_gates._os_network_isolation_active(required=True)
+        with patch.object(validate_pr_gates, "_verify_critical_files"), patch.object(
+            validate_pr_gates, "_verify_logo_and_diff"
+        ), patch.object(
+            validate_pr_gates,
+            "_model_lock_versions",
+            return_value=dict(validate_pr_gates.MODEL_LOCK_VERSIONS),
+        ), patch.object(
+            validate_pr_gates,
+            "_wheel_build_lock_versions",
+            return_value=dict(validate_pr_gates.WHEEL_BUILD_LOCK_VERSIONS),
+        ):
+            static_result = validate_pr_gates._run_static_gate(
+                "HEAD", validate_pr_gates.MANIFEST_PATH
+            )
+        self.assertEqual(static_result["status"], "passed")
+        self.assertEqual(static_result["credential_findings"], 0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            graph = Path(temporary) / "venue-graph.json.gz"
+            benchmark_cases = [
+                {
+                    "name": case["name"],
+                    "query": case["query"],
+                    "top_k": case["top_k"],
+                    "expected": list(case["expected"]),
+                    "result": list(case["expected"]),
+                    "matched": list(case["expected"]),
+                    "recall_at_k": 1.0,
+                    "query_ms": 0.0,
+                }
+                for case in canonical_cases
+            ]
+            benchmark_result = {
+                "graph": os.fspath(graph.resolve()),
+                "graph_load_ms": 0.0,
+                "peak_rss_kb": 1,
+                "case_count": 7,
+                "micro_recall_at_k": 1.0,
+                "all_cases_full_recall": True,
+                "query_ms": {"mean": 0.0, "median": 0.0, "max": 0.0},
+                "cases": benchmark_cases,
+            }
+            validate_pr_gates._validate_retrieval_benchmark(
+                benchmark_result, graph=graph
+            )
+            forged = dict(benchmark_result)
+            forged["cases"] = [dict(row) for row in benchmark_cases]
+            forged["cases"][0]["expected"] = []
+            forged["cases"][0]["matched"] = []
+            with self.assertRaisesRegex(
+                validate_pr_gates.PrGateError, "canonical full recall"
+            ):
+                validate_pr_gates._validate_retrieval_benchmark(
+                    forged, graph=graph
+                )
+
+            target = Path(temporary) / "target"
+            target.write_bytes(b"synthetic")
+            link = Path(temporary) / "tracked-link"
+            link.symlink_to(target)
+            with patch.object(
+                validate_pr_gates, "PROJECT_ROOT", Path(temporary)
+            ):
+                with self.assertRaisesRegex(
+                    validate_pr_gates.PrGateError, "not a regular file"
+                ):
+                    validate_pr_gates._tracked_bytes(
+                        "tracked-link", "0" * 40, source="worktree"
+                    )
 
     def test_guard_survives_environment_clear_and_audits_lowlevel_events(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -71,6 +71,9 @@ class WebSecurityTests(TestCase):
                 clear=True,
             ):
                 config = WebSecurityConfig.from_environment()
+                token_path.write_text(token + "\n\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "exactly one token"):
+                    WebSecurityConfig.from_environment()
 
         self.assertTrue(config.authorize("Bearer " + token))
         self.assertFalse(config.authorize("Bearer wrong"))
@@ -131,6 +134,7 @@ class WebSecurityTests(TestCase):
                 return SimpleNamespace(
                     st_mode=observed.st_mode,
                     st_uid=observed.st_uid + 1,
+                    st_nlink=observed.st_nlink,
                     st_dev=observed.st_dev,
                     st_ino=observed.st_ino,
                     st_size=observed.st_size,
@@ -164,6 +168,7 @@ class WebSecurityTests(TestCase):
                     values = {
                         "st_mode": observed.st_mode,
                         "st_uid": observed.st_uid,
+                        "st_nlink": observed.st_nlink,
                         "st_dev": observed.st_dev,
                         "st_ino": observed.st_ino,
                         "st_size": observed.st_size,
@@ -234,7 +239,12 @@ class WebSecurityTests(TestCase):
         self.assertLessEqual(len(limiter._events), 2)
 
     def test_forwarded_address_is_used_only_for_a_trusted_proxy(self) -> None:
-        trusted = WebSecurityConfig(trust_proxy_headers=True)
+        trusted = WebSecurityConfig(
+            trust_proxy_headers=True,
+            api_token="p" * 40,
+            require_api_auth=True,
+        )
+        trusted.validate_proxy_topology("127.0.0.1")
         headers = {"X-Forwarded-For": "203.0.113.7, 127.0.0.1"}
         self.assertEqual(client_ip("127.0.0.1", headers, trusted), "203.0.113.7")
         self.assertEqual(client_ip("192.0.2.8", headers, trusted), "192.0.2.8")
@@ -244,6 +254,33 @@ class WebSecurityTests(TestCase):
         self.assertEqual(
             client_ip("::ffff:127.0.0.1", {}, WebSecurityConfig()), "127.0.0.1"
         )
+        with TemporaryDirectory() as directory:
+            token_path = Path(directory) / "proxy.token"
+            token_path.write_text("p" * 40 + "\n", encoding="utf-8")
+            token_path.chmod(0o600)
+            base = {
+                "WPG_TRUST_PROXY_HEADERS": "1",
+                "WPG_REQUIRE_API_AUTH": "1",
+                "WPG_API_TOKEN_FILE": str(token_path),
+            }
+            for environment, expected in (
+                ({"WPG_HOST": "0.0.0.0"}, "WPG_HOST/--host=127.0.0.1"),
+                (
+                    {"WPG_TRUSTED_PROXY_CIDRS": "0.0.0.0/0"},
+                    "WPG_TRUSTED_PROXY_CIDRS",
+                ),
+                (
+                    {"WPG_ALLOWED_CLIENT_CIDRS": "127.0.0.0/8,172.22.13.0/24"},
+                    "WPG_ALLOWED_CLIENT_CIDRS",
+                ),
+                ({"WPG_REQUIRE_API_AUTH": "0"}, "bearer authentication"),
+            ):
+                values = {**base, **environment}
+                with self.subTest(environment=values), patch.dict(
+                    os.environ, values, clear=True
+                ):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        WebSecurityConfig.from_environment()
 
     def test_configured_and_labeled_secrets_are_redacted(self) -> None:
         with TemporaryDirectory() as directory:
@@ -284,16 +321,54 @@ class WebSecurityTests(TestCase):
 
     def test_live_endpoint_has_security_headers_without_python_banner(self) -> None:
         audit_stream = io.StringIO()
-        with patch.object(web_app.sys, "stderr", audit_stream):
+        detailed_ready = {
+            "status": "ready",
+            "ready": True,
+            "source": {"head": "must-remain-detailed-only"},
+        }
+        with patch.object(web_app.sys, "stderr", audit_stream), patch.object(
+            web_app, "_health_payload", return_value=detailed_ready
+        ) as health_payload:
             base_url = self._serve(WebSecurityConfig(audit_enabled=True))
             with urllib.request.urlopen(
                 base_url + "/api/health/live", timeout=5
             ) as response:
                 payload = json.load(response)
                 headers = response.headers
+            with urllib.request.urlopen(
+                base_url + "/api/health/ready", timeout=5
+            ) as response:
+                minimal_ready = json.load(response)
+                self.assertEqual(response.status, 200)
+            with urllib.request.urlopen(
+                base_url + "/api/health", timeout=5
+            ) as response:
+                detailed_response = json.load(response)
+                self.assertEqual(response.status, 200)
+
+            health_payload.return_value = {
+                "status": "incomplete",
+                "ready": False,
+                "source": {"head": "must-not-leak"},
+            }
+            with self.assertRaises(urllib.error.HTTPError) as unavailable:
+                urllib.request.urlopen(
+                    base_url + "/api/health/ready", timeout=5
+                )
+            try:
+                self.assertEqual(unavailable.exception.code, 503)
+                minimal_incomplete = json.load(unavailable.exception)
+            finally:
+                unavailable.exception.close()
             time.sleep(0.05)
 
         self.assertTrue(payload["alive"])
+        self.assertEqual(minimal_ready, {"status": "ready", "ready": True})
+        self.assertEqual(
+            minimal_incomplete, {"status": "incomplete", "ready": False}
+        )
+        self.assertEqual(detailed_response, detailed_ready)
+        self.assertEqual(health_payload.call_count, 3)
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
@@ -301,8 +376,8 @@ class WebSecurityTests(TestCase):
         audit_lines = [
             line for line in audit_stream.getvalue().splitlines() if "http_request" in line
         ]
-        self.assertEqual(len(audit_lines), 1)
-        self.assertNotIn('"status":0', audit_lines[0])
+        self.assertEqual(len(audit_lines), 4)
+        self.assertTrue(all('"status":0' not in line for line in audit_lines))
 
     def test_server_can_bind_without_listening_until_preload_is_ready(self) -> None:
         try:
@@ -344,6 +419,25 @@ class WebSecurityTests(TestCase):
         finally:
             caught.exception.close()
 
+        content_type_url = self._serve(
+            WebSecurityConfig(rate_limit_requests=100, audit_enabled=False)
+        )
+        cross_site = urllib.request.Request(
+            content_type_url + "/api/search",
+            data=b'{}',
+            headers={"Content-Type": "text/plain"},
+            method="POST",
+        )
+        with patch.object(web_app, "_run_search") as run_search:
+            with self.assertRaises(urllib.error.HTTPError) as unsupported:
+                urllib.request.urlopen(cross_site, timeout=5)
+            try:
+                self.assertEqual(unsupported.exception.code, 415)
+                self.assertEqual(unsupported.exception.headers["Connection"], "close")
+            finally:
+                unsupported.exception.close()
+        run_search.assert_not_called()
+
         limited_url = self._serve(
             WebSecurityConfig(rate_limit_requests=1, audit_enabled=False)
         )
@@ -381,21 +475,50 @@ class WebSecurityTests(TestCase):
             # BaseHTTPRequestHandler.
             self.assertEqual(client.recv(1), b"")
 
-        allowed_url = self._serve(
-            WebSecurityConfig(
-                trust_proxy_headers=True,
-                allowed_client_cidrs=(ipaddress.ip_network("127.0.0.0/8"),),
-                audit_enabled=False,
+        audit_stream = io.StringIO()
+        with patch.object(web_app.sys, "stderr", audit_stream):
+            allowed_url = self._serve(
+                WebSecurityConfig(
+                    trust_proxy_headers=True,
+                    allowed_client_cidrs=(ipaddress.ip_network("127.0.0.0/8"),),
+                    api_token="p" * 40,
+                    require_api_auth=True,
+                    audit_enabled=True,
+                )
             )
-        )
-        with urllib.request.urlopen(
-            urllib.request.Request(
-                allowed_url + "/api/health/live",
-                headers={"X-Forwarded-For": "198.51.100.77"},
-            ),
-            timeout=5,
-        ) as response:
-            self.assertEqual(response.status, 200)
+            with self.assertRaises(urllib.error.HTTPError) as direct_bypass:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        allowed_url + "/api/health/live",
+                        headers={"X-Forwarded-For": "203.0.113.99"},
+                    ),
+                    timeout=5,
+                )
+            try:
+                self.assertEqual(direct_bypass.exception.code, 401)
+            finally:
+                direct_bypass.exception.close()
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    allowed_url + "/api/health/live",
+                    headers={
+                        "Authorization": "Bearer " + "p" * 40,
+                        "X-Forwarded-For": "198.51.100.77",
+                    },
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+            time.sleep(0.05)
+        audit_payloads = [
+            json.loads(line.partition("[audit] ")[2])
+            for line in audit_stream.getvalue().splitlines()
+            if line.startswith("[audit] ")
+        ]
+        rejected = [row for row in audit_payloads if row["auth"] == "rejected"]
+        accepted = [row for row in audit_payloads if row["auth"] == "accepted"]
+        self.assertEqual([row["client_ip"] for row in rejected], ["127.0.0.1"])
+        self.assertEqual([row["client_ip"] for row in accepted], ["198.51.100.77"])
 
     def test_oversized_body_is_rejected_before_body_read_or_worker_use(self) -> None:
         base_url = self._serve(

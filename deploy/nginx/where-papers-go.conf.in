@@ -1,11 +1,14 @@
 # Install this rendered file in /etc/nginx/conf.d/where-papers-go.conf.
-# It intentionally contains no credential, certificate, or hostname value.
+# The rendered file contains the private backend bearer credential and must be
+# installed root-owned mode 0600.  It never logs that credential.
 
 limit_req_zone $binary_remote_addr zone=wpg_search:10m rate=6r/m;
+limit_conn_zone $binary_remote_addr zone=wpg_search_connections:10m;
 
 log_format wpg_json escape=json
   '{"time":"$time_iso8601","request_id":"$request_id",'
   '"remote_addr":"$remote_addr","method":"$request_method",'
+  '"remote_user":"$remote_user",'
   '"path":"$uri","status":$status,"bytes":$body_bytes_sent,'
   '"request_time":$request_time,"upstream_time":"$upstream_response_time",'
   '"upstream_request_id":"$upstream_http_x_request_id"}';
@@ -24,9 +27,9 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    # Compatible with the Ubuntu 24.04 Nginx 1.24 package.
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name @@SERVER_NAME@@;
 
     ssl_certificate @@TLS_CERTIFICATE@@;
@@ -41,7 +44,10 @@ server {
 
     access_log /var/log/nginx/where-papers-go.access.json wpg_json;
     error_log /var/log/nginx/where-papers-go.error.log warn;
-    client_max_body_size 200k;
+    client_max_body_size 200000;
+    client_header_timeout 15s;
+    client_body_timeout 30s;
+    keepalive_timeout 30s;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options "nosniff" always;
@@ -52,21 +58,27 @@ server {
     location ~ ^/api/search(?:/stream)?$ {
         limit_req zone=wpg_search burst=2 nodelay;
         limit_req_status 429;
+        limit_conn wpg_search_connections 2;
+        limit_conn_status 429;
         proxy_pass http://where_papers_go_backend;
         proxy_http_version 1.1;
         proxy_request_buffering on;
         proxy_buffering off;
         proxy_read_timeout 905s;
         proxy_send_timeout 30s;
-        proxy_set_header Host $host;
+        proxy_set_header Host @@SERVER_NAME@@;
         proxy_set_header X-Real-IP $remote_addr;
         # This Nginx instance is the trust boundary. Overwrite, rather than
         # append to, any client-supplied forwarding chain.
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Forwarded "";
+        proxy_set_header Proxy-Authorization "";
+        proxy_set_header X-Forwarded-Host "";
         proxy_set_header X-Request-ID $request_id;
-        # Never forward the proxy's Basic credential into application logs.
-        proxy_set_header Authorization "";
+        # Replace the browser's Basic credential with the private credential
+        # that authenticates this proxy to the loopback application.
+        proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";
     }
 
     location / {
@@ -74,11 +86,14 @@ server {
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_read_timeout 30s;
-        proxy_set_header Host $host;
+        proxy_set_header Host @@SERVER_NAME@@;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Forwarded "";
+        proxy_set_header Proxy-Authorization "";
+        proxy_set_header X-Forwarded-Host "";
         proxy_set_header X-Request-ID $request_id;
-        proxy_set_header Authorization "";
+        proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";
     }
 }

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from where_paper_go import recommender
 from where_paper_go import worker
@@ -146,6 +146,27 @@ class FrozenLightRAGStoreTests(unittest.TestCase):
             0,
             completed.stderr.decode("utf-8", errors="replace"),
         )
+        process_stamp = worker.deployment_identity.process_executable_stamp(
+            os.getpid(), expected_executable=Path(sys.executable)
+        )
+        process_payload = (
+            worker.deployment_identity.process_executable_stamp_payload(
+                process_stamp
+            )
+        )
+        self.assertEqual(process_payload["pid"], os.getpid())
+        self.assertGreater(process_payload["start_ticks"], 0)
+        self.assertRegex(process_payload["executable_sha256"], r"^[0-9a-f]{64}$")
+        self.assertTrue(process_payload["proc_exe_verified"])
+        self.assertNotIn("path", process_payload)
+        with self.assertRaisesRegex(
+            worker.deployment_identity.SourceIdentityError, "SHA-256"
+        ):
+            worker.deployment_identity.process_executable_stamp(
+                os.getpid(),
+                expected_executable=Path(sys.executable),
+                expected_sha256="0" * 64,
+            )
 
     def _runtime_fixture(
         self, root: Path
@@ -372,6 +393,102 @@ class WorkerCacheIsolationTests(unittest.TestCase):
             self.assertEqual(captured[option_index + 1], str(lightrag_cache))
             working_index = captured.index("--lightrag-working-dir")
             self.assertEqual(captured[working_index + 1], str(root / "rag"))
+
+            process_stamp = worker.deployment_identity.ProcessExecutableStamp(
+                pid=os.getpid(),
+                start_ticks=123456,
+                executable_sha256="6" * 64,
+            )
+            source_identity = {
+                "ready": True,
+                "head": "1" * 40,
+                "tree": "2" * 40,
+                "manifest_sha256": "3" * 64,
+                "files_verified": True,
+                "process_pid": process_stamp.pid,
+                "process_start_ticks": process_stamp.start_ticks,
+            }
+            python_identity = {
+                "ready": True,
+                "manifest_sha256": "4" * 64,
+                "runtime_tree_sha256": "5" * 64,
+                "python_executable_sha256": process_stamp.executable_sha256,
+                "python_version": "3.14.5",
+                "python_soabi": "cpython-314-x86_64-linux-gnu",
+                "python_platform": "linux-x86_64",
+                "wheel_count": 59,
+                "elf_audit_sha256": "7" * 64,
+                "system_library_count": 10,
+                "system_directory_count": 8,
+                "files_verified": True,
+                "proc_exe_matches": True,
+                "system_abi_stat_verified": True,
+                "process_pid": process_stamp.pid,
+                "process_start_ticks": process_stamp.start_ticks,
+            }
+            with (
+                patch.object(
+                    worker.deployment_identity,
+                    "require_source_identity",
+                    return_value=source_identity,
+                ) as require_source,
+                patch.object(
+                    worker.deployment_identity,
+                    "require_python_runtime_identity",
+                    return_value=python_identity,
+                ) as require_python,
+                patch.object(
+                    worker.deployment_identity,
+                    "process_executable_stamp",
+                    return_value=process_stamp,
+                ),
+                patch.object(
+                    worker.sys,
+                    "flags",
+                    Mock(
+                        no_site=1,
+                        safe_path=True,
+                        dont_write_bytecode=1,
+                    ),
+                ),
+            ):
+                worker_identity = worker._verified_worker_identity()
+            require_source.assert_called_once_with()
+            require_python.assert_called_once_with()
+            self.assertTrue(worker_identity["exact"])
+            self.assertTrue(all(worker_identity["interpreter"].values()))
+            self.assertEqual(
+                worker_identity["process"]["executable_sha256"], "6" * 64
+            )
+            self.assertTrue(
+                worker_identity["python_runtime"]["system_abi_stat_verified"]
+            )
+
+            fake_stdin = Mock()
+            fake_stdin.buffer.readline.return_value = b""
+            startup_order: list[str] = []
+
+            def verified_identity() -> dict[str, object]:
+                startup_order.append("identity")
+                return worker_identity
+
+            def preload(_bindings: worker.WorkerCacheBindings) -> dict[str, object]:
+                startup_order.append("preload")
+                return {"preload_ms": 1, "bindings": {}}
+
+            with (
+                patch.object(worker, "_verified_worker_identity", side_effect=verified_identity),
+                patch.object(worker, "_worker_cache_bindings", return_value=bindings),
+                patch.object(worker, "_preload", side_effect=preload),
+                patch.object(worker, "_emit") as emit,
+                patch.object(worker.sys, "stdin", fake_stdin),
+            ):
+                self.assertEqual(worker.main(), 0)
+            self.assertEqual(startup_order, ["identity", "preload", "identity"])
+            self.assertTrue(emit.call_args_list[0].args[0]["ready"])
+            self.assertEqual(
+                emit.call_args_list[0].args[0]["worker_identity"], worker_identity
+            )
 
     def test_lightrag_working_dir_cannot_overlap_write_caches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

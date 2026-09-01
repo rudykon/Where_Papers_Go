@@ -1,0 +1,10 @@
+# Gate, deployment, and dependency-policy changes require repository-owner review.
+/.github/ @rudykon
+/scripts/validate_pr_gates.py @rudykon
+/scripts/run_closeout_tests.py @rudykon
+/scripts/run_linux_offline_gate.sh @rudykon
+/scripts/validate_closeout.py @rudykon
+/scripts/closeout_offline_guard/ @rudykon
+/deploy/ @rudykon
+/pyproject.toml @rudykon
+/uv.lock @rudykon
