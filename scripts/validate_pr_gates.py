@@ -981,10 +981,17 @@ def _verify_logo_and_diff(base: str) -> None:
         raise PrGateError("base revision is unsafe")
     _git(("cat-file", "-e", f"{base}^{{commit}}"))
     _git(("merge-base", "--is-ancestor", base, "HEAD"))
-    base_logo = _git(("rev-parse", "--verify", f"{base}:{LOGO_PATH}"))
+    base_logo_record = _git(
+        ("ls-tree", "-z", base, "--", LOGO_PATH), binary=True
+    )
     head_logo = _git(("rev-parse", "--verify", f"HEAD:{LOGO_PATH}"))
-    if base_logo != LOGO_GIT_BLOB_SHA1 or head_logo != LOGO_GIT_BLOB_SHA1:
-        raise PrGateError("base and HEAD must preserve the approved logo Git blob")
+    expected_base_record = (
+        f"100644 blob {LOGO_GIT_BLOB_SHA1}\t{LOGO_PATH}\0".encode("utf-8")
+    )
+    if base_logo_record not in {b"", expected_base_record}:
+        raise PrGateError("base may omit but may not replace the approved logo")
+    if head_logo != LOGO_GIT_BLOB_SHA1:
+        raise PrGateError("HEAD must preserve the approved logo Git blob")
     for arguments in (
         ("diff", "--check", f"{base}...HEAD"),
         ("diff", "--check"),

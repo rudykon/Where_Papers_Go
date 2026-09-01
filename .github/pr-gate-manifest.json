@@ -246,11 +246,11 @@
       "sha256": "4edd6544177ce61b36054d53d6558197209047f2823e1337f69431d85ec0ce8b"
     },
     {
-      "bytes": 78342,
-      "git_blob_sha1": "31405e5b09a035a4546c45d016d8c7559836d4da",
+      "bytes": 78575,
+      "git_blob_sha1": "44fdae4e5d3c931294a22bf35c416744e4e4b69f",
       "mode": "100644",
       "path": "scripts/validate_pr_gates.py",
-      "sha256": "0da2c046ca4467e15ab9d02fb976a980604d028690406b66756d04fa2c260eff"
+      "sha256": "96253f328bed8c587baa0265defc4d58e10bc349583610b022acc612dec8a6b3"
     },
     {
       "bytes": 63336,
@@ -260,11 +260,11 @@
       "sha256": "73c58053ec13d5de79abdc4bb633205eedc2d8520f823a127afe1263e5b9aafb"
     },
     {
-      "bytes": 34170,
-      "git_blob_sha1": "5842357235b63a420058719e5a180c59dfb64b8c",
+      "bytes": 35519,
+      "git_blob_sha1": "cf5c8b5f6c96e52258b0e76749c942a4ae4ebe38",
       "mode": "100644",
       "path": "tests/test_closeout_runner.py",
-      "sha256": "b9212fbfdd7b9ae7809a8cafe98c108a16ddde4e127bf83309a434f7f926a174"
+      "sha256": "a46eb6df9afdfe3e72047622abc80e187940b1327cd29e18572813aec90f17de"
     },
     {
       "bytes": 89238,
@@ -657,7 +657,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "0adc559795d8f2b078534c1df44018addf71e43aa3285e02057b7f0ba37fa3ff"
+    "inventory_sha256": "511be46838691e8ea246fe4879effd75756418f6f957bd614027c0b9c777b6a1"
   },
   "tests": {
     "full": {

@@ -624,6 +624,43 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertNotIn("--init-groups", offline_wrapper)
         self.assertNotIn("iptables", offline_wrapper)
 
+        def logo_git(arguments, *, binary=False):
+            if arguments[:2] in {
+                ("cat-file", "-e"),
+                ("merge-base", "--is-ancestor"),
+            }:
+                return b"" if binary else ""
+            if arguments[:2] == ("ls-tree", "-z"):
+                return b""
+            if arguments[:2] == ("rev-parse", "--verify"):
+                return validate_pr_gates.LOGO_GIT_BLOB_SHA1
+            if arguments[0] == "diff":
+                return ""
+            self.fail(f"unexpected git invocation: {arguments!r}")
+
+        with patch.object(validate_pr_gates, "_git", side_effect=logo_git):
+            validate_pr_gates._verify_logo_and_diff("base")
+
+        wrong_logo = (
+            b"100644 blob "
+            + (b"0" * 40)
+            + b"\tdocs/Where-Papers-Go.png\0"
+        )
+        with patch.object(
+            validate_pr_gates,
+            "_git",
+            side_effect=lambda arguments, binary=False: (
+                wrong_logo
+                if arguments[:2] == ("ls-tree", "-z")
+                else logo_git(arguments, binary=binary)
+            ),
+        ):
+            with self.assertRaisesRegex(
+                validate_pr_gates.PrGateError,
+                "base may omit but may not replace",
+            ):
+                validate_pr_gates._verify_logo_and_diff("base")
+
         locked_status = """\
 Pid:\t1
 Uid:\t1001\t1001\t1001\t1001
