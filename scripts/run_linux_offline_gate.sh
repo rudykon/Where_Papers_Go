@@ -160,13 +160,15 @@ fi
     --propagation private \
     -- \
   /bin/bash --noprofile --norc -Eeuo pipefail -c '
-    caller_uid="$1"
-    caller_gid="$2"
-    project_root="$3"
-    runner_commands_dir="$4"
-    caller_home="$5"
-    runner_tool_cache="$6"
-    shift 6
+    # Metadata is carried by the explicit env -i block above.  Keep every
+    # positional parameter reserved for the target command across both
+    # bash -c boundaries.
+    caller_uid="${WPG_PR_CALLER_UID:?}"
+    caller_gid="${WPG_PR_CALLER_GID:?}"
+    project_root="${WPG_PR_SANDBOX_ROOT:?}"
+    runner_commands_dir="${WPG_PR_RUNNER_COMMANDS_DIR:?}"
+    caller_home="${WPG_PR_CALLER_HOME:?}"
+    runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
     # Drop the inherited checkout cwd before overmounting it.  Otherwise the
     # old mount remains reachable through the process's cwd despite the new
@@ -252,13 +254,12 @@ fi
       --pdeathsig=KILL \
       -- \
       /bin/bash --noprofile --norc -Eeuo pipefail -c '\''
-        caller_uid="$1"
-        caller_gid="$2"
-        project_root="$3"
-        runner_commands_dir="$4"
-        caller_home="$5"
-        runner_tool_cache="$6"
-        shift 6
+        caller_uid="${WPG_PR_CALLER_UID:?}"
+        caller_gid="${WPG_PR_CALLER_GID:?}"
+        project_root="${WPG_PR_SANDBOX_ROOT:?}"
+        runner_commands_dir="${WPG_PR_RUNNER_COMMANDS_DIR:?}"
+        caller_home="${WPG_PR_CALLER_HOME:?}"
+        runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
         uid_line=
         gid_line=
@@ -320,11 +321,5 @@ fi
           exit 2
         fi
         exec "$@"
-      '\'' wpg-unprivileged \
-        "$caller_uid" "$caller_gid" "$project_root" \
-        "$runner_commands_dir" "$caller_home" \
-        "$runner_tool_cache" "$@"
-  ' wpg-root \
-    "$caller_uid" "$caller_gid" "$project_root" \
-    "$runner_commands_dir" "$caller_home" \
-    "$runner_tool_cache" "$command_path" "$@"
+      '\'' wpg-unprivileged "$@"
+  ' wpg-root "$command_path" "$@"
