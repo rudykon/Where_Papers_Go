@@ -523,6 +523,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertIn(".github/pylock.wpg-wheel-build.toml", workflow)
         self.assertIn("git -c core.hooksPath=/dev/null archive", workflow)
         self.assertIn("permissions: {}", workflow)
+        self.assertIn("  push:\n    branches: [main]\n", workflow)
 
         model_lock = validate_pr_gates.MODEL_LOCK_PATH.read_bytes()
         self.assertEqual(
@@ -599,9 +600,27 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "command is below the noexec checkout",
             "[[ ! -w scripts/validate_pr_gates.py ]]",
             "WPG_PR_RUNNER_TOOL_CACHE",
+            'wpg-root "$command_path" "$@"',
+            'wpg-unprivileged "$@"',
             "GITHUB_ENV+x",
         ):
             self.assertIn(required_fragment, offline_wrapper)
+        for local_name, environment_name in (
+            ("caller_uid", "WPG_PR_CALLER_UID"),
+            ("caller_gid", "WPG_PR_CALLER_GID"),
+            ("project_root", "WPG_PR_SANDBOX_ROOT"),
+            ("runner_commands_dir", "WPG_PR_RUNNER_COMMANDS_DIR"),
+            ("caller_home", "WPG_PR_CALLER_HOME"),
+            ("runner_tool_cache", "WPG_PR_RUNNER_TOOL_CACHE"),
+        ):
+            self.assertEqual(
+                offline_wrapper.count(
+                    f'{local_name}="${{{environment_name}:?}}"'
+                ),
+                2,
+            )
+        self.assertNotIn('runner_commands_dir="$4"', offline_wrapper)
+        self.assertNotIn("shift 6", offline_wrapper)
         self.assertNotIn("--init-groups", offline_wrapper)
         self.assertNotIn("iptables", offline_wrapper)
 
