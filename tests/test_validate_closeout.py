@@ -769,6 +769,34 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         release = self.root / "source-releases" / ("release-" + "f" * 64)
         release.mkdir(parents=True)
         release.chmod(0o555)
+        process_environment = {
+            "WPG_HOST": "0.0.0.0",
+            "WPG_PORT": "8765",
+            "WPG_SOURCE_HEAD": self.head,
+            "WPG_SOURCE_TREE": "9" * 40,
+            "WPG_SOURCE_MANIFEST": str(
+                release / "source-release-manifest.json"
+            ),
+            "WPG_SOURCE_MANIFEST_SHA256": "f" * 64,
+            "PYTHONPATH": f"{release}:{self.root / 'dependencies'}",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
+        encoded_environment = b"\0".join(
+            f"{name}={value}".encode() for name, value in process_environment.items()
+        )
+        self.assertEqual(
+            validate_closeout._parse_process_environment(encoded_environment),
+            process_environment,
+        )
+        for forbidden in ("PYTHONHOME", "PYTHONPLATLIBDIR"):
+            with self.assertRaisesRegex(
+                validate_closeout.CloseoutValidationError,
+                "forbidden systemd MainPID environment variable",
+            ):
+                validate_closeout._parse_process_environment(
+                    encoded_environment + f"\0{forbidden}=/tmp/poison".encode()
+                )
         process = {
             "pid": 1234,
             "start_ticks": 9876,

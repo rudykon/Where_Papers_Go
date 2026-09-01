@@ -191,13 +191,15 @@ class DeploymentManifestTests(TestCase):
             "Environment=WPG_TAVILY_STATE_FILE=@@SHARED_STATE_DIR@@/",
             "Environment=WPG_RUNTIME_MANIFEST_SHA256=@@RUNTIME_MANIFEST_SHA256@@",
             "WorkingDirectory=@@SOURCE_RELEASE@@",
-            "ExecStart=/usr/bin/env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 "
-            "PYTHONPATH=@@SOURCE_RELEASE@@",
+            "ExecStart=/usr/bin/env -u PYTHONHOME -u PYTHONPLATLIBDIR "
+            "PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 "
+            "PYTHONPATH=@@SOURCE_RELEASE@@:@@PYTHON_DEPENDENCY_PATH@@",
             "WPG_SOURCE_HEAD=@@SOURCE_HEAD@@",
             "WPG_SOURCE_TREE=@@SOURCE_TREE@@",
             "WPG_SOURCE_MANIFEST=@@SOURCE_MANIFEST@@",
             "WPG_SOURCE_MANIFEST_SHA256=@@SOURCE_MANIFEST_SHA256@@",
             "ReadOnlyPaths=@@SOURCE_RELEASE@@",
+            "ReadOnlyPaths=@@PYTHON_DEPENDENCY_PATH@@",
             "Environment=WPG_DATA_DIR=@@DATA_DIR@@",
             "Environment=WPG_API_CONFIG=@@CONFIG_PATH@@",
             "Environment=WPG_MAX_CONCURRENT_CONNECTIONS=64",
@@ -206,7 +208,12 @@ class DeploymentManifestTests(TestCase):
         )
         for value in required:
             self.assertIn(value, text)
-        self.assertEqual(text.count("PYTHONPATH=@@SOURCE_RELEASE@@"), 2)
+        self.assertEqual(
+            text.count(
+                "PYTHONPATH=@@SOURCE_RELEASE@@:@@PYTHON_DEPENDENCY_PATH@@"
+            ),
+            2,
+        )
         self.assertEqual(text.count("WPG_SOURCE_HEAD=@@SOURCE_HEAD@@"), 2)
         self.assertNotIn("Environment=PYTHONPATH=", text)
         self.assertNotIn("Environment=WPG_SOURCE_HEAD=", text)
@@ -231,11 +238,20 @@ class DeploymentManifestTests(TestCase):
             source_release, source_manifest_sha256, _source_manifest = (
                 self._source_release(root)
             )
+            venv_python = root / "venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True)
+            venv_python.symlink_to(Path(sys.executable).resolve())
+            dependency_path = root / "dependency-site"
+            dependency_path.mkdir()
+            runtime_probe = self.enterContext(
+                patch.object(manage_deployment, "_validate_python_runtime")
+            )
             args = Namespace(
                 template=manage_deployment.SYSTEMD_TEMPLATE,
                 source_release=source_release,
                 expected_source_manifest_sha256=source_manifest_sha256,
-                python=Path(sys.executable),
+                python=venv_python,
+                python_dependency_path=dependency_path,
                 data_dir=manage_deployment.PROJECT_ROOT / "data",
                 api_config=config,
                 environment_file="%h/.config/where-papers-go/runtime.env",
@@ -258,8 +274,13 @@ class DeploymentManifestTests(TestCase):
             rendered = output.read_text(encoding="utf-8")
             self.assertIn(str(source_release), rendered)
             self.assertIn(f"WPG_SOURCE_HEAD={'1' * 40}", rendered)
-            self.assertIn(str(Path(sys.executable).resolve()), rendered)
+            self.assertIn(f"{venv_python} -m where_paper_go.web_app", rendered)
+            self.assertNotIn(
+                f"{Path(sys.executable).resolve()} -m where_paper_go.web_app",
+                rendered,
+            )
             self.assertNotIn("@@", rendered)
+            self.assertGreaterEqual(runtime_probe.call_count, 1)
 
             unchanged = manage_deployment.render_systemd(args)
             self.assertIsNone(unchanged["backup"])
@@ -973,12 +994,18 @@ class DeploymentManifestTests(TestCase):
             source_release, source_manifest_sha256, _source_manifest = (
                 self._source_release(root)
             )
+            dependency_path = root / "dependency-site"
+            dependency_path.mkdir()
+            runtime_probe = self.enterContext(
+                patch.object(manage_deployment, "_validate_python_runtime")
+            )
             systemd = manage_deployment.render_systemd(
                 Namespace(
                     template=manage_deployment.SYSTEMD_TEMPLATE,
                     source_release=source_release,
                     expected_source_manifest_sha256=source_manifest_sha256,
                     python=Path(sys.executable),
+                    python_dependency_path=dependency_path,
                     data_dir=data,
                     api_config=config,
                     environment_file="%h/.config/where-papers-go/runtime.env",
@@ -989,6 +1016,7 @@ class DeploymentManifestTests(TestCase):
                 )
             )
             self.assertEqual(systemd["status"], "dry-run")
+            runtime_probe.assert_called_once()
 
             second_activation = manage_deployment.activate_runtime(
                 Namespace(

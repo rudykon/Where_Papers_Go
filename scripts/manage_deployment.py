@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from typing import Any, Mapping, Sequence
 import urllib.error
@@ -1216,8 +1217,182 @@ def _render_result(
     return result
 
 
+def _validate_python_runtime(
+    python: Path, *, source_release: Path, dependency_path: Path
+) -> None:
+    """Prove that the selected launcher can import the production stack.
+
+    User-site discovery remains disabled.  The audited source release is first
+    on ``PYTHONPATH`` and one explicit dependency root supplies the installed
+    LightRAG/numeric packages.  This catches both a resolved-away venv and an
+    interpreter/dependency ABI mismatch before a unit is emitted.
+    """
+
+    program = textwrap.dedent(
+        """\
+        import asyncio
+        import pathlib
+        import sys
+        import tempfile
+
+        source = pathlib.Path(sys.argv[1]).resolve()
+        deps = pathlib.Path(sys.argv[2]).resolve()
+        assert "sitecustomize" not in sys.modules
+
+        def audit(event, _args):
+            if event in {
+                "subprocess.Popen",
+                "os.system",
+                "os.posix_spawn",
+                "os.posix_spawnp",
+            }:
+                raise RuntimeError("offline dependency probe denied " + event)
+
+        sys.addaudithook(audit)
+
+        import pipmaster as pm
+
+        pipmaster_calls = []
+
+        def deny_install(*args, **kwargs):
+            pipmaster_calls.append((args, kwargs))
+            raise RuntimeError(
+                "pipmaster installation is forbidden during offline preflight"
+            )
+
+        for name in (
+            "install",
+            "install_if_missing",
+            "install_multiple",
+            "install_multiple_if_not_installed",
+            "install_or_update",
+            "install_or_update_multiple",
+            "install_version",
+            "async_install",
+            "async_install_if_missing",
+            "async_install_multiple",
+        ):
+            if hasattr(pm, name):
+                setattr(pm, name, deny_install)
+
+        import nano_vectordb
+        import networkx
+        import numpy as np
+        from lightrag import LightRAG, QueryParam
+        from lightrag.kg.factory import get_storage_class
+        from lightrag.utils import Tokenizer, wrap_embedding_func_with_attrs
+        from where_paper_go import web_app
+        from where_paper_go.lightrag import _UnicodeCodepointTokenizer
+
+        assert pathlib.Path(web_app.__file__).resolve().is_relative_to(source)
+        for module in (pm, nano_vectordb, networkx, np):
+            assert pathlib.Path(module.__file__).resolve().is_relative_to(deps)
+
+        for storage_name in (
+            "JsonKVStorage",
+            "NanoVectorDBStorage",
+            "NetworkXStorage",
+            "JsonDocStatusStorage",
+        ):
+            storage_class = get_storage_class(storage_name)
+            storage_module = sys.modules[storage_class.__module__]
+            assert pathlib.Path(
+                storage_module.__file__
+            ).resolve().is_relative_to(deps)
+
+        @wrap_embedding_func_with_attrs(
+            embedding_dim=8,
+            max_token_size=256,
+            model_name="where-papers-go-offline-probe",
+        )
+        async def embedding_func(texts):
+            rows = np.zeros((len(texts), 8), dtype=np.float32)
+            rows[:, 0] = 1.0
+            return rows
+
+        async def llm_func(_prompt, *args, **kwargs):
+            return "{}"
+
+        async def run_probe():
+            with tempfile.TemporaryDirectory(
+                prefix="wpg-lightrag-probe-"
+            ) as directory:
+                rag = LightRAG(
+                    working_dir=directory,
+                    workspace="offline_probe",
+                    kv_storage="JsonKVStorage",
+                    vector_storage="NanoVectorDBStorage",
+                    graph_storage="NetworkXStorage",
+                    doc_status_storage="JsonDocStatusStorage",
+                    llm_model_func=llm_func,
+                    llm_model_name="where-papers-go-offline-probe",
+                    tokenizer=Tokenizer(
+                        model_name="unicode-codepoint-v1",
+                        tokenizer=_UnicodeCodepointTokenizer(),
+                    ),
+                    embedding_func=embedding_func,
+                    addon_params={"language": "Chinese"},
+                )
+                initialized = False
+                try:
+                    await rag.initialize_storages()
+                    initialized = True
+                    result = await rag.aquery_data(
+                        "offline dependency probe",
+                        QueryParam(mode="bypass"),
+                    )
+                    assert result.get("status") == "success"
+                finally:
+                    if initialized:
+                        await rag.finalize_storages()
+
+        asyncio.run(run_probe())
+        assert pipmaster_calls == []
+        assert "lightrag.llm.openai" not in sys.modules
+        """
+    )
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+        "PYTHONPATH": os.pathsep.join((str(source_release), str(dependency_path))),
+        "PIP_NO_INDEX": "1",
+        "UV_OFFLINE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+    }
+    try:
+        completed = subprocess.run(
+            [python, "-c", program, str(source_release), str(dependency_path)],
+            cwd=source_release,
+            env=environment,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("production Python dependency probe failed") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip()
+        raise ValueError(
+            "production Python cannot import the pinned source/dependency stack: "
+            + detail[-1000:]
+        )
+
+
 def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
-    python = args.python.resolve()
+    # Preserve the launcher path exactly (apart from lexical absolutization).
+    # Resolving a venv's ``bin/python`` symlink to /usr/bin/python discards the
+    # adjacent pyvenv.cfg context and silently loses the venv dependencies.
+    python = Path(os.path.abspath(args.python.expanduser()))
+    dependency_path = args.python_dependency_path.expanduser().resolve()
     data_dir = args.data_dir.expanduser().resolve()
     runtime_dir = _validated_runtime_shadow(args.runtime_dir, data_dir=data_dir)
     shared_state_dir = _private_directory(args.shared_state_dir, create=False)
@@ -1230,6 +1405,28 @@ def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
     )
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError(f"python executable is unavailable: {python}")
+    try:
+        dependency_info = dependency_path.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"python dependency path is unavailable: {dependency_path}"
+        ) from exc
+    if (
+        stat.S_ISLNK(dependency_info.st_mode)
+        or not stat.S_ISDIR(dependency_info.st_mode)
+        or dependency_info.st_uid != os.geteuid()
+        or stat.S_IMODE(dependency_info.st_mode) & stat.S_IWOTH
+        or (
+            stat.S_IMODE(dependency_info.st_mode) & stat.S_IWGRP
+            and dependency_info.st_gid != os.getegid()
+        )
+    ):
+        raise ValueError("python dependency path is not an owned, real directory")
+    _validate_python_runtime(
+        python,
+        source_release=source_release,
+        dependency_path=dependency_path,
+    )
     payload = render_template(
         args.template,
         {
@@ -1239,6 +1436,7 @@ def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
             "SOURCE_MANIFEST": source_release / SOURCE_MANIFEST_FILE,
             "SOURCE_MANIFEST_SHA256": source_manifest_sha256,
             "PYTHON": python,
+            "PYTHON_DEPENDENCY_PATH": dependency_path,
             "DATA_DIR": data_dir,
             "CONFIG_PATH": args.api_config.expanduser().resolve(),
             "ENV_FILE": args.environment_file,
@@ -1649,6 +1847,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="approved source manifest SHA-256 from prepare-source-release",
     )
     systemd.add_argument("--python", type=Path, default=Path(sys.executable))
+    systemd.add_argument(
+        "--python-dependency-path",
+        type=Path,
+        required=True,
+        help="explicit dependency root used with PYTHONNOUSERSITE=1",
+    )
     systemd.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     systemd.add_argument(
         "--api-config", type=Path, default=PROJECT_ROOT / "llmapi.json"
