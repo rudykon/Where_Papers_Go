@@ -585,7 +585,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "--propagation private",
-            "/bin/bash -p --noprofile --norc",
+            "/bin/bash --noprofile --norc -p",
             "--mount-proc",
             "--kill-child=KILL",
             "--clear-groups",

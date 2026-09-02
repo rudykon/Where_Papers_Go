@@ -159,7 +159,7 @@ fi
     --mount-proc \
     --propagation private \
     -- \
-  /bin/bash -p --noprofile --norc -Eeuo pipefail -c '
+  /bin/bash --noprofile --norc -p -Eeuo pipefail -c '
     # Metadata is carried by the explicit env -i block above.  Keep every
     # positional parameter reserved for the target command across both
     # bash -c boundaries.
