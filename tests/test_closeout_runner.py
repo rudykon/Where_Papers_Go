@@ -585,6 +585,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "--propagation private",
+            "/bin/bash -p --noprofile --norc",
             "--mount-proc",
             "--kill-child=KILL",
             "--clear-groups",
@@ -605,6 +606,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             'wpg-unprivileged "$@"',
             "GITHUB_ENV+x",
             "OS-level offline gate retained propagating mounts",
+            "OS-level offline gate privileged setup shell lost effective root",
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
