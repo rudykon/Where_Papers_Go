@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ from unittest import TestCase
 from unittest.mock import patch
 import zipfile
 
-from scripts import manage_deployment
+from scripts import manage_deployment, monitor_operations
 from where_paper_go import deployment_identity
 from where_paper_go.tavily_pool import TavilyKeyPool
 
@@ -54,11 +55,53 @@ class DeploymentManifestTests(TestCase):
 
     @staticmethod
     def _source_release(root: Path) -> tuple[Path, str, dict[str, object]]:
-        head = "1" * 40
-        tree = "2" * 40
+        head = (
+            manage_deployment._git_output(
+                manage_deployment.PROJECT_ROOT,
+                "rev-parse",
+                "--verify",
+                "HEAD^{commit}",
+            )
+            .decode("ascii")
+            .strip()
+            .casefold()
+        )
+        tree = (
+            manage_deployment._git_output(
+                manage_deployment.PROJECT_ROOT,
+                "rev-parse",
+                "--verify",
+                "HEAD^{tree}",
+            )
+            .decode("ascii")
+            .strip()
+            .casefold()
+        )
         contents = {
-            "scripts/manage_deployment.py": b"# immutable deployment helper\n",
+            manage_deployment.MONITOR_RENDERER_RELATIVE.as_posix(): (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_RENDERER_RELATIVE
+            ).read_bytes(),
             "where_paper_go/web_app.py": b"# immutable web entrypoint\n",
+            manage_deployment.MONITOR_POLICY_RELATIVE.as_posix(): (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_POLICY_RELATIVE
+            ).read_bytes(),
+            manage_deployment.MONITOR_SYSTEMD_SERVICE_RELATIVE.as_posix(): (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_SYSTEMD_SERVICE_RELATIVE
+            ).read_bytes(),
+            manage_deployment.MONITOR_SYSTEMD_TIMER_RELATIVE.as_posix(): (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_SYSTEMD_TIMER_RELATIVE
+            ).read_bytes(),
+            manage_deployment.MONITOR_SCRIPT_RELATIVE.as_posix(): (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_SCRIPT_RELATIVE
+            ).read_bytes(),
+            manage_deployment.SYSTEMD_TEMPLATE.relative_to(
+                manage_deployment.PROJECT_ROOT
+            ).as_posix(): manage_deployment.SYSTEMD_TEMPLATE.read_bytes(),
         }
         rows = [
             {
@@ -109,14 +152,16 @@ class DeploymentManifestTests(TestCase):
         return release, manifest_sha256, manifest
 
     @staticmethod
-    def _runtime_shadow(root: Path, *, data_dir: Path | None = None) -> Path:
+    def _runtime_shadow(
+        root: Path, *, data_dir: Path | None = None, marker: str = ""
+    ) -> Path:
         runtime = root / "runtime-root" / "generations" / "generation-test"
         lightrag = runtime / "lightrag_storage"
         lightrag.mkdir(parents=True, mode=0o700)
         files = []
         for name in manage_deployment.RUNTIME_LIGHTRAG_FILES:
             path = lightrag / name
-            path.write_bytes((name + "\n").encode("utf-8"))
+            path.write_bytes((name + marker + "\n").encode("utf-8"))
             path.chmod(0o600)
             files.append(
                 {
@@ -313,6 +358,870 @@ class DeploymentManifestTests(TestCase):
         ):
             self.assertNotIn(incompatible, text)
 
+        monitor_service = (
+            manage_deployment.PROJECT_ROOT
+            / manage_deployment.MONITOR_SYSTEMD_SERVICE_RELATIVE
+        ).read_text(encoding="utf-8")
+        main_unset = next(
+            line for line in text.splitlines() if line.startswith("UnsetEnvironment=")
+        )
+        monitor_unset = next(
+            line
+            for line in monitor_service.splitlines()
+            if line.startswith("UnsetEnvironment=")
+        )
+        self.assertEqual(monitor_unset, main_unset)
+        self.assertEqual(
+            tuple(monitor_unset.removeprefix("UnsetEnvironment=").split()),
+            manage_deployment.EXEC_BOUNDARY_UNSET_ENVIRONMENT,
+        )
+        self.assertLess(
+            monitor_service.index(monitor_unset),
+            monitor_service.index("ExecStart=/usr/bin/env -i "),
+        )
+        for earlier, later in (
+            ("GCONV_PATH", "GLIBC_TUNABLES"),
+            ("LD_AUDIT", "LD_PRELOAD"),
+            ("OPENSSL_CONF", "SSLKEYLOGFILE"),
+            ("HTTP_PROXY", "http_proxy"),
+            ("PYTHONBREAKPOINT", "PYTHONHOME"),
+            ("PYTHONPATH", "PYTHONWARNINGS"),
+        ):
+            self.assertLess(
+                manage_deployment.EXEC_BOUNDARY_UNSET_ENVIRONMENT.index(earlier),
+                manage_deployment.EXEC_BOUNDARY_UNSET_ENVIRONMENT.index(later),
+            )
+        for value in (
+            "Type=oneshot",
+            "After=where-papers-go.service",
+            "-m scripts.monitor_operations",
+            "--source-manifest @@SOURCE_MANIFEST@@",
+            "--python-runtime-manifest @@PYTHON_RUNTIME_MANIFEST@@",
+            "--runtime-manifest @@RUNTIME_MANIFEST@@",
+            "--expected-policy-sha256 @@MONITOR_POLICY_SHA256@@",
+            "--expected-python-executable-sha256 @@PYTHON_EXECUTABLE_SHA256@@",
+            "--expected-store-binding-sha256 @@LIGHTRAG_STORE_BINDING_SHA256@@",
+            "SuccessExitStatus=2",
+            "Restart=no",
+            "TimeoutStartSec=300",
+            "ProtectSystem=strict",
+            "ProtectHome=read-only",
+            "ReadWritePaths=@@MONITOR_STATE_DIR@@",
+            "ReadOnlyPaths=@@SOURCE_RELEASE@@",
+            "ReadOnlyPaths=@@PYTHON_RUNTIME@@",
+            "ReadOnlyPaths=@@RUNTIME_MANIFEST@@",
+        ):
+            self.assertIn(value, monitor_service)
+        monitor_exec = next(
+            line
+            for line in monitor_service.splitlines()
+            if line.startswith("ExecStart=")
+        )
+        self.assertNotIn("/api/search", monitor_exec)
+        self.assertNotIn("@@MONITOR_HEALTH_URL@@", monitor_service)
+        monitor_timer = (
+            manage_deployment.PROJECT_ROOT
+            / manage_deployment.MONITOR_SYSTEMD_TIMER_RELATIVE
+        ).read_text(encoding="utf-8")
+        for value in (
+            "OnCalendar=*-*-* *:*:00",
+            "Persistent=true",
+            "Unit=where-papers-go-monitor.service",
+            "WantedBy=timers.target",
+        ):
+            self.assertIn(value, monitor_timer)
+        monitor_policy = json.loads(
+            (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_POLICY_RELATIVE
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            monitor_policy["service"],
+            {
+                "unit": manage_deployment.MONITORED_SERVICE_NAME,
+                "health_url": manage_deployment.MONITOR_HEALTH_URL,
+                "health_timeout_seconds": 60,
+            },
+        )
+        self.assertIsNone(
+            monitor_policy["thresholds"]["search_latency_warning_ms"]
+        )
+        self.assertIsNone(
+            monitor_policy["thresholds"]["search_latency_critical_ms"]
+        )
+
+        for invalid_json in (b'{"value":1,"value":2}', b'{"value":NaN}'):
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError, "STRICT_JSON_INVALID"
+            ):
+                monitor_operations.parse_json_bytes(
+                    invalid_json, label="STRICT"
+                )
+
+        with TemporaryDirectory() as module_directory:
+            module_root = Path(module_directory)
+            source_module_root = module_root / "source"
+            python_module_root = module_root / "python-runtime"
+            source_module_payloads = {
+                "scripts/manage_deployment.py": b"manage helper\n",
+                "scripts/monitor_operations.py": b"monitor helper\n",
+                "where_paper_go/deployment_identity.py": b"identity helper\n",
+            }
+            python_module_payloads = {
+                "lib/python3.14/json/__init__.py": b"stdlib helper\n"
+            }
+
+            def module_inventory(
+                root: Path, payloads: dict[str, bytes]
+            ) -> dict[str, dict[str, object]]:
+                inventory: dict[str, dict[str, object]] = {}
+                for relative, payload in payloads.items():
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(payload)
+                    path.chmod(0o444)
+                    inventory[relative] = {
+                        "path": relative,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "mode": "0444",
+                    }
+                return inventory
+
+            source_module_inventory = module_inventory(
+                source_module_root, source_module_payloads
+            )
+            python_module_inventory = module_inventory(
+                python_module_root, python_module_payloads
+            )
+            loaded_modules = [
+                *(
+                    Namespace(__file__=str(source_module_root / relative))
+                    for relative in source_module_payloads
+                ),
+                *(
+                    Namespace(__file__=str(python_module_root / relative))
+                    for relative in python_module_payloads
+                ),
+                Namespace(__file__="<frozen importlib._bootstrap>"),
+            ]
+            module_proof = monitor_operations._verify_loaded_module_files(
+                source_root=source_module_root,
+                python_runtime=python_module_root,
+                source_inventory=source_module_inventory,
+                python_inventory=python_module_inventory,
+                modules=loaded_modules,
+            )
+            self.assertEqual(module_proof["loaded_module_file_count"], 4)
+            self.assertEqual(module_proof["source_module_file_count"], 3)
+            self.assertEqual(
+                module_proof["python_runtime_module_file_count"], 1
+            )
+            self.assertRegex(
+                module_proof["loaded_module_binding_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            wrong_hash_inventory = {
+                name: dict(row) for name, row in source_module_inventory.items()
+            }
+            wrong_hash_inventory["scripts/manage_deployment.py"][
+                "sha256"
+            ] = "0" * 64
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError,
+                "LOADED_MODULE_FILE_MISMATCH",
+            ):
+                monitor_operations._verify_loaded_module_files(
+                    source_root=source_module_root,
+                    python_runtime=python_module_root,
+                    source_inventory=wrong_hash_inventory,
+                    python_inventory=python_module_inventory,
+                    modules=loaded_modules,
+                )
+            missing_row_inventory = dict(source_module_inventory)
+            del missing_row_inventory["scripts/manage_deployment.py"]
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError,
+                "LOADED_MODULE_MANIFEST_MISSING",
+            ):
+                monitor_operations._verify_loaded_module_files(
+                    source_root=source_module_root,
+                    python_runtime=python_module_root,
+                    source_inventory=missing_row_inventory,
+                    python_inventory=python_module_inventory,
+                    modules=loaded_modules,
+                )
+            outside_module = module_root / "mutable-outside.py"
+            outside_module.write_bytes(b"outside\n")
+            outside_module.chmod(0o444)
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError,
+                "MONITOR_IMPORT_ROOT_INVALID",
+            ):
+                monitor_operations._verify_loaded_module_files(
+                    source_root=source_module_root,
+                    python_runtime=python_module_root,
+                    source_inventory=source_module_inventory,
+                    python_inventory=python_module_inventory,
+                    modules=[
+                        *loaded_modules,
+                        Namespace(__file__=str(outside_module)),
+                    ],
+                )
+
+            writable_core = source_module_root / "scripts/manage_deployment.py"
+            writable_core.chmod(0o644)
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError, "LOADED_MODULE_FILE_UNSAFE"
+            ):
+                monitor_operations._verify_loaded_module_files(
+                    source_root=source_module_root,
+                    python_runtime=python_module_root,
+                    source_inventory=source_module_inventory,
+                    python_inventory=python_module_inventory,
+                    modules=loaded_modules,
+                )
+            writable_core.chmod(0o444)
+
+            writable_manifest = module_root / "manifest.json"
+            writable_manifest.write_bytes(b"{}\n")
+            writable_manifest.chmod(0o600)
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError,
+                "TEST_MANIFEST_FILE_UNSAFE",
+            ):
+                monitor_operations._read_stable_file(
+                    writable_manifest,
+                    label="TEST_MANIFEST",
+                    max_bytes=1024,
+                    exact_mode=0o400,
+                )
+
+            policy_payload = (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_POLICY_RELATIVE
+            ).read_bytes()
+            writable_policy = module_root / "policy.json"
+            writable_policy.write_bytes(policy_payload)
+            for writable_mode in (0o600, 0o420, 0o402):
+                with self.subTest(writable_policy_mode=oct(writable_mode)):
+                    writable_policy.chmod(writable_mode)
+                    with self.assertRaisesRegex(
+                        monitor_operations.MonitorError, "POLICY_FILE_UNSAFE"
+                    ):
+                        monitor_operations.load_policy(
+                            writable_policy,
+                            hashlib.sha256(policy_payload).hexdigest(),
+                        )
+
+        proof_expected = {
+            "source_head": "1" * 40,
+            "source_tree": "2" * 40,
+            "source_manifest_sha256": "3" * 64,
+            "python_runtime_manifest_sha256": "4" * 64,
+            "python_runtime_tree_sha256": "5" * 64,
+            "python_executable_sha256": "6" * 64,
+            "runtime_manifest_sha256": "7" * 64,
+            "store_binding_sha256": "8" * 64,
+        }
+        proof_local = {
+            "lightrag_six_files": {"manifest_binding_verified": True}
+        }
+        proof_runtime = {
+            "bindings_current": False,
+            "lightrag_store_verification": {
+                "required": True,
+                "verified": True,
+                "file_count": 6,
+                "manifest_sha256": proof_expected[
+                    "runtime_manifest_sha256"
+                ],
+                "store_binding_sha256": proof_expected[
+                    "store_binding_sha256"
+                ],
+            },
+        }
+        stale_binding_proofs = monitor_operations._proofs(
+            {"payload": {"runtime": proof_runtime}},
+            proof_expected,
+            proof_local,
+        )
+        self.assertFalse(
+            stale_binding_proofs["lightrag_six_files"]["verified"]
+        )
+        proof_runtime["bindings_current"] = True
+        current_binding_proofs = monitor_operations._proofs(
+            {"payload": {"runtime": proof_runtime}},
+            proof_expected,
+            proof_local,
+        )
+        self.assertTrue(
+            current_binding_proofs["lightrag_six_files"]["verified"]
+        )
+
+        def canonical_audit(
+            outcome: str,
+            *,
+            path: str = "/api/search",
+            outer_status: int = 200,
+            outer_duration_ms: int = 25,
+            terminal_status: int | None = 200,
+            terminal_elapsed_ms: int | None = 20,
+            disconnected: bool = False,
+        ) -> dict[str, object]:
+            return {
+                "audit_schema_version": 2,
+                "event": "http_request",
+                "method": "POST",
+                "path": path,
+                "request_id": "a" * 32,
+                "status": outer_status,
+                "duration_ms": outer_duration_ms,
+                "recommendation_outcome": outcome,
+                "terminal_status": terminal_status,
+                "terminal_elapsed_ms": terminal_elapsed_ms,
+                "client_disconnected": disconnected,
+            }
+
+        complete = monitor_operations._search_sample(
+            canonical_audit("complete", terminal_status=201),
+            fallback_id="complete-fallback",
+        )
+        self.assertIsNotNone(complete)
+        assert complete is not None
+        self.assertEqual(
+            complete[2],
+            {
+                "duration_ms": 20,
+                "failed": False,
+                "status": 201,
+                "endpoint": "search",
+            },
+        )
+        stream_error_event = canonical_audit(
+            "error",
+            path="/api/search/stream",
+            outer_status=200,
+            outer_duration_ms=400,
+            terminal_status=503,
+            terminal_elapsed_ms=333,
+        )
+        stream_error = monitor_operations._search_sample(
+            stream_error_event, fallback_id="error-fallback"
+        )
+        self.assertIsNotNone(stream_error)
+        assert stream_error is not None
+        self.assertEqual(stream_error[2]["status"], 503)
+        self.assertTrue(stream_error[2]["failed"])
+        self.assertEqual(stream_error[2]["duration_ms"], 333)
+        incomplete = monitor_operations._search_sample(
+            canonical_audit(
+                "incomplete",
+                path="/api/search/stream",
+                terminal_status=None,
+                terminal_elapsed_ms=None,
+                disconnected=True,
+            ),
+            fallback_id="incomplete-fallback",
+        )
+        self.assertIsNotNone(incomplete)
+        assert incomplete is not None
+        self.assertEqual(incomplete[2]["status"], 0)
+        self.assertTrue(incomplete[2]["failed"])
+        self.assertIsNone(
+            monitor_operations._search_sample(
+                canonical_audit(
+                    "not_applicable",
+                    terminal_status=None,
+                    terminal_elapsed_ms=None,
+                ),
+                fallback_id="not-applicable-fallback",
+            )
+        )
+
+        self.assertIsNone(
+            monitor_operations._journal_message_payload(
+                json.dumps(stream_error_event), max_bytes=4096
+            )
+        )
+        self.assertIsNone(
+            monitor_operations._journal_message_payload(
+                "ordinary-library-message:" + "x" * 100_000,
+                max_bytes=16,
+            )
+        )
+        with self.assertRaisesRegex(
+            monitor_operations.MonitorError, "JOURNAL_MESSAGE_TOO_LARGE"
+        ):
+            monitor_operations._journal_message_payload(
+                "[audit] " + "x" * 100_000,
+                max_bytes=16,
+            )
+        with self.assertRaisesRegex(
+            monitor_operations.MonitorError, "JOURNAL_AUDIT_JSON_INVALID"
+        ):
+            monitor_operations._journal_message_payload(
+                "[audit] {malformed", max_bytes=4096
+            )
+        journal_row = json.dumps(
+            {
+                "__CURSOR": "entry-cursor",
+                "MESSAGE": "[audit] "
+                + json.dumps(stream_error_event, separators=(",", ":")),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        journal_payload = journal_row + b"\n-- cursor: final-cursor\n"
+        journal_samples, journal_cursor, journal_entries = (
+            monitor_operations.parse_journal_json(
+                journal_payload, max_entries=2, max_message_bytes=4096
+            )
+        )
+        self.assertEqual(journal_cursor, "final-cursor")
+        self.assertEqual(journal_entries, 1)
+        self.assertEqual(journal_samples[0]["status"], 503)
+        large_non_audit_row = json.dumps(
+            {
+                "__CURSOR": "large-ordinary-cursor",
+                "MESSAGE": "ordinary:" + "x" * 100_000,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        ignored_samples, ignored_cursor, ignored_entries = (
+            monitor_operations.parse_journal_json(
+                large_non_audit_row + b"\n-- cursor: ignored-cursor\n",
+                max_entries=2,
+                max_message_bytes=16,
+            )
+        )
+        self.assertEqual(ignored_samples, [])
+        self.assertEqual(ignored_cursor, "ignored-cursor")
+        self.assertEqual(ignored_entries, 1)
+        with self.assertRaisesRegex(
+            monitor_operations.MonitorError, "JOURNAL_CURSOR_MISSING"
+        ):
+            monitor_operations.parse_journal_json(
+                journal_row + b"\n",
+                max_entries=2,
+                max_message_bytes=4096,
+            )
+        with self.assertRaisesRegex(
+            monitor_operations.MonitorError, "JOURNAL_ENTRY_LIMIT_EXCEEDED"
+        ):
+            monitor_operations.parse_journal_json(
+                journal_row
+                + b"\n"
+                + journal_row
+                + b"\n-- cursor: overflow-cursor\n",
+                max_entries=1,
+                max_message_bytes=4096,
+            )
+
+        histogram_samples = [
+            {
+                "duration_ms": duration,
+                "failed": False,
+                "status": 200,
+                "endpoint": "search",
+            }
+            for duration in (999, 1000, 1001, 3000, 3001)
+        ]
+        histogram = monitor_operations.aggregate_search_metrics(
+            histogram_samples
+        )
+        self.assertEqual(
+            [row["upper_bound_ms"] for row in histogram["latency_histogram"]],
+            [*monitor_operations.HISTOGRAM_UPPER_BOUNDS_MS, None],
+        )
+        self.assertEqual(
+            [row["count"] for row in histogram["latency_histogram"][:3]],
+            [2, 2, 1],
+        )
+        self.assertEqual(histogram["latency_p95_upper_bound_ms"], 5000)
+        self.assertFalse(histogram["latency_p95_overflow"])
+        self.assertEqual(histogram["latency_sample_count"], 5)
+        self.assertEqual(histogram["latency_mean_ms"], 1800.2)
+        self.assertEqual(histogram["successful_latency_sample_count"], 5)
+        self.assertEqual(histogram["successful_latency_mean_ms"], 1800.2)
+        terminal_failures = monitor_operations.aggregate_search_metrics(
+            [stream_error[2], incomplete[2]]
+        )
+        self.assertEqual(terminal_failures["terminal_error_count"], 2)
+        self.assertEqual(
+            terminal_failures["terminal_errors_by_status_class"]["5xx"], 1
+        )
+        self.assertEqual(
+            terminal_failures["hard_timeout_or_incomplete_count"], 1
+        )
+        self.assertEqual(terminal_failures["latency_sample_count"], 1)
+        self.assertEqual(terminal_failures["latency_mean_ms"], 333.0)
+        self.assertEqual(
+            terminal_failures["successful_latency_sample_count"], 0
+        )
+        self.assertIsNone(terminal_failures["successful_latency_mean_ms"])
+        all_terminal_outcomes = monitor_operations.aggregate_search_metrics(
+            [complete[2], stream_error[2], incomplete[2]]
+        )
+        self.assertEqual(all_terminal_outcomes["terminal_count"], 3)
+        self.assertEqual(all_terminal_outcomes["latency_sample_count"], 2)
+        self.assertEqual(all_terminal_outcomes["latency_mean_ms"], 176.5)
+        self.assertEqual(
+            all_terminal_outcomes["successful_latency_sample_count"], 1
+        )
+        self.assertEqual(
+            all_terminal_outcomes["successful_latency_mean_ms"], 20.0
+        )
+        empty_metrics = monitor_operations.aggregate_search_metrics([])
+        self.assertEqual(empty_metrics["latency_sample_count"], 0)
+        self.assertIsNone(empty_metrics["latency_mean_ms"])
+        self.assertEqual(empty_metrics["successful_latency_sample_count"], 0)
+        self.assertIsNone(empty_metrics["successful_latency_mean_ms"])
+
+        with (
+            patch.object(
+                monitor_operations,
+                "_run_command",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=b"unused", stderr=b""
+                ),
+            ) as journal_command,
+            patch.object(
+                monitor_operations,
+                "parse_journal_json",
+                return_value=(
+                    [],
+                    "oldest-batch-cursor",
+                    int(monitor_policy["journal"]["max_entries"]),
+                ),
+            ),
+        ):
+            first_batch = monitor_operations.collect_journal(
+                monitor_policy,
+                cursor=None,
+                boot_changed=False,
+                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                disabled=False,
+            )
+            first_command = journal_command.call_args.args[0]
+            self.assertIn(
+                f"--lines=+{monitor_policy['journal']['max_entries']}",
+                first_command,
+            )
+            self.assertIn(
+                f"--grep={monitor_operations.FIXED_JOURNAL_GREP}",
+                first_command,
+            )
+            self.assertNotIn("--reverse", first_command)
+            self.assertTrue(first_batch["backlog_possible"])
+            self.assertEqual(first_batch["cursor"], "oldest-batch-cursor")
+            self.assertTrue(first_batch["replay_possible"])
+            self.assertFalse(first_batch["recovery_eligible"])
+            cross_boot_batch = monitor_operations.collect_journal(
+                monitor_policy,
+                cursor="oldest-batch-cursor",
+                boot_changed=True,
+                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                disabled=False,
+            )
+            cross_boot_command = journal_command.call_args.args[0]
+            self.assertIn(
+                "--after-cursor=oldest-batch-cursor", cross_boot_command
+            )
+            self.assertFalse(
+                any(value.startswith("--since=") for value in cross_boot_command)
+            )
+            self.assertTrue(cross_boot_batch["cross_boot_cursor_used"])
+            self.assertFalse(cross_boot_batch["cursor_fallback_used"])
+            self.assertFalse(cross_boot_batch["replay_possible"])
+            self.assertTrue(cross_boot_batch["recovery_eligible"])
+
+        with patch.object(
+            monitor_operations,
+            "_run_command",
+            side_effect=(
+                subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=b"",
+                    stderr=b"Failed to seek to cursor: Invalid argument\n",
+                ),
+                subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=b"-- cursor: fallback-cursor\n",
+                    stderr=b"",
+                ),
+            ),
+        ) as fallback_commands:
+            fallback_batch = monitor_operations.collect_journal(
+                monitor_policy,
+                cursor="vacuumed-cursor",
+                boot_changed=True,
+                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                disabled=False,
+            )
+            self.assertEqual(fallback_commands.call_count, 2)
+            first_fallback_command = fallback_commands.call_args_list[0].args[0]
+            second_fallback_command = fallback_commands.call_args_list[1].args[0]
+            self.assertIn(
+                "--after-cursor=vacuumed-cursor", first_fallback_command
+            )
+            self.assertTrue(
+                any(value.startswith("--since=") for value in second_fallback_command)
+            )
+            self.assertTrue(fallback_batch["cursor_fallback_used"])
+            self.assertTrue(fallback_batch["replay_possible"])
+            self.assertFalse(fallback_batch["recovery_eligible"])
+            self.assertFalse(fallback_batch["cross_boot_cursor_used"])
+            self.assertEqual(fallback_batch["cursor"], "fallback-cursor")
+
+        with patch.object(
+            monitor_operations,
+            "_run_command",
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=b"-- cursor: no-match-cursor\n",
+                stderr=b"",
+            ),
+        ):
+            no_match_batch = monitor_operations.collect_journal(
+                monitor_policy,
+                cursor="oldest-batch-cursor",
+                boot_changed=False,
+                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                disabled=False,
+            )
+            self.assertTrue(no_match_batch["available"])
+            self.assertEqual(no_match_batch["entries_read"], 0)
+            self.assertEqual(no_match_batch["cursor"], "no-match-cursor")
+            self.assertEqual(
+                no_match_batch["metrics"]["terminal_count"], 0
+            )
+        with patch.object(
+            monitor_operations,
+            "_run_command",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=1, stdout=b"", stderr=b""
+            ),
+        ) as non_explicit_cursor_failure:
+            with self.assertRaisesRegex(
+                monitor_operations.MonitorError, "JOURNAL_CURSOR_MISSING"
+            ):
+                monitor_operations.collect_journal(
+                    monitor_policy,
+                    cursor="no-match-cursor",
+                    boot_changed=False,
+                    now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                    disabled=False,
+                )
+            self.assertEqual(non_explicit_cursor_failure.call_count, 1)
+
+        quota_delta, quota_regressed = monitor_operations._quota_delta(
+            {"available": True, "state_revision": 11, "used": 150},
+            {"quota_revision": 10, "quota_used": 100},
+        )
+        self.assertEqual((quota_delta, quota_regressed), (50, False))
+        quota_delta, quota_regressed = monitor_operations._quota_delta(
+            {"available": True, "state_revision": 9, "used": 90},
+            {"quota_revision": 10, "quota_used": 100},
+        )
+        self.assertEqual((quota_delta, quota_regressed), (0, True))
+
+        condition_systemd = {
+            "active_state": "active",
+            "sub_state": "running",
+            "result": "success",
+            "main_pid": 1234,
+            "invocation_id": "1" * 32,
+            "uptime_seconds": 10_000.0,
+            "need_daemon_reload": False,
+        }
+        unavailable_health = {
+            "available": False,
+            "payload": None,
+            "validation_failures": [],
+        }
+        empty_search_conditions = monitor_operations.build_conditions(
+            policy=monitor_policy,
+            systemd=condition_systemd,
+            restart_delta=0,
+            health=unavailable_health,
+            proofs={},
+            journal={
+                "available": True,
+                "recovery_eligible": True,
+                "metrics": monitor_operations.aggregate_search_metrics([]),
+            },
+            quota={"available": False},
+            quota_delta=0,
+            quota_regressed=False,
+        )
+        self.assertIsNone(
+            empty_search_conditions["SEARCH_ERROR_RATE_HIGH"]
+        )
+        self.assertIsNone(empty_search_conditions["SEARCH_HARD_TIMEOUT"])
+
+        search_alert_states = monitor_operations.initial_state(
+            policy_sha256="a" * 64, binding_sha256="b" * 64
+        )["alert_states"]
+        search_trigger_conditions: dict[str, str | bool | None] = {
+            code: False for code in monitor_operations.ALERT_CODES
+        }
+        search_trigger_conditions["SEARCH_ERROR_RATE_HIGH"] = "warning"
+        search_trigger_conditions["SEARCH_HARD_TIMEOUT"] = "critical"
+        search_alert_time = datetime(2026, 9, 2, tzinfo=timezone.utc)
+        search_alert_states, _events = (
+            monitor_operations.evaluate_alert_transitions(
+                search_alert_states,
+                search_trigger_conditions,
+                now=search_alert_time,
+                repeat_seconds=21600,
+                recovery_observations=2,
+                next_revision=1,
+            )
+        )
+        empty_transition_conditions = dict(search_trigger_conditions)
+        empty_transition_conditions["SEARCH_ERROR_RATE_HIGH"] = (
+            empty_search_conditions["SEARCH_ERROR_RATE_HIGH"]
+        )
+        empty_transition_conditions["SEARCH_HARD_TIMEOUT"] = (
+            empty_search_conditions["SEARCH_HARD_TIMEOUT"]
+        )
+        for revision in (2, 3):
+            search_alert_states, empty_events = (
+                monitor_operations.evaluate_alert_transitions(
+                    search_alert_states,
+                    empty_transition_conditions,
+                    now=search_alert_time + timedelta(seconds=revision * 60),
+                    repeat_seconds=21600,
+                    recovery_observations=2,
+                    next_revision=revision,
+                )
+            )
+            self.assertEqual(empty_events, [])
+            for code in (
+                "SEARCH_ERROR_RATE_HIGH",
+                "SEARCH_HARD_TIMEOUT",
+            ):
+                self.assertTrue(search_alert_states[code]["active"])
+                self.assertEqual(
+                    search_alert_states[code]["recovery_streak"], 0
+                )
+
+        replay_failure_metrics = monitor_operations.aggregate_search_metrics(
+            [
+                {
+                    "duration_ms": 900_000,
+                    "failed": True,
+                    "status": 503,
+                    "endpoint": "search",
+                }
+            ]
+        )
+        replay_conditions = monitor_operations.build_conditions(
+            policy=monitor_policy,
+            systemd=condition_systemd,
+            restart_delta=0,
+            health=unavailable_health,
+            proofs={},
+            journal={
+                "available": True,
+                "replay_possible": True,
+                "recovery_eligible": False,
+                "metrics": replay_failure_metrics,
+            },
+            quota={"available": False},
+            quota_delta=0,
+            quota_regressed=False,
+        )
+        self.assertIsNone(replay_conditions["SEARCH_ERROR_RATE_HIGH"])
+        self.assertIsNone(replay_conditions["SEARCH_HARD_TIMEOUT"])
+        replay_transition_conditions = dict(search_trigger_conditions)
+        replay_transition_conditions["SEARCH_ERROR_RATE_HIGH"] = None
+        replay_transition_conditions["SEARCH_HARD_TIMEOUT"] = None
+        replay_states, replay_events = (
+            monitor_operations.evaluate_alert_transitions(
+                search_alert_states,
+                replay_transition_conditions,
+                now=search_alert_time + timedelta(seconds=240),
+                repeat_seconds=21600,
+                recovery_observations=2,
+                next_revision=4,
+            )
+        )
+        self.assertEqual(replay_events, [])
+        for code in ("SEARCH_ERROR_RATE_HIGH", "SEARCH_HARD_TIMEOUT"):
+            self.assertTrue(replay_states[code]["active"])
+            self.assertEqual(replay_states[code]["recovery_streak"], 0)
+
+        alert_states = monitor_operations.initial_state(
+            policy_sha256="a" * 64, binding_sha256="b" * 64
+        )["alert_states"]
+        clear_conditions: dict[str, str | bool | None] = {
+            code: False for code in monitor_operations.ALERT_CODES
+        }
+        alert_code = "SERVICE_RESTART_DELTA"
+        alert_time = datetime(2026, 9, 2, tzinfo=timezone.utc)
+        warning_conditions = dict(clear_conditions)
+        warning_conditions[alert_code] = "warning"
+        alert_states, events = monitor_operations.evaluate_alert_transitions(
+            alert_states,
+            warning_conditions,
+            now=alert_time,
+            repeat_seconds=21600,
+            recovery_observations=2,
+            next_revision=1,
+        )
+        self.assertEqual(
+            [(event["kind"], event["severity"]) for event in events],
+            [("first", "warning")],
+        )
+        critical_conditions = dict(clear_conditions)
+        critical_conditions[alert_code] = "critical"
+        alert_states, events = monitor_operations.evaluate_alert_transitions(
+            alert_states,
+            critical_conditions,
+            now=alert_time + timedelta(seconds=60),
+            repeat_seconds=21600,
+            recovery_observations=2,
+            next_revision=2,
+        )
+        self.assertEqual(
+            [(event["kind"], event["severity"]) for event in events],
+            [("escalation", "critical")],
+        )
+        alert_states, events = monitor_operations.evaluate_alert_transitions(
+            alert_states,
+            critical_conditions,
+            now=alert_time + timedelta(seconds=21660),
+            repeat_seconds=21600,
+            recovery_observations=2,
+            next_revision=3,
+        )
+        self.assertEqual([event["kind"] for event in events], ["repeat"])
+        alert_states, events = monitor_operations.evaluate_alert_transitions(
+            alert_states,
+            clear_conditions,
+            now=alert_time + timedelta(seconds=21720),
+            repeat_seconds=21600,
+            recovery_observations=2,
+            next_revision=4,
+        )
+        self.assertEqual(events, [])
+        self.assertEqual(alert_states[alert_code]["recovery_streak"], 1)
+        alert_states, events = monitor_operations.evaluate_alert_transitions(
+            alert_states,
+            clear_conditions,
+            now=alert_time + timedelta(seconds=21780),
+            repeat_seconds=21600,
+            recovery_observations=2,
+            next_revision=5,
+        )
+        self.assertEqual([event["kind"] for event in events], ["recovery"])
+        self.assertFalse(alert_states[alert_code]["active"])
+
     def test_systemd_render_is_dry_run_then_backs_up_existing_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -326,8 +1235,36 @@ class DeploymentManifestTests(TestCase):
             output = root / "where-papers-go.service"
             runtime = self._runtime_shadow(root)
             shared, config = self._shared_state(root)
-            source_release, source_manifest_sha256, _source_manifest = (
+            source_release, source_manifest_sha256, source_manifest = (
                 self._source_release(root)
+            )
+            source_head = str(source_manifest["source_head"])
+            source_tree = str(source_manifest["source_tree"])
+            real_git_output = manage_deployment._git_output
+            current_renderer_payload = (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_RENDERER_RELATIVE
+            ).read_bytes()
+            renderer_object = (
+                f"{source_head}:"
+                + manage_deployment.MONITOR_RENDERER_RELATIVE.as_posix()
+            )
+
+            def committed_renderer_git(
+                project: Path, *arguments: str
+            ) -> bytes:
+                if arguments == ("cat-file", "-s", renderer_object):
+                    return f"{len(current_renderer_payload)}\n".encode("ascii")
+                if arguments == ("cat-file", "blob", renderer_object):
+                    return current_renderer_payload
+                return real_git_output(project, *arguments)
+
+            self.enterContext(
+                patch.object(
+                    manage_deployment,
+                    "_git_output",
+                    side_effect=committed_renderer_git,
+                )
             )
             python_runtime = root / "python-runtime-immutable"
             python = python_runtime / "bin" / "python"
@@ -336,6 +1273,9 @@ class DeploymentManifestTests(TestCase):
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_bytes(b"synthetic executable")
             python.chmod(0o555)
+            python_manifest = python_runtime / manage_deployment.PYTHON_RUNTIME_MANIFEST
+            python_manifest.write_text("{}\n", encoding="ascii")
+            python_manifest.chmod(0o400)
             python_manifest_sha256 = "a" * 64
             api_token_file = root / manage_deployment.BACKEND_API_TOKEN_RELATIVE
             api_token_file.parent.mkdir(parents=True)
@@ -351,6 +1291,7 @@ class DeploymentManifestTests(TestCase):
                 "manifest_sha256": python_manifest_sha256,
                 "runtime_tree_sha256": "b" * 64,
                 "python_executable": str(python),
+                "python_executable_sha256": manage_deployment.sha256_file(python),
                 "import_paths": [str(import_path)],
             }
             runtime_release_probe = self.enterContext(
@@ -390,7 +1331,7 @@ class DeploymentManifestTests(TestCase):
             self.assertEqual(backup.read_text(encoding="utf-8"), "preserved predecessor\n")
             rendered = output.read_text(encoding="utf-8")
             self.assertIn(str(source_release), rendered)
-            self.assertIn(f"WPG_SOURCE_HEAD={'1' * 40}", rendered)
+            self.assertIn(f"WPG_SOURCE_HEAD={source_head}", rendered)
             self.assertIn(f"{python} -S -P -B -m where_paper_go.web_app", rendered)
             self.assertIn(
                 f"WPG_PYTHON_RUNTIME_MANIFEST_SHA256={python_manifest_sha256}",
@@ -402,6 +1343,782 @@ class DeploymentManifestTests(TestCase):
 
             unchanged = manage_deployment.render_systemd(args)
             self.assertIsNone(unchanged["backup"])
+
+            monitor_state_base = root / manage_deployment.MONITOR_STATE_RELATIVE
+            monitor_service_output = root / manage_deployment.MONITOR_SERVICE_NAME
+            monitor_timer_output = root / manage_deployment.MONITOR_TIMER_NAME
+            expected_runtime_manifest_sha256 = (
+                manage_deployment._runtime_manifest_sha256(runtime)
+            )
+            monitor_args = Namespace(
+                source_release=source_release,
+                expected_source_manifest_sha256=source_manifest_sha256,
+                python_runtime=python_runtime,
+                expected_python_runtime_manifest_sha256=python_manifest_sha256,
+                runtime_dir=runtime,
+                expected_runtime_manifest_sha256=(
+                    expected_runtime_manifest_sha256
+                ),
+                api_token_file=api_token_file,
+                state_dir=monitor_state_base,
+                service_output=monitor_service_output,
+                timer_output=monitor_timer_output,
+                apply=False,
+            )
+            wrong_runtime_args = Namespace(**vars(monitor_args))
+            wrong_runtime_args.expected_runtime_manifest_sha256 = "f" * 64
+            with self.assertRaisesRegex(ValueError, "runtime manifest SHA-256"):
+                manage_deployment.render_monitor_systemd(wrong_runtime_args)
+            wrong_state_args = Namespace(**vars(monitor_args))
+            wrong_state_args.state_dir = root / "attacker-selected-monitor-state"
+            with self.assertRaisesRegex(ValueError, "fixed canonical passwd-home"):
+                manage_deployment.render_monitor_systemd(wrong_state_args)
+
+            selected_renderer = (
+                source_release / manage_deployment.MONITOR_RENDERER_RELATIVE
+            )
+            clean_checkout_binding = (
+                manage_deployment._monitor_renderer_checkout_binding(
+                    selected_renderer,
+                    expected_head=source_head,
+                    expected_tree=source_tree,
+                )
+            )
+            self.assertEqual(clean_checkout_binding["head"], source_head)
+            self.assertEqual(clean_checkout_binding["tree"], source_tree)
+            self.assertEqual(
+                clean_checkout_binding["renderer_sha256"],
+                hashlib.sha256(current_renderer_payload).hexdigest(),
+            )
+            for mismatched_head, mismatched_tree in (
+                (
+                    ("0" if source_head[0] != "0" else "1")
+                    + source_head[1:],
+                    source_tree,
+                ),
+                (
+                    source_head,
+                    ("0" if source_tree[0] != "0" else "1")
+                    + source_tree[1:],
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "HEAD/tree differs"):
+                    manage_deployment._monitor_renderer_checkout_binding(
+                        selected_renderer,
+                        expected_head=mismatched_head,
+                        expected_tree=mismatched_tree,
+                    )
+
+            def drifted_renderer_git(
+                project: Path, *arguments: str
+            ) -> bytes:
+                if arguments == ("cat-file", "blob", renderer_object):
+                    return b"x" * len(current_renderer_payload)
+                return committed_renderer_git(project, *arguments)
+
+            with (
+                patch.object(
+                    manage_deployment,
+                    "_git_output",
+                    side_effect=drifted_renderer_git,
+                ),
+                self.assertRaisesRegex(ValueError, "uncommitted.*drift"),
+            ):
+                manage_deployment._monitor_renderer_checkout_binding(
+                    selected_renderer,
+                    expected_head=source_head,
+                    expected_tree=source_tree,
+                )
+
+            drifted_selected_renderer = root / "drifted-manage-deployment.py"
+            drifted_selected_renderer.write_bytes(
+                current_renderer_payload + b"# selected drift\n"
+            )
+            drifted_selected_renderer.chmod(0o444)
+            with self.assertRaisesRegex(
+                ValueError, "selected source renderer differs"
+            ):
+                manage_deployment._monitor_renderer_checkout_binding(
+                    drifted_selected_renderer,
+                    expected_head=source_head,
+                    expected_tree=source_tree,
+                )
+
+            monitor_dry_run = manage_deployment.render_monitor_systemd(
+                monitor_args
+            )
+            self.assertEqual(monitor_dry_run["status"], "dry-run")
+            self.assertFalse(monitor_state_base.exists())
+            self.assertFalse(monitor_service_output.exists())
+            self.assertFalse(monitor_timer_output.exists())
+            self.assertTrue(monitor_dry_run["renderer_checkout_bound"])
+            self.assertEqual(
+                monitor_dry_run["renderer_sha256"],
+                hashlib.sha256(current_renderer_payload).hexdigest(),
+            )
+            self.assertEqual(monitor_dry_run["source_head"], source_head)
+            self.assertEqual(monitor_dry_run["source_tree"], source_tree)
+            self.assertEqual(monitor_dry_run["lightrag_store_file_count"], 6)
+            self.assertRegex(
+                monitor_dry_run["lightrag_store_binding_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            monitor_state = Path(monitor_dry_run["monitor_state_dir"])
+            self.assertEqual(monitor_state.parent, monitor_state_base)
+            self.assertEqual(
+                monitor_state.name,
+                monitor_dry_run["monitor_state_namespace_sha256"],
+            )
+            expected_monitor_binding = {
+                "source_head": source_head,
+                "source_tree": source_tree,
+                "source_manifest_sha256": source_manifest_sha256,
+                "python_runtime_manifest_sha256": python_manifest_sha256,
+                "python_runtime_tree_sha256": "b" * 64,
+                "python_executable_sha256": manage_deployment.sha256_file(python),
+                "runtime_manifest_sha256": expected_runtime_manifest_sha256,
+                "store_binding_sha256": monitor_dry_run[
+                    "lightrag_store_binding_sha256"
+                ],
+            }
+            self.assertEqual(
+                monitor_dry_run["deployment_binding_sha256"],
+                monitor_operations._binding_sha256(expected_monitor_binding),
+            )
+            self.assertEqual(
+                monitor_state.name,
+                monitor_operations._state_namespace_sha256(
+                    policy_sha256=monitor_dry_run["policy_sha256"],
+                    binding_sha256=monitor_dry_run[
+                        "deployment_binding_sha256"
+                    ],
+                ),
+            )
+            self.assertNotEqual(
+                monitor_state.name,
+                manage_deployment._monitor_state_namespace_sha256(
+                    policy_sha256=(
+                        ("0" if monitor_dry_run["policy_sha256"][0] != "0" else "1")
+                        + monitor_dry_run["policy_sha256"][1:]
+                    ),
+                    deployment_binding_sha256=monitor_dry_run[
+                        "deployment_binding_sha256"
+                    ],
+                ),
+            )
+            self.assertNotEqual(
+                monitor_state.name,
+                manage_deployment._monitor_state_namespace_sha256(
+                    policy_sha256=monitor_dry_run["policy_sha256"],
+                    deployment_binding_sha256=(
+                        (
+                            "0"
+                            if monitor_dry_run["deployment_binding_sha256"][0]
+                            != "0"
+                            else "1"
+                        )
+                        + monitor_dry_run["deployment_binding_sha256"][1:]
+                    ),
+                ),
+            )
+            monitor_service_candidate = monitor_dry_run["service"]["content"]
+            self.assertIn(
+                f"--expected-source-head {source_head}",
+                monitor_service_candidate,
+            )
+            self.assertIn(
+                "--expected-runtime-manifest-sha256 "
+                + expected_runtime_manifest_sha256,
+                monitor_service_candidate,
+            )
+            self.assertIn(
+                "--expected-store-binding-sha256 "
+                + monitor_dry_run["lightrag_store_binding_sha256"],
+                monitor_service_candidate,
+            )
+            self.assertIn(
+                f"--state {monitor_state}/operations-monitor-v1.json",
+                monitor_service_candidate,
+            )
+            self.assertIn(
+                f"ReadWritePaths={monitor_state}", monitor_service_candidate
+            )
+            self.assertNotIn(
+                f"ReadWritePaths={monitor_state_base}\n", monitor_service_candidate
+            )
+            self.assertNotIn("@@", monitor_service_candidate)
+            self.assertNotIn("t" * 48, monitor_service_candidate)
+            rendered_unset = next(
+                line
+                for line in monitor_service_candidate.splitlines()
+                if line.startswith("UnsetEnvironment=")
+            )
+            self.assertEqual(
+                tuple(rendered_unset.removeprefix("UnsetEnvironment=").split()),
+                manage_deployment.EXEC_BOUNDARY_UNSET_ENVIRONMENT,
+            )
+            self.assertLess(
+                monitor_service_candidate.index(rendered_unset),
+                monitor_service_candidate.index("ExecStart=/usr/bin/env -i "),
+            )
+            self.assertEqual(
+                monitor_service_candidate.count("TimeoutStartSec=300"), 1
+            )
+            self.assertEqual(
+                hashlib.sha256(monitor_service_candidate.encode("utf-8")).hexdigest(),
+                monitor_dry_run["service"]["sha256"],
+            )
+
+            monitor_service_output.write_text(
+                "preserved monitor service\n", encoding="utf-8"
+            )
+            monitor_timer_output.write_text(
+                "preserved monitor timer\n", encoding="utf-8"
+            )
+            monitor_args.apply = True
+            monitor_installed = manage_deployment.render_monitor_systemd(
+                monitor_args
+            )
+            self.assertEqual(monitor_installed["status"], "installed")
+            self.assertEqual(
+                stat.S_IMODE(monitor_state_base.stat().st_mode), 0o700
+            )
+            self.assertEqual(stat.S_IMODE(monitor_state.stat().st_mode), 0o700)
+            self.assertEqual(
+                Path(monitor_installed["service"]["backup"]).read_text(
+                    encoding="utf-8"
+                ),
+                "preserved monitor service\n",
+            )
+            self.assertEqual(
+                Path(monitor_installed["timer"]["backup"]).read_text(
+                    encoding="utf-8"
+                ),
+                "preserved monitor timer\n",
+            )
+            self.assertEqual(
+                monitor_service_output.read_text(encoding="utf-8"),
+                monitor_service_candidate,
+            )
+            self.assertEqual(
+                monitor_timer_output.read_text(encoding="utf-8"),
+                monitor_installed["timer"]["content"],
+            )
+            monitor_verify = subprocess.run(
+                [
+                    "/usr/bin/systemd-analyze",
+                    "verify",
+                    str(monitor_service_output),
+                    str(monitor_timer_output),
+                ],
+                cwd=root,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(
+                monitor_verify.returncode,
+                0,
+                monitor_verify.stdout + monitor_verify.stderr,
+            )
+            self.assertFalse(monitor_installed["manager_reloaded"])
+            self.assertFalse(monitor_installed["units_enabled"])
+            self.assertFalse(monitor_installed["units_started"])
+            monitor_unchanged = manage_deployment.render_monitor_systemd(
+                monitor_args
+            )
+            self.assertIsNone(monitor_unchanged["service"]["backup"])
+            self.assertIsNone(monitor_unchanged["timer"]["backup"])
+
+            predecessor_state = monitor_state / "operations-monitor-v1.json"
+            predecessor_state.write_text(
+                "preserved predecessor monitor state\n", encoding="utf-8"
+            )
+            predecessor_state.chmod(0o600)
+            successor_runtime = self._runtime_shadow(
+                root / "successor-runtime", marker="-successor"
+            )
+            successor_args = Namespace(**vars(monitor_args))
+            successor_args.runtime_dir = successor_runtime
+            successor_args.expected_runtime_manifest_sha256 = (
+                manage_deployment._runtime_manifest_sha256(successor_runtime)
+            )
+            successor_installed = manage_deployment.render_monitor_systemd(
+                successor_args
+            )
+            successor_state = Path(successor_installed["monitor_state_dir"])
+            self.assertNotEqual(successor_state, monitor_state)
+            self.assertEqual(successor_state.parent, monitor_state_base)
+            self.assertTrue(successor_state.is_dir())
+            self.assertEqual(stat.S_IMODE(successor_state.stat().st_mode), 0o700)
+            self.assertEqual(
+                predecessor_state.read_text(encoding="utf-8"),
+                "preserved predecessor monitor state\n",
+            )
+
+            core_policy_payload = (
+                manage_deployment.PROJECT_ROOT
+                / manage_deployment.MONITOR_POLICY_RELATIVE
+            ).read_bytes()
+            core_policy_sha256 = hashlib.sha256(core_policy_payload).hexdigest()
+            core_policy = monitor_operations.validate_policy(
+                monitor_operations.parse_json_bytes(
+                    core_policy_payload, label="POLICY"
+                )
+            )
+            renderer_store_binding = monitor_dry_run[
+                "lightrag_store_binding_sha256"
+            ]
+            core_store_binding = (
+                ("0" if renderer_store_binding[0] != "0" else "1")
+                + renderer_store_binding[1:]
+            )
+            core_args = Namespace(
+                policy=(
+                    manage_deployment.PROJECT_ROOT
+                    / manage_deployment.MONITOR_POLICY_RELATIVE
+                ),
+                state=root / "placeholder-state",
+                token_file=api_token_file,
+                source_manifest=(
+                    source_release / deployment_identity.SOURCE_MANIFEST_FILE
+                ),
+                python_runtime_manifest=python_manifest,
+                runtime_manifest=runtime / manage_deployment.RUNTIME_MANIFEST,
+                expected_policy_sha256=core_policy_sha256,
+                # Keep the real selected Git identity.  Vary a non-Git proof
+                # only so this mocked core state cannot reuse the renderer
+                # fixture's intentionally corrupted predecessor state above.
+                expected_source_head=source_head,
+                expected_source_tree=source_tree,
+                expected_source_manifest_sha256=source_manifest_sha256,
+                expected_python_runtime_manifest_sha256=(
+                    python_manifest_sha256
+                ),
+                expected_python_runtime_tree_sha256="b" * 64,
+                expected_python_executable_sha256=(
+                    manage_deployment.sha256_file(python)
+                ),
+                expected_runtime_manifest_sha256=(
+                    expected_runtime_manifest_sha256
+                ),
+                expected_store_binding_sha256=core_store_binding,
+                no_journal=False,
+                apply=False,
+            )
+            expected_core_binding = monitor_operations._binding_sha256(
+                monitor_operations._expected_bindings(core_args)
+            )
+            core_namespace = monitor_operations._state_namespace_sha256(
+                policy_sha256=core_policy_sha256,
+                binding_sha256=expected_core_binding,
+            )
+            core_state = (
+                monitor_state_base
+                / core_namespace
+                / monitor_operations.STATE_FILENAME
+            )
+            core_args.state = core_state
+            healthy_systemd = {
+                "load_state": "loaded",
+                "active_state": "active",
+                "sub_state": "running",
+                "result": "success",
+                "main_pid": 1234,
+                "invocation_id": "1" * 32,
+                "nrestarts": 0,
+                "active_enter_monotonic_us": 1,
+                "need_daemon_reload": False,
+                "uptime_seconds": 10_000.0,
+                "boot_uptime_seconds": 20_000.0,
+            }
+            healthy_health = {
+                "available": True,
+                "http_status": 200,
+                "error_code": None,
+                "payload": {"ready": True},
+                "validation_failures": [],
+            }
+            verified_proofs = {
+                section: {"verified": True}
+                for section in (
+                    "source",
+                    "python_runtime",
+                    "worker",
+                    "runtime_manifest",
+                    "lightrag_six_files",
+                )
+            }
+            healthy_quota = {
+                "available": True,
+                "state_revision": 7,
+                "used": 100,
+                "remaining": 900,
+                "total_capacity": 1000,
+                "status_counts": {
+                    "active": 1,
+                    "cooldown": 0,
+                    "exhausted": 0,
+                    "invalid": 0,
+                },
+            }
+            healthy_journal = {
+                "available": True,
+                "reason": None,
+                "cursor": "core-cursor",
+                "entries_read": 0,
+                "metrics": monitor_operations.aggregate_search_metrics([]),
+            }
+            with (
+                patch.object(
+                    monitor_operations,
+                    "load_policy",
+                    return_value=(core_policy, core_policy_sha256),
+                ),
+                patch.object(
+                    monitor_operations, "_read_token", return_value="x" * 48
+                ),
+                patch.object(
+                    monitor_operations,
+                    "collect_local_proofs",
+                    return_value={"verified": True},
+                ) as local_proof_probe,
+                patch.object(
+                    monitor_operations,
+                    "_read_boot_id",
+                    return_value="11111111-1111-1111-1111-111111111111",
+                ),
+                patch.object(
+                    monitor_operations,
+                    "collect_systemd",
+                    return_value=healthy_systemd,
+                ),
+                patch.object(
+                    monitor_operations,
+                    "collect_health",
+                    return_value=healthy_health,
+                ) as health_probe,
+                patch.object(
+                    monitor_operations,
+                    "_proofs",
+                    return_value=verified_proofs,
+                ),
+                patch.object(
+                    monitor_operations,
+                    "_sanitized_quota",
+                    return_value=healthy_quota,
+                ),
+                patch.object(
+                    monitor_operations,
+                    "collect_journal",
+                    return_value=healthy_journal,
+                ) as journal_probe,
+            ):
+                core_dry_report, core_dry_status = (
+                    monitor_operations.run_observation(core_args)
+                )
+                self.assertEqual(core_dry_status, 0)
+                self.assertEqual(core_dry_report["mode"], "dry-run")
+                self.assertEqual(core_dry_report["provider_calls"], 0)
+                self.assertFalse(core_state.parent.exists())
+                self.assertEqual(
+                    core_dry_report["proof_refresh"]["mode"], "full"
+                )
+                self.assertTrue(
+                    core_dry_report["proof_refresh"][
+                        "full_proof_performed_this_run"
+                    ]
+                )
+                self.assertFalse(
+                    core_dry_report["proof_refresh"][
+                        "full_proof_persisted_this_run"
+                    ]
+                )
+                self.assertTrue(local_proof_probe.call_args.kwargs["full"])
+
+                core_args.apply = True
+                core_apply_report, core_apply_status = (
+                    monitor_operations.run_observation(core_args)
+                )
+                self.assertEqual(core_apply_status, 0)
+                self.assertTrue(core_apply_report["state"]["applied"])
+                self.assertTrue(
+                    core_apply_report["proof_refresh"][
+                        "full_proof_persisted_this_run"
+                    ]
+                )
+                self.assertEqual(stat.S_IMODE(core_state.stat().st_mode), 0o600)
+                first_state_payload = core_state.read_bytes()
+                first_state = monitor_operations.validate_state(
+                    monitor_operations.parse_json_bytes(
+                        first_state_payload, label="STATE"
+                    ),
+                    pending_limit=core_policy["limits"]["pending_events"],
+                )
+                self.assertEqual(first_state["revision"], 1)
+                self.assertEqual(first_state["journal_cursor"], "core-cursor")
+                self.assertIsNotNone(first_state["last_full_proof_at"])
+                self.assertEqual(
+                    core_state,
+                    monitor_operations._fixed_state_path(
+                        core_state,
+                        policy_sha256=core_policy_sha256,
+                        binding_sha256=expected_core_binding,
+                        create_directories=False,
+                    ),
+                )
+                self.assertEqual(
+                    first_state["binding_sha256"], expected_core_binding
+                )
+
+                alternate_policy_sha256 = (
+                    ("0" if core_policy_sha256[0] != "0" else "1")
+                    + core_policy_sha256[1:]
+                )
+                wrong_core_args = Namespace(**vars(core_args))
+                wrong_core_args.state = (
+                    root
+                    / "attacker-selected-monitor-state"
+                    / core_namespace
+                    / monitor_operations.STATE_FILENAME
+                )
+                with self.assertRaisesRegex(
+                    monitor_operations.MonitorError, "STATE_PATH_UNSAFE"
+                ):
+                    monitor_operations.run_observation(wrong_core_args)
+
+                tampered_state = dict(first_state)
+                tampered_state["policy_sha256"] = alternate_policy_sha256
+                core_state.write_bytes(
+                    monitor_operations._canonical_json(tampered_state) + b"\n"
+                )
+                with self.assertRaisesRegex(
+                    monitor_operations.MonitorError,
+                    "STATE_POLICY_SHA256_MISMATCH",
+                ):
+                    monitor_operations._load_state(
+                        core_state,
+                        policy=core_policy,
+                        policy_sha256=core_policy_sha256,
+                        binding_sha256=expected_core_binding,
+                    )
+                alternate_binding = (
+                    ("0" if expected_core_binding[0] != "0" else "1")
+                    + expected_core_binding[1:]
+                )
+                tampered_state = dict(first_state)
+                tampered_state["binding_sha256"] = alternate_binding
+                core_state.write_bytes(
+                    monitor_operations._canonical_json(tampered_state) + b"\n"
+                )
+                with self.assertRaisesRegex(
+                    monitor_operations.MonitorError,
+                    "STATE_BINDING_SHA256_MISMATCH",
+                ):
+                    monitor_operations._load_state(
+                        core_state,
+                        policy=core_policy,
+                        policy_sha256=core_policy_sha256,
+                        binding_sha256=expected_core_binding,
+                    )
+                core_state.write_bytes(first_state_payload)
+
+                for journal_failure in (
+                    "JOURNAL_CURSOR_MISSING",
+                    "JOURNAL_ENTRY_LIMIT_EXCEEDED",
+                ):
+                    journal_probe.side_effect = monitor_operations.MonitorError(
+                        journal_failure
+                    )
+                    with self.assertRaisesRegex(
+                        monitor_operations.MonitorError, journal_failure
+                    ):
+                        monitor_operations.run_observation(core_args)
+                    self.assertFalse(
+                        local_proof_probe.call_args.kwargs["full"]
+                    )
+                    self.assertEqual(core_state.read_bytes(), first_state_payload)
+                journal_probe.side_effect = None
+                journal_probe.return_value = healthy_journal
+
+                for revision, used, expected_regressed in (
+                    (6, 90, True),
+                    (8, 95, True),
+                    (9, 100, False),
+                    (10, 100, False),
+                ):
+                    healthy_quota.update(
+                        {
+                            "state_revision": revision,
+                            "used": used,
+                            "remaining": 1000 - used,
+                        }
+                    )
+                    quota_report, _quota_status = (
+                        monitor_operations.run_observation(core_args)
+                    )
+                    self.assertEqual(
+                        quota_report["tavily_quota"]["counter_regressed"],
+                        expected_regressed,
+                    )
+                    persisted_quota_state = monitor_operations.validate_state(
+                        monitor_operations.parse_json_bytes(
+                            core_state.read_bytes(), label="STATE"
+                        ),
+                        pending_limit=core_policy["limits"]["pending_events"],
+                    )
+                    self.assertGreaterEqual(
+                        persisted_quota_state["baseline"]["quota_revision"],
+                        7,
+                    )
+                    self.assertEqual(
+                        persisted_quota_state["baseline"]["quota_used"], 100
+                    )
+                    self.assertFalse(
+                        local_proof_probe.call_args.kwargs["full"]
+                    )
+                self.assertEqual(
+                    [
+                        event["kind"]
+                        for event in quota_report["alerts"]["events"]
+                        if event["code"]
+                        == "TAVILY_QUOTA_COUNTER_REGRESSION"
+                    ],
+                    ["recovery"],
+                )
+
+                aged_state = monitor_operations.validate_state(
+                    monitor_operations.parse_json_bytes(
+                        core_state.read_bytes(), label="STATE"
+                    ),
+                    pending_limit=core_policy["limits"]["pending_events"],
+                )
+                aged_state["last_full_proof_at"] = "2000-01-01T00:00:00Z"
+                core_state.write_bytes(
+                    monitor_operations._canonical_json(aged_state) + b"\n"
+                )
+                aged_state_info = core_state.stat()
+
+                health_probe.return_value = {
+                    "available": False,
+                    "http_status": None,
+                    "error_code": "HEALTH_UNREACHABLE",
+                    "payload": None,
+                    "validation_failures": [],
+                }
+                core_alert_report, core_alert_status = (
+                    monitor_operations.run_observation(core_args)
+                )
+                self.assertEqual(core_alert_status, 2)
+                self.assertEqual(
+                    core_alert_report["proof_refresh"]["mode"], "full"
+                )
+                self.assertTrue(local_proof_probe.call_args.kwargs["full"])
+                self.assertEqual(
+                    core_alert_report["proof_refresh"][
+                        "full_proof_age_seconds"
+                    ],
+                    0.0,
+                )
+                self.assertEqual(
+                    [event["code"] for event in core_alert_report["alerts"]["events"]],
+                    ["HEALTH_UNAVAILABLE"],
+                )
+                self.assertNotEqual(
+                    core_state.stat().st_ino, aged_state_info.st_ino
+                )
+                self.assertEqual(stat.S_IMODE(core_state.stat().st_mode), 0o600)
+
+            monitor_cli_args = [
+                "--policy",
+                str(core_args.policy),
+                "--state",
+                str(core_state),
+                "--token-file",
+                str(core_args.token_file),
+                "--source-manifest",
+                str(core_args.source_manifest),
+                "--python-runtime-manifest",
+                str(core_args.python_runtime_manifest),
+                "--runtime-manifest",
+                str(core_args.runtime_manifest),
+                "--expected-policy-sha256",
+                core_policy_sha256,
+                "--expected-source-head",
+                core_args.expected_source_head,
+                "--expected-source-tree",
+                core_args.expected_source_tree,
+                "--expected-source-manifest-sha256",
+                core_args.expected_source_manifest_sha256,
+                "--expected-python-runtime-manifest-sha256",
+                core_args.expected_python_runtime_manifest_sha256,
+                "--expected-python-runtime-tree-sha256",
+                core_args.expected_python_runtime_tree_sha256,
+                "--expected-python-executable-sha256",
+                core_args.expected_python_executable_sha256,
+                "--expected-runtime-manifest-sha256",
+                core_args.expected_runtime_manifest_sha256,
+                "--expected-store-binding-sha256",
+                core_args.expected_store_binding_sha256,
+            ]
+            state_argument = monitor_cli_args.index("--state")
+            monitor_cli_without_state = [
+                *monitor_cli_args[:state_argument],
+                *monitor_cli_args[state_argument + 2 :],
+            ]
+            with (
+                patch.object(monitor_operations.sys, "stderr"),
+                self.assertRaises(SystemExit) as missing_state,
+            ):
+                monitor_operations._parser().parse_args(
+                    monitor_cli_without_state
+                )
+            self.assertEqual(missing_state.exception.code, 3)
+            saved_umask = os.umask(0o077)
+            os.umask(saved_umask)
+            try:
+                for expected_status in (0, 2):
+                    with (
+                        patch.object(
+                            monitor_operations,
+                            "run_observation",
+                            return_value=({"status": "ok"}, expected_status),
+                        ),
+                        patch.object(
+                            monitor_operations, "_print_json"
+                        ) as print_probe,
+                    ):
+                        self.assertEqual(
+                            monitor_operations.main(monitor_cli_args),
+                            expected_status,
+                        )
+                        print_probe.assert_called_once_with({"status": "ok"})
+                with (
+                    patch.object(
+                        monitor_operations,
+                        "run_observation",
+                        side_effect=monitor_operations.MonitorError(
+                            "TEST_MONITOR_FAILURE"
+                        ),
+                    ),
+                    patch.object(
+                        monitor_operations, "_print_json"
+                    ) as error_print_probe,
+                ):
+                    self.assertEqual(
+                        monitor_operations.main(monitor_cli_args), 3
+                    )
+                    error_report = error_print_probe.call_args.args[0]
+                    self.assertEqual(
+                        error_report["error_code"], "TEST_MONITOR_FAILURE"
+                    )
+                    self.assertEqual(error_report["provider_calls"], 0)
+                    self.assertFalse(error_report["state_applied"])
+            finally:
+                os.umask(saved_umask)
 
             restored = manage_deployment.restore_file(
                 Namespace(

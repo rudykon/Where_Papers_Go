@@ -56,6 +56,78 @@ from where_paper_go.paths import PROJECT_ROOT
 
 SYSTEMD_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "where-papers-go.service.in"
 NGINX_TEMPLATE = PROJECT_ROOT / "deploy" / "nginx" / "where-papers-go.conf.in"
+MONITOR_POLICY_RELATIVE = Path("deploy/monitoring/policy-v1.json")
+MONITOR_SYSTEMD_SERVICE_RELATIVE = Path(
+    "deploy/systemd/where-papers-go-monitor.service.in"
+)
+MONITOR_SYSTEMD_TIMER_RELATIVE = Path(
+    "deploy/systemd/where-papers-go-monitor.timer.in"
+)
+MONITOR_SCRIPT_RELATIVE = Path("scripts/monitor_operations.py")
+MONITOR_RENDERER_RELATIVE = Path("scripts/manage_deployment.py")
+MONITOR_STATE_RELATIVE = Path(".local/state/where-papers-go/monitor")
+MONITOR_SERVICE_NAME = "where-papers-go-monitor.service"
+MONITOR_TIMER_NAME = "where-papers-go-monitor.timer"
+MONITORED_SERVICE_NAME = "where-papers-go.service"
+MONITOR_HEALTH_URL = "http://127.0.0.1:8001/api/health"
+EXEC_BOUNDARY_UNSET_ENVIRONMENT = (
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "LD_ASSUME_KERNEL",
+    "LD_AUDIT",
+    "LD_BIND_NOT",
+    "LD_BIND_NOW",
+    "LD_DEBUG",
+    "LD_DEBUG_OUTPUT",
+    "LD_DYNAMIC_WEAK",
+    "LD_HWCAP_MASK",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_PREFER_MAP_32BIT_EXEC",
+    "LD_PRELOAD",
+    "LD_PROFILE",
+    "LD_SHOW_AUXV",
+    "LD_TRACE_LOADED_OBJECTS",
+    "OPENSSL_CONF",
+    "OPENSSL_CONF_INCLUDE",
+    "OPENSSL_ENGINES",
+    "OPENSSL_MODULES",
+    "SSLKEYLOGFILE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "PYTHONBREAKPOINT",
+    "PYTHONCASEOK",
+    "PYTHONDEBUG",
+    "PYTHONDEVMODE",
+    "PYTHONDUMPREFS",
+    "PYTHONEXECUTABLE",
+    "PYTHONFAULTHANDLER",
+    "PYTHONHASHSEED",
+    "PYTHONHOME",
+    "PYTHONINSPECT",
+    "PYTHONMALLOC",
+    "PYTHONOPTIMIZE",
+    "PYTHONPATH",
+    "PYTHONPLATLIBDIR",
+    "PYTHONPROFILEIMPORTTIME",
+    "PYTHONPYCACHEPREFIX",
+    "PYTHONSTARTUP",
+    "PYTHONTRACEMALLOC",
+    "PYTHONUSERBASE",
+    "PYTHONWARNINGS",
+)
 GIT_BINARY = Path("/usr/bin/git")
 READELF_BINARY = Path("/usr/bin/readelf")
 LDD_BINARY = Path("/usr/bin/ldd")
@@ -4272,6 +4344,845 @@ def render_systemd(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def _fixed_monitor_state_directory(
+    path: Path, *, create: bool
+) -> tuple[Path, bool]:
+    """Validate the sole monitor write boundary at its fixed passwd-home path.
+
+    A dry run may describe a not-yet-created directory, but it never creates
+    any component.  ``--apply`` creates only missing components below the
+    already validated passwd home and gives each newly created directory mode
+    0700 before proceeding.
+    """
+
+    try:
+        home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    except KeyError as exc:
+        raise ValueError("effective user has no passwd home") from exc
+    expected = home / MONITOR_STATE_RELATIVE
+    expanded = path.expanduser()
+    if (
+        not home.is_absolute()
+        or Path(os.path.realpath(home)) != home
+        or not expanded.is_absolute()
+        or expanded != expected
+        or ".." in expanded.parts
+        or Path(os.path.realpath(expanded)) != expanded
+    ):
+        raise ValueError(
+            "monitor state directory must be the fixed canonical passwd-home path"
+        )
+
+    chain = [home]
+    current = home
+    for component in MONITOR_STATE_RELATIVE.parts:
+        current /= component
+        chain.append(current)
+    existed_before = os.path.lexists(expected)
+    missing_parent = False
+    for index, directory in enumerate(chain):
+        if not os.path.lexists(directory):
+            if index == 0:
+                raise ValueError("monitor passwd home is unavailable")
+            if not create:
+                missing_parent = True
+                continue
+            if missing_parent:
+                # Earlier missing components are created in this same loop;
+                # reaching here with a missing parent signals namespace drift.
+                raise ValueError("monitor state directory parent changed")
+            try:
+                directory.mkdir(mode=0o700)
+                descriptor = os.open(
+                    directory,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    os.fchmod(descriptor, 0o700)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                _fsync_directory(directory.parent)
+            except OSError as exc:
+                raise ValueError(
+                    "monitor state directory cannot be created safely"
+                ) from exc
+        if missing_parent:
+            raise ValueError("monitor state directory has an impossible partial path")
+        try:
+            info = directory.lstat()
+            resolved = directory.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("monitor state directory chain is unavailable") from exc
+        mode = stat.S_IMODE(info.st_mode)
+        if (
+            resolved != directory
+            or stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or mode & 0o022
+            or (directory == expected and mode != 0o700)
+        ):
+            raise ValueError(
+                "monitor state directory chain must be owned, real, and private"
+            )
+    return expected, existed_before
+
+
+def _monitor_state_namespace_directory(
+    base: Path, *, namespace_sha256: str, create: bool
+) -> tuple[Path, bool]:
+    """Select one private, content-addressed state namespace without reuse."""
+
+    namespace = _require_sha256(
+        namespace_sha256, name="monitor state namespace SHA-256"
+    )
+    validated_base, _base_existed = _fixed_monitor_state_directory(
+        base, create=create
+    )
+    selected = validated_base / namespace
+    if Path(os.path.realpath(selected)) != selected:
+        raise ValueError("monitor state namespace is not canonical")
+    existed_before = os.path.lexists(selected)
+    if create and not existed_before:
+        try:
+            selected.mkdir(mode=0o700)
+            descriptor = os.open(
+                selected,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fchmod(descriptor, 0o700)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            _fsync_directory(validated_base)
+        except OSError as exc:
+            raise ValueError(
+                "monitor state namespace cannot be created safely"
+            ) from exc
+    if os.path.lexists(selected):
+        try:
+            info = selected.lstat()
+            resolved = selected.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("monitor state namespace is unavailable") from exc
+        if (
+            resolved != selected
+            or stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ValueError(
+                "monitor state namespace must be owned, real, and mode 0700"
+            )
+    return selected, existed_before
+
+
+def _monitor_output_path(path: Path, *, expected_name: str) -> Path:
+    """Reject ambiguous/symlinked unit outputs before either file is installed."""
+
+    expanded = path.expanduser()
+    if (
+        not expanded.is_absolute()
+        or expanded.name != expected_name
+        or ".." in expanded.parts
+        or Path(os.path.realpath(expanded)) != expanded
+    ):
+        raise ValueError(f"monitor unit output must be canonical {expected_name}")
+    if os.path.lexists(expanded):
+        info = expanded.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"monitor unit output is not a real file: {expanded}")
+    parent = expanded.parent
+    if os.path.lexists(parent):
+        info = parent.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or parent.resolve(strict=True) != parent
+        ):
+            raise ValueError("monitor unit output parent is unsafe")
+    return expanded
+
+
+def _monitor_systemd_path_token(path: Path, *, name: str) -> str:
+    """Constrain paths substituted into unquoted systemd command tokens."""
+
+    value = os.fspath(path)
+    forbidden = frozenset("\\\"'`$%:;#{}")
+    if (
+        not path.is_absolute()
+        or not value
+        or any(
+            character.isspace()
+            or ord(character) < 0x20
+            or ord(character) == 0x7F
+            or character in forbidden
+            for character in value
+        )
+    ):
+        raise ValueError(f"{name} is not a safe systemd command path token")
+    return value
+
+
+def _validate_monitor_systemd_template_contract(
+    monitor_template: Path, *, main_template: Path
+) -> None:
+    """Lock the pre-exec scrub, env -i layer, and bounded unit timeout."""
+
+    expected_unset = "UnsetEnvironment=" + " ".join(
+        EXEC_BOUNDARY_UNSET_ENVIRONMENT
+    )
+    documents: dict[str, list[str]] = {}
+    for label, path in (
+        ("monitor", monitor_template),
+        ("main", main_template),
+    ):
+        payload, info = _stable_regular_bytes(path, max_bytes=1024 * 1024)
+        if (
+            info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) not in {0o400, 0o440, 0o444}
+        ):
+            raise ValueError(f"{label} systemd template identity/mode is unsafe")
+        try:
+            documents[label] = payload.decode("utf-8", errors="strict").splitlines()
+        except UnicodeError as exc:
+            raise ValueError(f"{label} systemd template is not UTF-8") from exc
+    for label, lines in documents.items():
+        unset_lines = [line for line in lines if line.startswith("UnsetEnvironment=")]
+        if unset_lines != [expected_unset]:
+            raise ValueError(
+                f"{label} systemd template pre-exec environment scrub differs"
+            )
+    monitor_lines = documents["monitor"]
+    exec_lines = [line for line in monitor_lines if line.startswith("ExecStart=")]
+    if (
+        len(exec_lines) != 1
+        or not exec_lines[0].startswith("ExecStart=/usr/bin/env -i ")
+        or monitor_lines.index(expected_unset) >= monitor_lines.index(exec_lines[0])
+        or monitor_lines.count("TimeoutStartSec=300") != 1
+        or any(line.startswith("EnvironmentFile=") for line in monitor_lines)
+    ):
+        raise ValueError("monitor systemd exec-boundary contract is invalid")
+
+
+def _monitor_renderer_checkout_binding(
+    selected_renderer: Path, *, expected_head: str, expected_tree: str
+) -> dict[str, str]:
+    """Bind a selected release to the clean checkout executing its renderer.
+
+    A content-addressed release proves its own manifest, but rendering a unit
+    through a different checkout could otherwise mix two implementations.  In
+    particular, merely comparing the selected and worktree files would allow
+    the same uncommitted edit to exist in both.  Require the selected bytes,
+    current pathname bytes, and the blob named by the current Git commit to be
+    identical, and require that commit/tree to be the selected release's exact
+    identity.
+    """
+
+    project = PROJECT_ROOT.expanduser().resolve(strict=True)
+    current_renderer = project / MONITOR_RENDERER_RELATIVE
+
+    def git_identity() -> tuple[str, str]:
+        try:
+            top_level = Path(
+                _git_output(project, "rev-parse", "--show-toplevel")
+                .decode("utf-8", errors="strict")
+                .strip()
+            ).resolve(strict=True)
+            head = (
+                _git_output(project, "rev-parse", "--verify", "HEAD^{commit}")
+                .decode("ascii", errors="strict")
+                .strip()
+                .casefold()
+            )
+            tree = (
+                _git_output(project, "rev-parse", "--verify", "HEAD^{tree}")
+                .decode("ascii", errors="strict")
+                .strip()
+                .casefold()
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("renderer checkout Git identity is unavailable") from exc
+        if (
+            top_level != project
+            or len(head) not in {40, 64}
+            or len(tree) != len(head)
+            or any(character not in "0123456789abcdef" for character in head + tree)
+        ):
+            raise ValueError("renderer checkout Git identity is invalid")
+        return head, tree
+
+    head, tree = git_identity()
+    if expected_head != head or expected_tree != tree:
+        raise ValueError(
+            "selected source release HEAD/tree differs from renderer checkout"
+        )
+
+    try:
+        loaded_renderer = Path(__file__).resolve(strict=True)
+        current_path_info = current_renderer.lstat()
+        selected_path_info = selected_renderer.lstat()
+        current_payload, current_info = _stable_regular_bytes(
+            current_renderer, max_bytes=4 * 1024 * 1024
+        )
+        selected_payload, selected_info = _stable_regular_bytes(
+            selected_renderer, max_bytes=4 * 1024 * 1024
+        )
+    except OSError as exc:
+        raise ValueError("monitor renderer byte proof is unavailable") from exc
+    if (
+        loaded_renderer != current_renderer
+        or stat.S_ISLNK(current_path_info.st_mode)
+        or not stat.S_ISREG(current_path_info.st_mode)
+        or current_path_info.st_uid != os.geteuid()
+        or current_path_info.st_nlink != 1
+        or _file_stability_tuple(current_path_info)
+        != _file_stability_tuple(current_info)
+    ):
+        raise ValueError("current monitor renderer pathname is unsafe")
+    if (
+        selected_renderer.resolve(strict=True) != selected_renderer
+        or stat.S_ISLNK(selected_path_info.st_mode)
+        or not stat.S_ISREG(selected_path_info.st_mode)
+        or selected_path_info.st_uid != os.geteuid()
+        or selected_path_info.st_nlink != 1
+        or stat.S_IMODE(selected_path_info.st_mode) not in {0o400, 0o440, 0o444}
+        or _file_stability_tuple(selected_path_info)
+        != _file_stability_tuple(selected_info)
+    ):
+        raise ValueError("selected monitor renderer pathname is unsafe")
+
+    object_name = f"{head}:{MONITOR_RENDERER_RELATIVE.as_posix()}"
+    try:
+        committed_size = int(
+            _git_output(project, "cat-file", "-s", object_name)
+            .decode("ascii", errors="strict")
+            .strip()
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("committed monitor renderer size is invalid") from exc
+    if committed_size < 0 or committed_size > 4 * 1024 * 1024:
+        raise ValueError("committed monitor renderer exceeds its byte bound")
+    committed_payload = _git_output(project, "cat-file", "blob", object_name)
+    if len(committed_payload) != committed_size:
+        raise ValueError("committed monitor renderer size changed while read")
+    if current_payload != committed_payload:
+        raise ValueError(
+            "renderer checkout contains uncommitted manage_deployment.py drift"
+        )
+    if selected_payload != committed_payload:
+        raise ValueError(
+            "selected source renderer differs from the committed checkout"
+        )
+
+    repeated_head, repeated_tree = git_identity()
+    repeated_current, repeated_current_info = _stable_regular_bytes(
+        current_renderer, max_bytes=4 * 1024 * 1024
+    )
+    if (
+        (repeated_head, repeated_tree) != (head, tree)
+        or repeated_current != current_payload
+        or _file_stability_tuple(repeated_current_info)
+        != _file_stability_tuple(current_info)
+    ):
+        raise ValueError("renderer checkout changed while it was being bound")
+    return {
+        "head": head,
+        "tree": tree,
+        "renderer_sha256": _sha256_bytes(committed_payload),
+    }
+
+
+def _selected_monitor_core(selected_script: Path) -> Any:
+    """Require the imported monitor core to equal the selected release bytes."""
+
+    from scripts import monitor_operations
+
+    current_script = PROJECT_ROOT / MONITOR_SCRIPT_RELATIVE
+    try:
+        loaded_script = Path(str(monitor_operations.__file__)).resolve(strict=True)
+        current_resolved = current_script.resolve(strict=True)
+        current_info = current_script.lstat()
+        selected_payload, selected_info = _stable_regular_bytes(
+            selected_script, max_bytes=4 * 1024 * 1024
+        )
+        current_payload, opened_current = _stable_regular_bytes(
+            current_script, max_bytes=4 * 1024 * 1024
+        )
+    except OSError as exc:
+        raise ValueError("monitor core checkout/release proof is unavailable") from exc
+    if (
+        loaded_script != current_resolved
+        or stat.S_ISLNK(current_info.st_mode)
+        or not stat.S_ISREG(current_info.st_mode)
+        or current_info.st_uid != os.geteuid()
+        or current_info.st_nlink != 1
+        or _file_stability_tuple(current_info)
+        != _file_stability_tuple(opened_current)
+        or selected_info.st_uid != os.geteuid()
+        or selected_info.st_nlink != 1
+        or _sha256_bytes(current_payload) != _sha256_bytes(selected_payload)
+    ):
+        raise ValueError(
+            "selected monitor core differs from the renderer checkout"
+        )
+    return monitor_operations
+
+
+def _monitor_policy_sha256(policy: Path, *, monitor_core: Any) -> str:
+    """Hash and schema-check the policy that is pinned inside the source release."""
+
+    payload, info = _stable_regular_bytes(policy, max_bytes=64 * 1024)
+    if (
+        info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) not in {0o400, 0o440, 0o444}
+    ):
+        raise ValueError("monitor policy identity/mode is unsafe")
+    digest = _sha256_bytes(payload)
+    try:
+        current_policy = PROJECT_ROOT / MONITOR_POLICY_RELATIVE
+        current_payload, current_info = _stable_regular_bytes(
+            current_policy, max_bytes=64 * 1024
+        )
+        validated, observed = monitor_core.load_policy(policy, digest)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("monitor policy failed its fixed schema validation") from exc
+    service = validated.get("service")
+    if (
+        observed != digest
+        or current_info.st_uid != os.geteuid()
+        or current_info.st_nlink != 1
+        or _sha256_bytes(current_payload) != digest
+        or not isinstance(service, Mapping)
+        or service.get("unit") != MONITORED_SERVICE_NAME
+        or service.get("health_url") != MONITOR_HEALTH_URL
+    ):
+        raise ValueError("monitor policy changed its fixed service binding")
+    return digest
+
+
+def _monitor_deployment_binding_sha256(
+    expected: Mapping[str, str], *, monitor_core: Any
+) -> str:
+    """Match the monitor core's complete immutable deployment binding."""
+
+    required = {
+        "source_head",
+        "source_tree",
+        "source_manifest_sha256",
+        "python_runtime_manifest_sha256",
+        "python_runtime_tree_sha256",
+        "python_executable_sha256",
+        "runtime_manifest_sha256",
+        "store_binding_sha256",
+    }
+    if set(expected) != required:
+        raise ValueError("monitor deployment binding fields are incomplete")
+    for name, value in expected.items():
+        lengths = {40, 64} if name in {"source_head", "source_tree"} else {64}
+        if (
+            not isinstance(value, str)
+            or len(value) not in lengths
+            or value != value.casefold()
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("monitor deployment binding contains an invalid digest")
+    payload = json.dumps(
+        {
+            "schema_version": 1,
+            "unit": MONITORED_SERVICE_NAME,
+            "health_url": MONITOR_HEALTH_URL,
+            "expected": dict(expected),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    digest = _sha256_bytes(payload)
+    try:
+        core_digest = monitor_core._binding_sha256(expected)
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError("monitor core deployment binding is unavailable") from exc
+    if core_digest != digest:
+        raise ValueError("renderer/core monitor deployment bindings differ")
+    return digest
+
+
+def _monitor_state_namespace_sha256(
+    *, policy_sha256: str, deployment_binding_sha256: str
+) -> str:
+    """Bind mutable monitor history to exactly one policy and deployment."""
+
+    policy = _require_sha256(policy_sha256, name="monitor policy SHA-256")
+    deployment = _require_sha256(
+        deployment_binding_sha256,
+        name="monitor deployment binding SHA-256",
+    )
+    payload = json.dumps(
+        {
+            "artifact_type": "where_papers_go_operations_monitor_state_namespace",
+            "schema_version": 1,
+            "policy_sha256": policy,
+            "deployment_binding_sha256": deployment,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return _sha256_bytes(payload)
+
+
+def _runtime_store_binding(runtime: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Derive the worker's exact six-file binding from the validated manifest."""
+
+    manifest = runtime / RUNTIME_MANIFEST
+    payload, info = _stable_regular_bytes(manifest, max_bytes=16 * 1024 * 1024)
+    if (
+        info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o400
+    ):
+        raise ValueError("runtime shadow manifest identity/mode is unsafe")
+    document = _json_object_without_duplicate_keys(
+        payload, name="runtime shadow manifest"
+    )
+    raw_rows = document.get("files")
+    if not isinstance(raw_rows, list):
+        raise ValueError("runtime shadow manifest file inventory is invalid")
+    rows: dict[str, Mapping[str, Any]] = {}
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, Mapping):
+            raise ValueError("runtime shadow manifest contains an invalid file row")
+        relative = raw_row.get("runtime_path")
+        if not isinstance(relative, str) or relative in rows:
+            raise ValueError("runtime shadow manifest has duplicate/invalid paths")
+        rows[relative] = raw_row
+
+    verified: list[dict[str, Any]] = []
+    for name in RUNTIME_LIGHTRAG_FILES:
+        relative = f"lightrag_storage/{name}"
+        row = rows.get(relative)
+        if not isinstance(row, Mapping):
+            raise ValueError("runtime shadow omits a required LightRAG file")
+        size = row.get("bytes")
+        digest = row.get("sha256")
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or size > MAX_RUNTIME_SEED_BYTES
+            or not isinstance(digest, str)
+            or digest != digest.casefold()
+            or _require_sha256(digest, name=f"runtime {relative} SHA-256") != digest
+        ):
+            raise ValueError("runtime shadow has an invalid LightRAG binding")
+        candidate = runtime / relative
+        observed_size, observed_sha256, observed_info = _stable_regular_file(
+            candidate, max_bytes=MAX_RUNTIME_SEED_BYTES
+        )
+        if (
+            observed_info.st_uid != os.geteuid()
+            or observed_info.st_nlink != 1
+            or stat.S_IMODE(observed_info.st_mode) & 0o077
+            or observed_size != size
+            or observed_sha256 != digest
+        ):
+            raise ValueError("runtime LightRAG file drifted while binding monitor")
+        verified.append(
+            {"runtime_path": relative, "bytes": size, "sha256": digest}
+        )
+    binding_payload = json.dumps(
+        verified,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _sha256_bytes(binding_payload), verified
+
+
+def render_monitor_systemd(args: argparse.Namespace) -> dict[str, Any]:
+    """Render both fixed monitor units from one fully validated deployment."""
+
+    source_manifest_sha256 = _require_sha256(
+        args.expected_source_manifest_sha256,
+        name="expected source manifest SHA-256",
+    )
+    source_release = args.source_release.expanduser().resolve()
+    source_identity = validate_source_release(
+        source_release / SOURCE_MANIFEST_FILE,
+        expected_manifest_sha256=source_manifest_sha256,
+    )
+    if Path(str(source_identity.get("release", ""))) != source_release:
+        raise ValueError("source release validator returned a different root")
+    service_template = source_release / MONITOR_SYSTEMD_SERVICE_RELATIVE
+    timer_template = source_release / MONITOR_SYSTEMD_TIMER_RELATIVE
+    main_service_template = source_release / SYSTEMD_TEMPLATE.relative_to(
+        PROJECT_ROOT
+    )
+    policy = source_release / MONITOR_POLICY_RELATIVE
+    monitor_script = source_release / MONITOR_SCRIPT_RELATIVE
+    selected_renderer = source_release / MONITOR_RENDERER_RELATIVE
+    for asset in (
+        service_template,
+        timer_template,
+        main_service_template,
+        policy,
+        monitor_script,
+        selected_renderer,
+    ):
+        info = asset.lstat()
+        if (
+            asset.resolve(strict=True) != asset
+            or stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+        ):
+            raise ValueError("monitor asset is not fixed inside the source release")
+    renderer_checkout = _monitor_renderer_checkout_binding(
+        selected_renderer,
+        expected_head=str(source_identity["head"]),
+        expected_tree=str(source_identity["tree"]),
+    )
+    _validate_monitor_systemd_template_contract(
+        service_template, main_template=main_service_template
+    )
+    monitor_core = _selected_monitor_core(monitor_script)
+    policy_sha256 = _monitor_policy_sha256(
+        policy, monitor_core=monitor_core
+    )
+
+    python_runtime_manifest_sha256 = _require_sha256(
+        args.expected_python_runtime_manifest_sha256,
+        name="expected Python runtime manifest SHA-256",
+    )
+    python_runtime = args.python_runtime.expanduser().resolve()
+    python_manifest = python_runtime / PYTHON_RUNTIME_MANIFEST
+    python_identity = validate_python_runtime_release(
+        python_manifest,
+        expected_manifest_sha256=python_runtime_manifest_sha256,
+    )
+    python = Path(str(python_identity.get("python_executable", "")))
+    python_executable_sha256 = _require_sha256(
+        python_identity.get("python_executable_sha256"),
+        name="Python executable SHA-256",
+    )
+    python_runtime_tree_sha256 = _require_sha256(
+        python_identity.get("runtime_tree_sha256"),
+        name="Python runtime tree SHA-256",
+    )
+    raw_import_paths = python_identity.get("import_paths")
+    if (
+        Path(str(python_identity.get("runtime", ""))) != python_runtime
+        or Path(str(python_identity.get("manifest", ""))) != python_manifest
+        or python_identity.get("manifest_sha256") != python_runtime_manifest_sha256
+        or not python.is_absolute()
+        or python.resolve(strict=True) != python
+        or not python.is_relative_to(python_runtime)
+        or not isinstance(raw_import_paths, list)
+        or not raw_import_paths
+    ):
+        raise ValueError("Python runtime validator returned inconsistent bindings")
+    dependency_paths: list[Path] = []
+    for raw_path in raw_import_paths:
+        dependency = Path(str(raw_path))
+        if (
+            not dependency.is_absolute()
+            or dependency.resolve(strict=True) != dependency
+            or not dependency.is_dir()
+            or not dependency.is_relative_to(python_runtime)
+            or dependency in dependency_paths
+        ):
+            raise ValueError("Python import path escaped its immutable runtime")
+        dependency_paths.append(dependency)
+    _validate_python_runtime(
+        python,
+        source_release=source_release,
+        dependency_paths=dependency_paths,
+    )
+
+    expected_runtime_manifest_sha256 = _require_sha256(
+        args.expected_runtime_manifest_sha256,
+        name="expected runtime manifest SHA-256",
+    )
+    runtime_selector = args.runtime_dir
+    runtime = _validated_runtime_shadow(runtime_selector)
+    runtime_manifest = runtime / RUNTIME_MANIFEST
+    observed_runtime_manifest_sha256 = _runtime_manifest_sha256(runtime)
+    if observed_runtime_manifest_sha256 != expected_runtime_manifest_sha256:
+        raise ValueError("runtime manifest SHA-256 does not match expectation")
+    store_binding_sha256, store_rows = _runtime_store_binding(runtime)
+    # Re-resolve an optional ``current`` selector and revalidate after deriving
+    # the binding so a concurrent activation cannot mix two generations.
+    runtime_after = _validated_runtime_shadow(runtime_selector)
+    if (
+        runtime_after != runtime
+        or _runtime_manifest_sha256(runtime_after)
+        != expected_runtime_manifest_sha256
+    ):
+        raise ValueError("runtime generation changed while rendering monitor units")
+    repeated_store_binding, _rows = _runtime_store_binding(runtime_after)
+    if repeated_store_binding != store_binding_sha256:
+        raise ValueError("runtime LightRAG binding changed while rendering")
+
+    expected_bindings = {
+        "source_head": str(source_identity["head"]),
+        "source_tree": str(source_identity["tree"]),
+        "source_manifest_sha256": source_manifest_sha256,
+        "python_runtime_manifest_sha256": python_runtime_manifest_sha256,
+        "python_runtime_tree_sha256": python_runtime_tree_sha256,
+        "python_executable_sha256": python_executable_sha256,
+        "runtime_manifest_sha256": expected_runtime_manifest_sha256,
+        "store_binding_sha256": store_binding_sha256,
+    }
+    deployment_binding_sha256 = _monitor_deployment_binding_sha256(
+        expected_bindings, monitor_core=monitor_core
+    )
+    state_namespace_sha256 = _monitor_state_namespace_sha256(
+        policy_sha256=policy_sha256,
+        deployment_binding_sha256=deployment_binding_sha256,
+    )
+
+    api_token_file = _fixed_backend_api_token_file(args.api_token_file)
+    _read_private_bearer_token(api_token_file, label="API token file")
+    state_base, state_base_existed = _fixed_monitor_state_directory(
+        args.state_dir, create=False
+    )
+    state_dir, state_existed = _monitor_state_namespace_directory(
+        state_base,
+        namespace_sha256=state_namespace_sha256,
+        create=False,
+    )
+    service_output = _monitor_output_path(
+        args.service_output, expected_name=MONITOR_SERVICE_NAME
+    )
+    timer_output = _monitor_output_path(
+        args.timer_output, expected_name=MONITOR_TIMER_NAME
+    )
+    if service_output == timer_output:
+        raise ValueError("monitor service and timer outputs must differ")
+    for output in (service_output, timer_output):
+        if any(
+            output.is_relative_to(protected)
+            for protected in (
+                source_release,
+                python_runtime,
+                runtime,
+                state_base,
+            )
+        ):
+            raise ValueError("monitor unit output overlaps a protected deployment root")
+    for name, path in (
+        ("source release", source_release),
+        ("source manifest", source_release / SOURCE_MANIFEST_FILE),
+        ("Python runtime", python_runtime),
+        ("Python manifest", python_manifest),
+        ("Python executable", python),
+        *(("Python import path", path) for path in dependency_paths),
+        ("monitor policy", policy),
+        ("monitor state base", state_base),
+        ("monitor state directory", state_dir),
+        ("API token file", api_token_file),
+        ("runtime manifest", runtime_manifest),
+    ):
+        _monitor_systemd_path_token(path, name=name)
+
+    service_payload = render_template(
+        service_template,
+        {
+            "SOURCE_RELEASE": source_release,
+            "SOURCE_HEAD": str(source_identity["head"]),
+            "SOURCE_TREE": str(source_identity["tree"]),
+            "SOURCE_MANIFEST": source_release / SOURCE_MANIFEST_FILE,
+            "SOURCE_MANIFEST_SHA256": source_manifest_sha256,
+            "PYTHON": python,
+            "PYTHON_RUNTIME": python_runtime,
+            "PYTHON_RUNTIME_MANIFEST": python_manifest,
+            "PYTHON_RUNTIME_MANIFEST_SHA256": python_runtime_manifest_sha256,
+            "PYTHON_RUNTIME_TREE_SHA256": python_runtime_tree_sha256,
+            "PYTHON_EXECUTABLE_SHA256": python_executable_sha256,
+            "PYTHON_IMPORT_PATH": os.pathsep.join(
+                str(path) for path in dependency_paths
+            ),
+            "MONITOR_POLICY": policy,
+            "MONITOR_POLICY_SHA256": policy_sha256,
+            "MONITOR_STATE_DIR": state_dir,
+            "API_TOKEN_FILE": api_token_file,
+            "RUNTIME_MANIFEST": runtime_manifest,
+            "RUNTIME_MANIFEST_SHA256": expected_runtime_manifest_sha256,
+            "LIGHTRAG_STORE_BINDING_SHA256": store_binding_sha256,
+        },
+    )
+    timer_payload = render_template(timer_template, {})
+    if (
+        _monitor_renderer_checkout_binding(
+            selected_renderer,
+            expected_head=str(source_identity["head"]),
+            expected_tree=str(source_identity["tree"]),
+        )
+        != renderer_checkout
+    ):
+        raise ValueError("renderer checkout binding changed while rendering")
+    if args.apply:
+        _monitor_state_namespace_directory(
+            state_base,
+            namespace_sha256=state_namespace_sha256,
+            create=True,
+        )
+    service_result = _render_result(
+        kind="monitor-systemd-service",
+        output=service_output,
+        payload=service_payload,
+        apply=args.apply,
+        mode=0o644,
+    )
+    timer_result = _render_result(
+        kind="monitor-systemd-timer",
+        output=timer_output,
+        payload=timer_payload,
+        apply=args.apply,
+        mode=0o644,
+    )
+    service_result["content"] = service_payload.decode("utf-8")
+    timer_result["content"] = timer_payload.decode("utf-8")
+    return {
+        "kind": "monitor-systemd-units",
+        "status": "installed" if args.apply else "dry-run",
+        "source_head": source_identity["head"],
+        "source_tree": source_identity["tree"],
+        "renderer_sha256": renderer_checkout["renderer_sha256"],
+        "renderer_checkout_bound": True,
+        "source_manifest_sha256": source_manifest_sha256,
+        "policy_sha256": policy_sha256,
+        "python_runtime_manifest_sha256": python_runtime_manifest_sha256,
+        "python_runtime_tree_sha256": python_runtime_tree_sha256,
+        "python_executable_sha256": python_executable_sha256,
+        "runtime_manifest_sha256": expected_runtime_manifest_sha256,
+        "lightrag_store_binding_sha256": store_binding_sha256,
+        "lightrag_store_file_count": len(store_rows),
+        "deployment_binding_sha256": deployment_binding_sha256,
+        "monitor_state_namespace_sha256": state_namespace_sha256,
+        "monitor_state_base": str(state_base),
+        "monitor_state_base_existed_before": state_base_existed,
+        "monitor_state_dir": str(state_dir),
+        "monitor_state_existed_before": state_existed,
+        "service": service_result,
+        "timer": timer_result,
+        "manager_reloaded": False,
+        "units_enabled": False,
+        "units_started": False,
+    }
+
+
 def _nginx_literal_path(value: Path, *, name: str) -> Path:
     """Return one injection-safe absolute path for an unquoted Nginx token."""
 
@@ -5338,6 +6249,29 @@ def build_parser() -> argparse.ArgumentParser:
     systemd.add_argument("--apply", action="store_true")
     systemd.set_defaults(handler=render_systemd)
 
+    monitor_systemd = subparsers.add_parser(
+        "render-monitor-systemd",
+        help="render the fixed operations-monitor user service and timer",
+    )
+    monitor_systemd.add_argument("--source-release", type=Path, required=True)
+    monitor_systemd.add_argument(
+        "--expected-source-manifest-sha256", required=True
+    )
+    monitor_systemd.add_argument("--python-runtime", type=Path, required=True)
+    monitor_systemd.add_argument(
+        "--expected-python-runtime-manifest-sha256", required=True
+    )
+    monitor_systemd.add_argument("--runtime-dir", type=Path, required=True)
+    monitor_systemd.add_argument(
+        "--expected-runtime-manifest-sha256", required=True
+    )
+    monitor_systemd.add_argument("--api-token-file", type=Path, required=True)
+    monitor_systemd.add_argument("--state-dir", type=Path, required=True)
+    monitor_systemd.add_argument("--service-output", type=Path, required=True)
+    monitor_systemd.add_argument("--timer-output", type=Path, required=True)
+    monitor_systemd.add_argument("--apply", action="store_true")
+    monitor_systemd.set_defaults(handler=render_monitor_systemd)
+
     nginx = subparsers.add_parser("render-nginx", help="render the TLS proxy")
     nginx.add_argument("--template", type=Path, default=NGINX_TEMPLATE)
     nginx.add_argument("--output", type=Path, required=True)
@@ -5594,6 +6528,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         (
             "expected_python_runtime_manifest_sha256",
             "--expected-python-runtime-manifest-sha256",
+        ),
+        (
+            "expected_runtime_manifest_sha256",
+            "--expected-runtime-manifest-sha256",
         ),
     ):
         expected_manifest = getattr(args, attribute, None)

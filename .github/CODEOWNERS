@@ -4,7 +4,9 @@
 /scripts/run_closeout_tests.py @rudykon
 /scripts/run_linux_offline_gate.sh @rudykon
 /scripts/validate_closeout.py @rudykon
+/scripts/monitor_operations.py @rudykon
 /scripts/closeout_offline_guard/ @rudykon
 /deploy/ @rudykon
+/where_paper_go/web_security.py @rudykon
 /pyproject.toml @rudykon
 /uv.lock @rudykon
