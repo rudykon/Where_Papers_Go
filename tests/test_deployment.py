@@ -2255,6 +2255,7 @@ class DeploymentManifestTests(TestCase):
             manage_deployment.NGINX_TEMPLATE,
             {
                 "UPSTREAM_PORT": "8001",
+                "AUTHENTICATED_GATE_PORT": "18002",
                 "SERVER_NAME": "papers.example.org",
                 "TLS_CERTIFICATE": "/etc/ssl/papers/fullchain.pem",
                 "TLS_CERTIFICATE_KEY": "/etc/ssl/papers/privkey.pem",
@@ -2266,7 +2267,20 @@ class DeploymentManifestTests(TestCase):
             "listen 443 ssl",
             "ssl_protocols TLSv1.2 TLSv1.3",
             "auth_basic_user_file",
-            "limit_req zone=wpg_search",
+            "limit_req_zone $binary_remote_addr zone=wpg_auth_attempts:10m rate=30r/m;",
+            "limit_req_zone $binary_remote_addr zone=wpg_search:10m rate=6r/m;",
+            "limit_req_zone $http_x_wpg_authenticated_user zone=wpg_search_user:10m rate=6r/m;",
+            "limit_conn_zone $binary_remote_addr zone=wpg_auth_connections:10m;",
+            "limit_conn_zone $binary_remote_addr zone=wpg_search_connections:10m;",
+            "limit_conn_zone $http_x_wpg_authenticated_user zone=wpg_search_user_connections:10m;",
+            "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+            "limit_req zone=wpg_search burst=2 nodelay;",
+            "limit_req zone=wpg_search_user burst=2 nodelay;",
+            "limit_conn wpg_auth_connections 16;",
+            "limit_conn wpg_search_connections 2;",
+            "limit_conn wpg_search_user_connections 2;",
+            "limit_req_status 429;",
+            "limit_conn_status 429;",
             "access_log /var/log/nginx/where-papers-go.access.json wpg_json",
             '"upstream_request_id":"$upstream_http_x_request_id"',
             'proxy_set_header Authorization "Bearer ' + "b" * 40 + '"',
@@ -2285,6 +2299,89 @@ class DeploymentManifestTests(TestCase):
         self.assertNotIn("return 301 https://$host", payload)
         self.assertNotIn("$proxy_add_x_forwarded_for", payload)
         self.assertNotIn("proxy_set_header Host $host", payload)
+        tls_server_prefix = payload.split("listen 443 ssl http2;", 1)[1].split(
+            "location = /api/search {", 1
+        )[0]
+        self.assertIn(
+            "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+            tls_server_prefix,
+        )
+        self.assertIn(
+            "limit_conn wpg_auth_connections 16;", tls_server_prefix
+        )
+        for path in ("/api/search", "/api/search/stream"):
+            outer_location = payload.split(f"location = {path} {{", 1)[1].split(
+                "\n    }", 1
+            )[0]
+            self.assertIn('auth_basic "Where Papers Go";', outer_location)
+            self.assertIn("auth_basic_user_file", outer_location)
+            self.assertIn(
+                "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+                outer_location,
+            )
+            self.assertIn(
+                "limit_req zone=wpg_search burst=2 nodelay;", outer_location
+            )
+            self.assertIn(
+                "limit_conn wpg_auth_connections 16;", outer_location
+            )
+            self.assertIn(
+                "limit_conn wpg_search_connections 2;", outer_location
+            )
+            self.assertEqual(outer_location.count("limit_req zone="), 2)
+            self.assertEqual(outer_location.count("limit_conn "), 2)
+            self.assertNotIn("zone=wpg_search_user", outer_location)
+            self.assertIn("limit_req_status 429;", outer_location)
+            self.assertIn("limit_conn_status 429;", outer_location)
+            self.assertIn(
+                "proxy_pass http://where_papers_go_authenticated_gate;",
+                outer_location,
+            )
+            self.assertIn(
+                "proxy_set_header X-WPG-Authenticated-User $remote_user;",
+                outer_location,
+            )
+            self.assertIn(
+                'proxy_set_header X-WPG-Internal-Token "' + "b" * 40 + '";',
+                outer_location,
+            )
+            self.assertIn('proxy_set_header Authorization "";', outer_location)
+        internal_server = payload.split(
+            "listen 127.0.0.1:18002;", 1
+        )[1]
+        self.assertIn("access_log off;", internal_server)
+        internal_location = internal_server.split(
+            "location ~ ^/api/search(?:/stream)?$ {", 1
+        )[1].split("\n    }", 1)[0]
+        self.assertIn(
+            'if ($http_x_wpg_internal_token != "' + "b" * 40 + '") { return 403; }',
+            internal_location,
+        )
+        self.assertIn(
+            'if ($http_x_wpg_authenticated_user = "") { return 403; }',
+            internal_location,
+        )
+        self.assertEqual(internal_location.count("limit_req zone="), 1)
+        self.assertEqual(internal_location.count("limit_conn "), 1)
+        self.assertIn(
+            "limit_req zone=wpg_search_user burst=2 nodelay;", internal_location
+        )
+        self.assertIn(
+            "limit_conn wpg_search_user_connections 2;", internal_location
+        )
+        self.assertNotIn("zone=wpg_search burst", internal_location)
+        self.assertNotIn("limit_conn wpg_search_connections", internal_location)
+        self.assertIn("limit_req_status 429;", internal_location)
+        self.assertIn("limit_conn_status 429;", internal_location)
+        self.assertIn(
+            "proxy_pass http://where_papers_go_backend;", internal_location
+        )
+        for header in (
+            "X-WPG-Authenticated-User",
+            "X-WPG-Client-Addr",
+            "X-WPG-Internal-Token",
+        ):
+            self.assertIn(f'proxy_set_header {header} "";', internal_location)
         self.assertNotIn("@@", payload)
 
     def test_nginx_renderer_rejects_non_hostname_redirect_targets(self) -> None:
@@ -2296,6 +2393,7 @@ class DeploymentManifestTests(TestCase):
             "htpasswd": Path("/absolute/htpasswd"),
             "backend_api_token_file": Path("/absolute/backend.token"),
             "upstream_port": 8001,
+            "authenticated_gate_port": 18002,
             "apply": False,
         }
         for server_name in (
@@ -2319,6 +2417,28 @@ class DeploymentManifestTests(TestCase):
                     Namespace(
                         server_name="papers.example.org",
                         **{**base, "upstream_port": upstream_port},
+                    )
+                )
+
+        for gate_port in (
+            0,
+            1,
+            1023,
+            65_536,
+            True,
+            "18002",
+            80,
+            443,
+            8001,
+            8765,
+        ):
+            with self.subTest(gate_port=gate_port), self.assertRaisesRegex(
+                ValueError, "authenticated-gate-port"
+            ):
+                manage_deployment.render_nginx(
+                    Namespace(
+                        server_name="papers.example.org",
+                        **{**base, "authenticated_gate_port": gate_port},
                     )
                 )
 
@@ -2409,6 +2529,7 @@ class DeploymentManifestTests(TestCase):
             )
             self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
             self.assertFalse(deferred["privileged_inputs_validated"])
+            self.assertEqual(deferred["authenticated_gate_port"], 18002)
             self.assertNotIn("b" * 40, json.dumps(deferred, sort_keys=True))
 
             # A same-mode, same-size pathname swap after the fd read must not

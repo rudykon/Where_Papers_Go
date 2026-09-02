@@ -56,6 +56,7 @@ from where_paper_go.paths import PROJECT_ROOT
 
 SYSTEMD_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "where-papers-go.service.in"
 NGINX_TEMPLATE = PROJECT_ROOT / "deploy" / "nginx" / "where-papers-go.conf.in"
+NGINX_AUTHENTICATED_GATE_PORT = 18002
 MONITOR_POLICY_RELATIVE = Path("deploy/monitoring/policy-v1.json")
 MONITOR_SYSTEMD_SERVICE_RELATIVE = Path(
     "deploy/systemd/where-papers-go-monitor.service.in"
@@ -5395,6 +5396,20 @@ def render_nginx(args: argparse.Namespace) -> dict[str, Any]:
         or not 1 <= args.upstream_port <= 65535
     ):
         raise ValueError("--upstream-port must be in 1..65535")
+    authenticated_gate_port = getattr(
+        args, "authenticated_gate_port", NGINX_AUTHENTICATED_GATE_PORT
+    )
+    if (
+        isinstance(authenticated_gate_port, bool)
+        or not isinstance(authenticated_gate_port, int)
+        or not 1024 <= authenticated_gate_port <= 65535
+    ):
+        raise ValueError("--authenticated-gate-port must be in 1024..65535")
+    if authenticated_gate_port in {80, 443, 8765, args.upstream_port}:
+        raise ValueError(
+            "--authenticated-gate-port must differ from the public, legacy, "
+            "and backend ports"
+        )
     inputs = {
         "tls_certificate": _nginx_literal_path(
             args.tls_certificate, name="tls-certificate"
@@ -5430,6 +5445,7 @@ def render_nginx(args: argparse.Namespace) -> dict[str, Any]:
         args.template,
         {
             "UPSTREAM_PORT": str(args.upstream_port),
+            "AUTHENTICATED_GATE_PORT": str(authenticated_gate_port),
             "SERVER_NAME": server_name,
             "TLS_CERTIFICATE": inputs["tls_certificate"],
             "TLS_CERTIFICATE_KEY": inputs["tls_certificate_key"],
@@ -5445,6 +5461,7 @@ def render_nginx(args: argparse.Namespace) -> dict[str, Any]:
         mode=0o600,
     )
     result["privileged_inputs_validated"] = validate_privileged_inputs
+    result["authenticated_gate_port"] = authenticated_gate_port
     return result
 
 
@@ -6282,6 +6299,12 @@ def build_parser() -> argparse.ArgumentParser:
     nginx.add_argument("--backend-api-token-file", type=Path, required=True)
     nginx.add_argument("--upstream-port", type=int, default=8001)
     nginx.add_argument(
+        "--authenticated-gate-port",
+        type=int,
+        default=NGINX_AUTHENTICATED_GATE_PORT,
+        help="loopback-only authenticated gate port (1024..65535; not 8765)",
+    )
+    nginx.add_argument(
         "--defer-privileged-input-validation",
         action="store_true",
         help=(
@@ -6504,6 +6527,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--interval/--timeout must be non-negative/positive")
     if not 1 <= getattr(args, "upstream_port", 1) <= 65_535:
         parser.error("--upstream-port must be between 1 and 65535")
+    if not 1024 <= getattr(args, "authenticated_gate_port", 1024) <= 65_535:
+        parser.error("--authenticated-gate-port must be between 1024 and 65535")
     if not 1 <= getattr(args, "port", 1) <= 65_535:
         parser.error("--port must be between 1 and 65535")
     expected_process_pid = getattr(args, "expect_process_pid", None)

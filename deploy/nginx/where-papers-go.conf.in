@@ -2,8 +2,12 @@
 # The rendered file contains the private backend bearer credential and must be
 # installed root-owned mode 0600.  It never logs that credential.
 
+limit_req_zone $binary_remote_addr zone=wpg_auth_attempts:10m rate=30r/m;
 limit_req_zone $binary_remote_addr zone=wpg_search:10m rate=6r/m;
+limit_req_zone $http_x_wpg_authenticated_user zone=wpg_search_user:10m rate=6r/m;
+limit_conn_zone $binary_remote_addr zone=wpg_auth_connections:10m;
 limit_conn_zone $binary_remote_addr zone=wpg_search_connections:10m;
+limit_conn_zone $http_x_wpg_authenticated_user zone=wpg_search_user_connections:10m;
 
 log_format wpg_json escape=json
   '{"time":"$time_iso8601","request_id":"$request_id",'
@@ -15,6 +19,11 @@ log_format wpg_json escape=json
 
 upstream where_papers_go_backend {
     server 127.0.0.1:@@UPSTREAM_PORT@@;
+    keepalive 8;
+}
+
+upstream where_papers_go_authenticated_gate {
+    server 127.0.0.1:@@AUTHENTICATED_GATE_PORT@@;
     keepalive 8;
 }
 
@@ -39,6 +48,13 @@ server {
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
+    # Bound password verification on every HTTPS path, including health and
+    # not-found paths. Search locations repeat these directives because local
+    # limit directives disable inheritance from the server level.
+    limit_req zone=wpg_auth_attempts burst=20 nodelay;
+    limit_req_status 429;
+    limit_conn wpg_auth_connections 16;
+    limit_conn_status 429;
     auth_basic "Where Papers Go";
     auth_basic_user_file @@HTPASSWD@@;
 
@@ -55,30 +71,66 @@ server {
     add_header Referrer-Policy "no-referrer" always;
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
-    location ~ ^/api/search(?:/stream)?$ {
+    # PREACCESS IP limits bound unauthenticated password work before auth_basic.
+    # A successful request is proxied as a new HTTP request to the loopback-only
+    # gate below, because same-request internal redirects retain limit status and
+    # cannot safely run a second limit_req/limit_conn dimension.
+    location = /api/search {
+        limit_req zone=wpg_auth_attempts burst=20 nodelay;
         limit_req zone=wpg_search burst=2 nodelay;
         limit_req_status 429;
+        limit_conn wpg_auth_connections 16;
         limit_conn wpg_search_connections 2;
         limit_conn_status 429;
-        proxy_pass http://where_papers_go_backend;
+        auth_basic "Where Papers Go";
+        auth_basic_user_file @@HTPASSWD@@;
+        proxy_pass http://where_papers_go_authenticated_gate;
         proxy_http_version 1.1;
         proxy_request_buffering on;
         proxy_buffering off;
         proxy_read_timeout 905s;
         proxy_send_timeout 30s;
-        proxy_set_header Host @@SERVER_NAME@@;
+        proxy_set_header Host wpg-authenticated-gate;
+        proxy_set_header X-WPG-Authenticated-User $remote_user;
+        proxy_set_header X-WPG-Client-Addr $remote_addr;
+        proxy_set_header X-WPG-Internal-Token "@@BACKEND_API_TOKEN@@";
+        proxy_set_header Authorization "";
         proxy_set_header X-Real-IP $remote_addr;
-        # This Nginx instance is the trust boundary. Overwrite, rather than
-        # append to, any client-supplied forwarding chain.
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Forwarded "";
         proxy_set_header Proxy-Authorization "";
         proxy_set_header X-Forwarded-Host "";
         proxy_set_header X-Request-ID $request_id;
-        # Replace the browser's Basic credential with the private credential
-        # that authenticates this proxy to the loopback application.
-        proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";
+    }
+
+    location = /api/search/stream {
+        limit_req zone=wpg_auth_attempts burst=20 nodelay;
+        limit_req zone=wpg_search burst=2 nodelay;
+        limit_req_status 429;
+        limit_conn wpg_auth_connections 16;
+        limit_conn wpg_search_connections 2;
+        limit_conn_status 429;
+        auth_basic "Where Papers Go";
+        auth_basic_user_file @@HTPASSWD@@;
+        proxy_pass http://where_papers_go_authenticated_gate;
+        proxy_http_version 1.1;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_read_timeout 905s;
+        proxy_send_timeout 30s;
+        proxy_set_header Host wpg-authenticated-gate;
+        proxy_set_header X-WPG-Authenticated-User $remote_user;
+        proxy_set_header X-WPG-Client-Addr $remote_addr;
+        proxy_set_header X-WPG-Internal-Token "@@BACKEND_API_TOKEN@@";
+        proxy_set_header Authorization "";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Forwarded "";
+        proxy_set_header Proxy-Authorization "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
     }
 
     location / {
@@ -95,5 +147,55 @@ server {
         proxy_set_header X-Forwarded-Host "";
         proxy_set_header X-Request-ID $request_id;
         proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";
+    }
+}
+
+# This second listener creates a fresh Nginx request, so its PREACCESS handlers
+# can enforce authenticated-user limits independently of the outer IP limits.
+# It is loopback-only, requires an unlogged private header, and exposes no other
+# URI. Host firewall policy must never expose this port beyond loopback.
+server {
+    listen 127.0.0.1:@@AUTHENTICATED_GATE_PORT@@;
+    server_name wpg-authenticated-gate;
+
+    access_log off;
+    error_log /var/log/nginx/where-papers-go.error.log warn;
+    client_max_body_size 200000;
+    client_header_timeout 15s;
+    client_body_timeout 30s;
+    keepalive_timeout 30s;
+
+    location ~ ^/api/search(?:/stream)?$ {
+        # `if` + `return` is intentionally used only as a rewrite-phase guard,
+        # before the user-keyed PREACCESS handlers below.
+        if ($http_x_wpg_internal_token != "@@BACKEND_API_TOKEN@@") { return 403; }
+        if ($http_x_wpg_authenticated_user = "") { return 403; }
+
+        limit_req zone=wpg_search_user burst=2 nodelay;
+        limit_req_status 429;
+        limit_conn wpg_search_user_connections 2;
+        limit_conn_status 429;
+        proxy_pass http://where_papers_go_backend;
+        proxy_http_version 1.1;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_read_timeout 905s;
+        proxy_send_timeout 30s;
+        proxy_set_header Host @@SERVER_NAME@@;
+        proxy_set_header X-Real-IP $http_x_wpg_client_addr;
+        proxy_set_header X-Forwarded-For $http_x_wpg_client_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Forwarded "";
+        proxy_set_header Proxy-Authorization "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $http_x_request_id;
+        proxy_set_header X-WPG-Authenticated-User "";
+        proxy_set_header X-WPG-Client-Addr "";
+        proxy_set_header X-WPG-Internal-Token "";
+        proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";
+    }
+
+    location / {
+        return 404;
     }
 }

@@ -18,6 +18,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -44,19 +45,30 @@ GIT_BINARY = Path("/usr/bin/git")
 SYSTEMCTL_BINARY = Path("/usr/bin/systemctl")
 SS_BINARY = Path("/usr/bin/ss")
 SERVICE_UNIT = "where-papers-go.service"
+LOGINCTL_BINARY = Path("/usr/bin/loginctl")
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+MACHINE_ID_PATH = Path("/etc/machine-id")
+UPTIME_PATH = Path("/proc/uptime")
 HEALTH_HOST = "127.0.0.1"
 HEALTH_PATH = "/api/health"
 EXPECTED_BACKEND = "lightrag_mix+property_graph_exact_vector+llm+search_api"
 REQUEST_ARTIFACT_TYPE = "where_papers_go_aggregate_closeout_request"
 OUTPUT_ARTIFACT_TYPE = "where_papers_go_aggregate_closeout_validation"
 REPROOF_ARTIFACT_TYPE = "where_papers_go_post_deployment_reproof"
+STRICT_REPROOF_ARTIFACT_TYPE = (
+    "where_papers_go_administrator_attested_lan_front_door_reproof"
+)
 TEST_REPORT_ARTIFACT_TYPE = "where_papers_go_closeout_test_report"
-LEGACY_OUTPUT_PREFIX = "final_delivery_validation_v3_"
-LEGACY_REPROOF_PREFIX = "final_delivery_deployment_reproof_v1_"
-OUTPUT_PREFIX = "final_delivery_validation_v4_"
-REPROOF_PREFIX = "final_delivery_deployment_reproof_v2_"
-OUTPUT_SCHEMA_VERSION = 5
-REPROOF_SCHEMA_VERSION = 2
+LEGACY_OUTPUT_PREFIX = "final_delivery_validation_v4_"
+LEGACY_REPROOF_PREFIX = "final_delivery_deployment_reproof_v2_"
+OUTPUT_PREFIX = "final_delivery_validation_v5_"
+REPROOF_PREFIX = "final_delivery_deployment_reproof_v3_"
+STRICT_REPROOF_PREFIX = (
+    "final_delivery_administrator_attested_lan_front_door_reproof_v1_"
+)
+OUTPUT_SCHEMA_VERSION = 6
+REPROOF_SCHEMA_VERSION = 3
+STRICT_REPROOF_SCHEMA_VERSION = 1
 FULL_TEST_COUNT = 489
 FULL_TEST_ID_SHA256 = (
     "ddc285a4a7b74373dd0cf92f2da5515899d382a16e3c31ccb3e27963565eccc4"
@@ -123,6 +135,19 @@ VERSION_DIRECTORY = re.compile(
 REPROOF_VERSION_DIRECTORY = re.compile(
     rf"{re.escape(REPROOF_PREFIX)}\d{{8}}T\d{{12}}Z-[0-9a-f]{{12}}\Z"
 )
+STRICT_REPROOF_VERSION_DIRECTORY = re.compile(
+    rf"{re.escape(STRICT_REPROOF_PREFIX)}\d{{8}}T\d{{12}}Z-[0-9a-f]{{12}}\Z"
+)
+BOOT_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z"
+)
+MACHINE_ID = re.compile(r"[0-9a-f]{32}\Z")
+NGINX_VERSION = re.compile(r"nginx/[0-9]+\.[0-9]+\.[0-9]+(?:[-+._A-Za-z0-9]*)?\Z")
+EVIDENCE_MAX_AGE_SECONDS = 2 * 60 * 60
+POSTBOOT_CHALLENGE_HASH_DOMAIN = (
+    b"where-papers-go-postboot-lan-challenge-v1\0"
+)
+MACHINE_ID_HASH_DOMAIN = b"where-papers-go-machine-id-v1\0"
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
@@ -204,6 +229,8 @@ TRACKED_IMPLEMENTATION_FILES: Mapping[str, Path] = {
     ),
     "deployment_manager_sha256": Path("scripts/manage_deployment.py"),
     "deployment_manager_test_sha256": Path("tests/test_deployment.py"),
+    "nginx_template_sha256": Path("deploy/nginx/where-papers-go.conf.in"),
+    "nginx_integration_test_sha256": Path("tests/test_nginx_integration.py"),
     "systemd_template_sha256": SYSTEMD_TEMPLATE_PATH,
     "selected_wheel_lock_sha256": SELECTED_WHEEL_LOCK_PATH,
     "uv_lock_sha256": UV_LOCK_PATH,
@@ -297,6 +324,11 @@ REPROOF_OUTPUT_KEYS = {
     "publication",
     "threat_model_limitations",
 }
+STRICT_REPROOF_OUTPUT_KEYS = REPROOF_OUTPUT_KEYS | {
+    "reproof_kind",
+    "restart_transition",
+    "front_door",
+}
 REPROOF_BASE_KEYS = {
     "directory",
     "summary_sha256",
@@ -345,6 +377,7 @@ DEPLOYMENT_OUTPUT_KEYS = {
     "bindings_current",
     "lightrag_store_hashes_verified",
     "listener_scope",
+    "backend_port",
     "main_pid",
     "nrestarts",
     "process_start_ticks",
@@ -361,8 +394,35 @@ DEPLOYMENT_OUTPUT_KEYS = {
     "process_snapshot_sha256",
     "health_snapshot_sha256",
     "listener_snapshot_sha256",
+    "host_boot",
+    "shared_quota",
     "python_runtime",
     "worker_process",
+}
+HOST_BOOT_KEYS = {
+    "boot_id",
+    "machine_id_sha256",
+    "uptime_seconds",
+    "linger",
+}
+SHARED_QUOTA_KEYS = {
+    "ready",
+    "state_revision",
+    "configuration_current",
+    "replicated_revision",
+    "used",
+    "remaining",
+    "total_capacity",
+    "configured_keyset_sha256",
+    "copies",
+}
+SHARED_QUOTA_COPY_KEYS = {
+    "present",
+    "valid",
+    "revision",
+    "sha256",
+    "bytes",
+    "mode",
 }
 PYTHON_RUNTIME_VALIDATOR_KEYS = {
     "runtime",
@@ -476,12 +536,21 @@ THREAT_MODEL_LIMITATIONS = (
     "The tracked runner emits aggregate counts and a test-ID fingerprint only; no per-test or per-query values are published.",
     "The socket guard covers the closeout test interpreters and inheriting Python children; fixed systemd, listener, and loopback-health inspections are read-only local probes, and later user-authorized Git transport is outside this observation.",
     "The socket guard permits loopback and AF_UNIX and does not instrument native non-Python child networking; therefore an empty audit proves zero observed non-loopback attempts only within guarded Python interpreters, not an absolute zero-provider-call claim. The fixed tracked suite, sanitized environment, cleared host opt-ins, and offline dependency settings constrain that residual scope.",
-    "The deployment probe binds systemd MainPID and invocation ID, the canonical drop-in-free user-unit fragment and its exact tracked deterministic render, effective hardening/filesystem/environment/ExecStart properties, /proc NoNewPrivs and race-resistant start/executable evidence, fixed passwd-home source/Python-runtime roots, cwd, exact source/runtime/offline/proxy-auth flags, a canonical owned single-link 0600 bearer-token file used for loopback health, rejected loader/OpenSSL/proxy/CA/Python injection variables, ss loopback listener ownership, the tracked selected-wheel lock, independent immutable Python runtime validation, and health process/source/runtime identity. It separately proves the worker PPid, PID/start/executable, exact interpreter argv, cwd, environment, source, runtime and system ABI before requiring an identical second deployment observation. Kernel, systemd, and filesystem observations remain local host evidence rather than remote attestation.",
+    "The deployment probe binds systemd MainPID and invocation ID, kernel boot ID, a domain-hashed machine identity, uptime, Linger=yes, replicated shared quota state, the canonical drop-in-free user-unit fragment and its exact tracked deterministic render, effective hardening/filesystem/environment/ExecStart properties, /proc NoNewPrivs and race-resistant start/executable evidence, fixed passwd-home source/Python-runtime roots, cwd, exact source/runtime/offline/proxy-auth flags, a canonical owned single-link 0600 bearer-token file used for loopback health, rejected loader/OpenSSL/proxy/CA/Python injection variables, ss loopback listener ownership, the tracked selected-wheel lock, independent immutable Python runtime validation, and health process/source/runtime identity. It separately proves the worker PPid, PID/start/executable, exact interpreter argv, cwd, environment, source, runtime and system ABI before requiring a stable second deployment observation while allowing uptime only to advance. Kernel, systemd, and filesystem observations remain local host evidence rather than remote attestation.",
     "Local modes, hashes, exclusive creation, and drift checks do not defend against an administrator with equal or greater file permissions who can rewrite evidence, anchors, code, or the clock together.",
 )
 REPROOF_THREAT_MODEL_LIMITATIONS = (
     "This append-only record independently re-observes deployment state for an immutable base closeout; it does not rerun the base test suites or rewrite the base summary.",
     "A same-HEAD service restart or redeployment is intentionally supported by creating another immutable reproof directory, never by updating an existing closeout or reproof.",
+    THREAT_MODEL_LIMITATIONS[-2],
+    THREAT_MODEL_LIMITATIONS[-1],
+)
+STRICT_REPROOF_THREAT_MODEL_LIMITATIONS = (
+    "This append-only administrator-attested record requires a different kernel boot ID on the same hashed machine identity, changed service PID/start/invocation identity, non-regressed replicated quota state, and host plus LAN front-door attestations bound to the current source and boot.",
+    "The front-door evidence contains only bounded status, identity, hash, certificate, firewall and quota fields. It deliberately excludes Basic credentials, backend bearer values, private keys, complete privileged configuration bytes and request bodies.",
+    "The host and LAN JSON files are unsigned trusted administrator-installed root-owned inputs. Their strict schema, stable snapshots, source/template/renderer bindings, hashes and post-boot challenge are verified locally, but they do not establish collector identity, remote independence, measurement truth, or resistance to a privileged administrator.",
+    "The domain-separated LAN challenge binds the base summary hash, current boot ID, current systemd invocation ID and host-attestation file hash. It prevents accidental reuse of a pre-reboot LAN record but is not a remote signature or hardware attestation.",
+    "A changed kernel boot ID distinguishes a host boot boundary from a service-only restart in the observed host namespace; it is local host evidence rather than hardware-backed remote attestation.",
     THREAT_MODEL_LIMITATIONS[-2],
     THREAT_MODEL_LIMITATIONS[-1],
 )
@@ -545,6 +614,7 @@ class DeploymentEvidence:
     bindings_current: bool
     lightrag_store_hashes_verified: bool
     listener_scope: str
+    backend_port: int
     main_pid: int
     nrestarts: int
     process_start_ticks: int
@@ -561,6 +631,8 @@ class DeploymentEvidence:
     process_snapshot_sha256: str
     health_snapshot_sha256: str
     listener_snapshot_sha256: str
+    host_boot: Mapping[str, Any]
+    shared_quota: Mapping[str, Any]
     python_runtime: Mapping[str, Any]
     worker_process: Mapping[str, Any]
 
@@ -574,6 +646,7 @@ class DeploymentEvidence:
                 self.lightrag_store_hashes_verified
             ),
             "listener_scope": self.listener_scope,
+            "backend_port": self.backend_port,
             "main_pid": self.main_pid,
             "nrestarts": self.nrestarts,
             "process_start_ticks": self.process_start_ticks,
@@ -592,9 +665,24 @@ class DeploymentEvidence:
             "process_snapshot_sha256": self.process_snapshot_sha256,
             "health_snapshot_sha256": self.health_snapshot_sha256,
             "listener_snapshot_sha256": self.listener_snapshot_sha256,
+            "host_boot": dict(self.host_boot),
+            "shared_quota": {
+                **self.shared_quota,
+                "copies": {
+                    name: dict(value)
+                    for name, value in self.shared_quota["copies"].items()
+                },
+            },
             "python_runtime": dict(self.python_runtime),
             "worker_process": dict(self.worker_process),
         }
+
+
+@dataclass(frozen=True)
+class ExternalEvidence:
+    path: Path
+    snapshot: FileSnapshot
+    public: Mapping[str, Any]
 
 
 def _duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1409,6 +1497,118 @@ def _canonical_user_path(relative: Path) -> Path:
     return path
 
 
+def _read_fixed_ascii(path: Path, *, maximum_bytes: int) -> str:
+    """Read one small fixed kernel/host identity file without following links."""
+
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError(
+            f"fixed host identity is unavailable: {path}"
+        ) from exc
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_uid != 0
+    ):
+        raise CloseoutValidationError("fixed host identity is not a regular file")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | O_NOFOLLOW
+        | O_NONBLOCK
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise CloseoutValidationError("fixed host identity cannot be opened") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _stat_identity(before) != _stat_identity(opened):
+            raise CloseoutValidationError("fixed host identity changed before open")
+        payload = os.read(descriptor, maximum_bytes + 1)
+        if len(payload) > maximum_bytes or os.read(descriptor, 1):
+            raise CloseoutValidationError("fixed host identity exceeds its size limit")
+        after = os.fstat(descriptor)
+        if _stat_identity(opened) != _stat_identity(after):
+            raise CloseoutValidationError("fixed host identity changed while read")
+    finally:
+        os.close(descriptor)
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError("fixed host identity disappeared") from exc
+    if _stat_identity(after) != _stat_identity(path_after):
+        raise CloseoutValidationError("fixed host identity path changed after read")
+    try:
+        value = payload.decode("ascii", errors="strict").strip()
+    except UnicodeError as exc:
+        raise CloseoutValidationError("fixed host identity is not ASCII") from exc
+    if not value or "\x00" in value:
+        raise CloseoutValidationError("fixed host identity is empty or invalid")
+    return value
+
+
+def _linger_enabled() -> bool:
+    try:
+        username = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as exc:
+        raise CloseoutValidationError("effective user has no login identity") from exc
+    if not username or "\x00" in username:
+        raise CloseoutValidationError("effective user login identity is invalid")
+    try:
+        completed = subprocess.run(
+            [
+                str(LOGINCTL_BINARY),
+                "show-user",
+                username,
+                "--property=Linger",
+                "--value",
+            ],
+            env=_systemd_environment(),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CloseoutValidationError("fixed loginctl linger inspection failed") from exc
+    value = completed.stdout.strip()
+    if value not in {"yes", "no"}:
+        raise CloseoutValidationError("fixed loginctl linger output is invalid")
+    return value == "yes"
+
+
+def _machine_id_sha256(machine_id: str) -> str:
+    if not isinstance(machine_id, str) or MACHINE_ID.fullmatch(machine_id) is None:
+        raise CloseoutValidationError("machine ID is invalid")
+    return hashlib.sha256(
+        MACHINE_ID_HASH_DOMAIN + machine_id.encode("ascii")
+    ).hexdigest()
+
+
+def _host_boot_state() -> dict[str, Any]:
+    boot_id = _read_fixed_ascii(BOOT_ID_PATH, maximum_bytes=128)
+    if BOOT_ID.fullmatch(boot_id) is None:
+        raise CloseoutValidationError("kernel boot ID is invalid")
+    machine_id = _read_fixed_ascii(MACHINE_ID_PATH, maximum_bytes=128)
+    uptime_text = _read_fixed_ascii(UPTIME_PATH, maximum_bytes=256).split()[0]
+    try:
+        uptime = float(uptime_text)
+    except (TypeError, ValueError) as exc:
+        raise CloseoutValidationError("kernel uptime is invalid") from exc
+    if not math.isfinite(uptime) or uptime < 0:
+        raise CloseoutValidationError("kernel uptime is invalid")
+    return {
+        "boot_id": boot_id,
+        "machine_id_sha256": _machine_id_sha256(machine_id),
+        "uptime_seconds": round(uptime, 2),
+        "linger": _linger_enabled(),
+    }
+
+
 def _validate_owned_user_directory_chain(
     path: Path, *, label: str, exact_leaf_mode: int | None = None
 ) -> None:
@@ -1550,7 +1750,7 @@ def _parse_listener_snapshot(
             listener_scope = "loopback_only"
         elif expected_host == "0.0.0.0":
             raise CloseoutValidationError(
-                "v4 production closeout rejects an IPv4 wildcard listener"
+                "production closeout rejects an IPv4 wildcard listener"
             )
         else:
             raise CloseoutValidationError("unsupported production listener host")
@@ -1868,6 +2068,157 @@ def _required_commit(value: Any, *, context: str) -> str:
     return value
 
 
+def _nonnegative_integer(value: Any, *, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CloseoutValidationError(f"{context} must be a non-negative integer")
+    return value
+
+
+def _validate_host_boot_public(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CloseoutValidationError(f"{context} must be an object")
+    _require_exact_keys(value, HOST_BOOT_KEYS, context=context)
+    boot_id = value["boot_id"]
+    if not isinstance(boot_id, str) or BOOT_ID.fullmatch(boot_id) is None:
+        raise CloseoutValidationError(f"{context} boot ID is invalid")
+    machine_id_sha256 = _required_sha256(
+        value["machine_id_sha256"], context=f"{context} machine ID hash"
+    )
+    uptime = value["uptime_seconds"]
+    if (
+        isinstance(uptime, bool)
+        or not isinstance(uptime, (int, float))
+        or not math.isfinite(float(uptime))
+        or float(uptime) < 0
+    ):
+        raise CloseoutValidationError(f"{context} uptime is invalid")
+    if value["linger"] is not True:
+        raise CloseoutValidationError(f"{context} requires Linger=yes")
+    return {
+        "boot_id": boot_id,
+        "machine_id_sha256": machine_id_sha256,
+        "uptime_seconds": float(uptime),
+        "linger": True,
+    }
+
+
+def _validate_shared_quota_public(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CloseoutValidationError(f"{context} must be an object")
+    _require_exact_keys(value, SHARED_QUOTA_KEYS, context=context)
+    if not (
+        value["ready"] is True
+        and value["configuration_current"] is True
+        and value["replicated_revision"] is True
+    ):
+        raise CloseoutValidationError(f"{context} is not ready and replicated")
+    revision = _nonnegative_integer(
+        value["state_revision"], context=f"{context} revision"
+    )
+    used = _nonnegative_integer(value["used"], context=f"{context} used")
+    remaining = _nonnegative_integer(
+        value["remaining"], context=f"{context} remaining"
+    )
+    total = _nonnegative_integer(
+        value["total_capacity"], context=f"{context} total capacity"
+    )
+    if total <= 0 or used + remaining != total:
+        raise CloseoutValidationError(f"{context} aggregate counters are inconsistent")
+    keyset = _required_sha256(
+        value["configured_keyset_sha256"],
+        context=f"{context} configured keyset hash",
+    )
+    copies = value["copies"]
+    if not isinstance(copies, dict):
+        raise CloseoutValidationError(f"{context} copies must be an object")
+    _require_exact_keys(copies, {"primary", "backup"}, context=f"{context} copies")
+    sanitized_copies: dict[str, dict[str, Any]] = {}
+    for name in ("primary", "backup"):
+        candidate = copies[name]
+        if not isinstance(candidate, dict):
+            raise CloseoutValidationError(f"{context} {name} copy must be an object")
+        _require_exact_keys(
+            candidate, SHARED_QUOTA_COPY_KEYS, context=f"{context} {name} copy"
+        )
+        if not (
+            candidate["present"] is True
+            and candidate["valid"] is True
+            and candidate["revision"] == revision
+            and not isinstance(candidate["revision"], bool)
+            and candidate["mode"] == "0600"
+        ):
+            raise CloseoutValidationError(
+                f"{context} {name} copy is absent, stale, invalid, or unsafe"
+            )
+        copy_bytes = candidate["bytes"]
+        if (
+            isinstance(copy_bytes, bool)
+            or not isinstance(copy_bytes, int)
+            or copy_bytes <= 0
+        ):
+            raise CloseoutValidationError(f"{context} {name} copy size is invalid")
+        sanitized_copies[name] = {
+            "present": True,
+            "valid": True,
+            "revision": revision,
+            "sha256": _required_sha256(
+                candidate["sha256"], context=f"{context} {name} copy hash"
+            ),
+            "bytes": copy_bytes,
+            "mode": "0600",
+        }
+    if sanitized_copies["primary"]["sha256"] != sanitized_copies["backup"]["sha256"]:
+        raise CloseoutValidationError(f"{context} durable copy hashes differ")
+    return {
+        "ready": True,
+        "state_revision": revision,
+        "configuration_current": True,
+        "replicated_revision": True,
+        "used": used,
+        "remaining": remaining,
+        "total_capacity": total,
+        "configured_keyset_sha256": keyset,
+        "copies": sanitized_copies,
+    }
+
+
+def _parse_health_shared_quota(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CloseoutValidationError("loopback health lacks shared quota evidence")
+    expected = SHARED_QUOTA_KEYS | {"required", "status_counts"}
+    _require_exact_keys(value, expected, context="loopback health shared quota")
+    if value["required"] is not True or not isinstance(value["status_counts"], dict):
+        raise CloseoutValidationError("loopback health shared quota is not mandatory")
+    return _validate_shared_quota_public(
+        {name: value[name] for name in SHARED_QUOTA_KEYS},
+        context="loopback health shared quota",
+    )
+
+
+def _quota_non_regressed(
+    base: Mapping[str, Any], current: Mapping[str, Any]
+) -> bool:
+    base_quota = _validate_shared_quota_public(
+        dict(base), context="base shared quota"
+    )
+    current_quota = _validate_shared_quota_public(
+        dict(current), context="current shared quota"
+    )
+    if not (
+        current_quota["configured_keyset_sha256"]
+        == base_quota["configured_keyset_sha256"]
+        and current_quota["total_capacity"] == base_quota["total_capacity"]
+        and current_quota["used"] >= base_quota["used"]
+        and current_quota["remaining"] <= base_quota["remaining"]
+    ):
+        return False
+    if current_quota["state_revision"] == base_quota["state_revision"]:
+        return current_quota == base_quota
+    return bool(
+        current_quota["state_revision"] > base_quota["state_revision"]
+    )
+
+
 def _parse_health_python_runtime(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CloseoutValidationError(
@@ -2102,6 +2453,10 @@ def _parse_health_snapshot(raw: bytes) -> dict[str, Any]:
     source_manifest_sha256 = _required_sha256(
         source.get("manifest_sha256"), context="health source manifest hash"
     )
+    config = value.get("config")
+    if not isinstance(config, dict):
+        raise CloseoutValidationError("loopback health lacks configuration evidence")
+    shared_quota = _parse_health_shared_quota(config.get("search_quota_audit"))
     python_runtime = _parse_health_python_runtime(value.get("python_runtime"))
     worker_process = _parse_health_worker_process(runtime.get("worker_process"))
     process_pid = source.get("process_pid")
@@ -2144,6 +2499,7 @@ def _parse_health_snapshot(raw: bytes) -> dict[str, Any]:
         "source_tree": source_tree,
         "source_manifest_sha256": source_manifest_sha256,
         "source_files_verified": True,
+        "shared_quota": shared_quota,
         "process_pid": process_pid,
         "process_start_ticks": process_start_ticks,
         "python_runtime": python_runtime,
@@ -3207,6 +3563,9 @@ def _deployment_state(project_root: Path, git_state: GitState) -> DeploymentEvid
         raise CloseoutValidationError(
             "immutable source manifest hash differs from process and health"
         )
+    host_boot = _validate_host_boot_public(
+        _host_boot_state(), context="current host boot"
+    )
     return DeploymentEvidence(
         active=True,
         enabled=True,
@@ -3216,6 +3575,7 @@ def _deployment_state(project_root: Path, git_state: GitState) -> DeploymentEvid
             "lightrag_store_hashes_verified"
         ],
         listener_scope=listeners["listener_scope"],
+        backend_port=process["port"],
         main_pid=systemd["main_pid"],
         nrestarts=systemd["nrestarts"],
         process_start_ticks=process["start_ticks"],
@@ -3234,8 +3594,36 @@ def _deployment_state(project_root: Path, git_state: GitState) -> DeploymentEvid
         process_snapshot_sha256=_canonical_sha256(process),
         health_snapshot_sha256=_canonical_sha256(health),
         listener_snapshot_sha256=_canonical_sha256(listeners),
+        host_boot=host_boot,
+        shared_quota=health["shared_quota"],
         python_runtime=python_runtime,
         worker_process=worker_process,
+    )
+
+
+def _deployment_observations_match(
+    first: DeploymentEvidence, second: DeploymentEvidence
+) -> bool:
+    """Compare stable deployment identity while allowing uptime to advance."""
+
+    first_value = first.as_dict()
+    second_value = second.as_dict()
+    try:
+        first_boot = _validate_host_boot_public(
+            first_value["host_boot"], context="first host boot"
+        )
+        second_boot = _validate_host_boot_public(
+            second_value["host_boot"], context="second host boot"
+        )
+    except CloseoutValidationError:
+        return False
+    first_uptime = first_boot.pop("uptime_seconds")
+    second_uptime = second_boot.pop("uptime_seconds")
+    first_value["host_boot"] = first_boot
+    second_value["host_boot"] = second_boot
+    return bool(
+        second_uptime >= first_uptime
+        and first_value == second_value
     )
 
 
@@ -3250,6 +3638,566 @@ def _canonical_json(payload: Mapping[str, Any]) -> bytes:
     return (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+
+
+def _parse_canonical_timestamp(value: Any, *, context: str) -> datetime:
+    if not isinstance(value, str):
+        raise CloseoutValidationError(f"{context} timestamp is invalid")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise CloseoutValidationError(f"{context} timestamp is invalid") from exc
+    if parsed.strftime("%Y-%m-%dT%H:%M:%S.%fZ") != value:
+        raise CloseoutValidationError(f"{context} timestamp is not canonical")
+    return parsed
+
+
+def _validated_server_name(value: Any, *, context: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 253:
+        raise CloseoutValidationError(f"{context} server name is invalid")
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        labels = value.rstrip(".").split(".")
+        if (
+            value.endswith(".")
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or re.fullmatch(r"[A-Za-z0-9-]+", label) is None
+                for label in labels
+            )
+        ):
+            raise CloseoutValidationError(f"{context} server name is invalid")
+        return value.lower()
+    if address.version != 4:
+        raise CloseoutValidationError(f"{context} server name must be IPv4 or DNS")
+    return address.compressed
+
+
+def _postboot_challenge_sha256(
+    *,
+    base_summary_sha256: str,
+    deployment: DeploymentEvidence,
+    host_evidence_sha256: str,
+) -> str:
+    base_digest = _required_sha256(
+        base_summary_sha256, context="post-boot challenge base summary"
+    )
+    host_digest = _required_sha256(
+        host_evidence_sha256, context="post-boot challenge host evidence"
+    )
+    host_boot = _validate_host_boot_public(
+        deployment.host_boot, context="post-boot challenge host boot"
+    )
+    invocation_id = deployment.systemd_invocation_id
+    if (
+        not isinstance(invocation_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None
+    ):
+        raise CloseoutValidationError(
+            "post-boot challenge invocation identity is invalid"
+        )
+    digest = hashlib.sha256()
+    digest.update(POSTBOOT_CHALLENGE_HASH_DOMAIN)
+    for value in (
+        base_digest,
+        host_boot["boot_id"],
+        invocation_id,
+        host_digest,
+    ):
+        digest.update(value.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _load_root_owned_evidence(
+    path: Path,
+    *,
+    validator: Callable[[Mapping[str, Any]], dict[str, Any]],
+) -> ExternalEvidence:
+    path = Path(os.path.abspath(path))
+    if Path(os.path.realpath(path)) != path:
+        raise CloseoutValidationError(
+            "front-door evidence path must not contain a symbolic link"
+        )
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError("front-door evidence is unavailable") from exc
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_uid != 0
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o444
+    ):
+        raise CloseoutValidationError(
+            "front-door evidence must be root-owned regular nlink=1 mode 0444"
+        )
+    raw, snapshot = _inspect_regular_file(
+        path,
+        capture=True,
+        expected_mode=0o444,
+        maximum_bytes=256 * 1024,
+        require_current_owner=False,
+    )
+    assert raw is not None
+    try:
+        after = path.lstat()
+    except OSError as exc:
+        raise CloseoutValidationError("front-door evidence disappeared") from exc
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or after.st_uid != 0
+        or after.st_nlink != 1
+    ):
+        raise CloseoutValidationError("front-door evidence identity changed")
+    try:
+        decoded = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_duplicate_rejecting_object
+        )
+    except CloseoutValidationError:
+        raise
+    except (UnicodeError, TypeError, ValueError) as exc:
+        raise CloseoutValidationError("front-door evidence JSON is invalid") from exc
+    if not isinstance(decoded, dict):
+        raise CloseoutValidationError("front-door evidence JSON must be an object")
+    return ExternalEvidence(
+        path=path,
+        snapshot=snapshot,
+        public=validator(decoded),
+    )
+
+
+def _validate_host_front_door_evidence(
+    raw: Mapping[str, Any],
+    *,
+    git_state: GitState,
+    deployment: DeploymentEvidence,
+    tracked_implementation: Mapping[str, str],
+) -> dict[str, Any]:
+    keys = {
+        "schema_version",
+        "artifact_type",
+        "recorded_at",
+        "source_head",
+        "source_tree",
+        "boot_id",
+        "machine_id_sha256",
+        "nginx",
+        "tls",
+        "firewall",
+    }
+    _require_exact_keys(raw, keys, context="host front-door evidence")
+    if (
+        raw["schema_version"] != 1
+        or raw["artifact_type"]
+        != "where_papers_go_administrator_attested_host_front_door"
+    ):
+        raise CloseoutValidationError("host front-door evidence identity is invalid")
+    _parse_canonical_timestamp(raw["recorded_at"], context="host evidence")
+    if raw["source_head"] != git_state.head or raw["source_tree"] != git_state.tree:
+        raise CloseoutValidationError("host front-door evidence Git binding differs")
+    host_boot = _validate_host_boot_public(
+        deployment.host_boot, context="current deployment host boot"
+    )
+    if (
+        raw["boot_id"] != host_boot["boot_id"]
+        or raw["machine_id_sha256"] != host_boot["machine_id_sha256"]
+    ):
+        raise CloseoutValidationError("host front-door evidence boot binding differs")
+
+    nginx = raw["nginx"]
+    nginx_keys = {
+        "active",
+        "enabled",
+        "binary_path",
+        "binary_sha256",
+        "template_sha256",
+        "renderer_sha256",
+        "main_pid",
+        "systemd_invocation_id",
+        "process_executable_sha256",
+        "version",
+        "server_name",
+        "upstream_port",
+        "authenticated_gate_port",
+        "listener_scope",
+        "active_config_sha256",
+        "rendered_config_sha256",
+        "configuration_tested",
+        "certificate_private_key_match",
+    }
+    if not isinstance(nginx, dict):
+        raise CloseoutValidationError("host Nginx evidence must be an object")
+    _require_exact_keys(nginx, nginx_keys, context="host Nginx evidence")
+    if not (
+        nginx["active"] is True
+        and nginx["enabled"] is True
+        and nginx["configuration_tested"] is True
+        and nginx["certificate_private_key_match"] is True
+        and nginx["binary_path"] == "/usr/sbin/nginx"
+        and nginx["upstream_port"] == deployment.backend_port
+        and isinstance(nginx["authenticated_gate_port"], int)
+        and not isinstance(nginx["authenticated_gate_port"], bool)
+        and 1024 <= nginx["authenticated_gate_port"] <= 65535
+        and nginx["authenticated_gate_port"]
+        not in {deployment.backend_port, 80, 443, 8765}
+        and nginx["listener_scope"] == "loopback_only"
+        and isinstance(nginx["main_pid"], int)
+        and not isinstance(nginx["main_pid"], bool)
+        and nginx["main_pid"] > 0
+        and isinstance(nginx["systemd_invocation_id"], str)
+        and re.fullmatch(r"[0-9a-f]{32}", nginx["systemd_invocation_id"])
+        is not None
+        and isinstance(nginx["version"], str)
+        and NGINX_VERSION.fullmatch(nginx["version"]) is not None
+    ):
+        raise CloseoutValidationError("host Nginx evidence is not accepted")
+    nginx_public = dict(nginx)
+    nginx_public["server_name"] = _validated_server_name(
+        nginx["server_name"], context="host Nginx"
+    )
+    for name in (
+        "binary_sha256",
+        "template_sha256",
+        "renderer_sha256",
+        "process_executable_sha256",
+        "active_config_sha256",
+        "rendered_config_sha256",
+    ):
+        nginx_public[name] = _required_sha256(
+            nginx[name], context=f"host Nginx {name}"
+        )
+    if nginx_public["process_executable_sha256"] != nginx_public["binary_sha256"]:
+        raise CloseoutValidationError("active Nginx process binary differs")
+    expected_template = _required_sha256(
+        tracked_implementation.get("nginx_template_sha256"),
+        context="tracked Nginx template",
+    )
+    expected_renderer = _required_sha256(
+        tracked_implementation.get("deployment_manager_sha256"),
+        context="tracked Nginx renderer",
+    )
+    if (
+        nginx_public["template_sha256"] != expected_template
+        or nginx_public["renderer_sha256"] != expected_renderer
+    ):
+        raise CloseoutValidationError(
+            "host Nginx evidence is not bound to the tracked template and renderer"
+        )
+    if nginx_public["active_config_sha256"] != nginx_public["rendered_config_sha256"]:
+        raise CloseoutValidationError("active and rendered Nginx configurations differ")
+
+    tls = raw["tls"]
+    tls_keys = {
+        "server_name",
+        "certificate_sha256",
+        "subject_alt_name_match",
+        "chain_trusted",
+        "currently_valid",
+        "not_before",
+        "not_after",
+    }
+    if not isinstance(tls, dict):
+        raise CloseoutValidationError("host TLS evidence must be an object")
+    _require_exact_keys(tls, tls_keys, context="host TLS evidence")
+    server_name = _validated_server_name(tls["server_name"], context="host TLS")
+    recorded = _parse_canonical_timestamp(raw["recorded_at"], context="host evidence")
+    not_before = _parse_canonical_timestamp(tls["not_before"], context="TLS not-before")
+    not_after = _parse_canonical_timestamp(tls["not_after"], context="TLS not-after")
+    if not (
+        tls["subject_alt_name_match"] is True
+        and tls["chain_trusted"] is True
+        and tls["currently_valid"] is True
+        and not_before <= recorded <= not_after
+        and not_before < not_after
+    ):
+        raise CloseoutValidationError("host TLS evidence is not trusted and current")
+    tls_public = {
+        **tls,
+        "server_name": server_name,
+        "certificate_sha256": _required_sha256(
+            tls["certificate_sha256"], context="host TLS certificate hash"
+        ),
+    }
+    if nginx_public["server_name"] != tls_public["server_name"]:
+        raise CloseoutValidationError("host Nginx and TLS server names differ")
+
+    firewall = raw["firewall"]
+    firewall_keys = {
+        "manager",
+        "ruleset_sha256",
+        "backend_port",
+        "backend_port_denied",
+        "authenticated_gate_port",
+        "authenticated_gate_port_denied",
+        "legacy_port_8765_denied",
+        "front_door_ports_allowed",
+    }
+    if not isinstance(firewall, dict):
+        raise CloseoutValidationError("host firewall evidence must be an object")
+    _require_exact_keys(firewall, firewall_keys, context="host firewall evidence")
+    if not (
+        firewall["manager"] in {"nftables", "ufw", "firewalld", "iptables"}
+        and firewall["backend_port"] == deployment.backend_port
+        and firewall["backend_port_denied"] is True
+        and firewall["authenticated_gate_port"]
+        == nginx_public["authenticated_gate_port"]
+        and firewall["authenticated_gate_port_denied"] is True
+        and firewall["legacy_port_8765_denied"] is True
+        and firewall["front_door_ports_allowed"] == [80, 443]
+    ):
+        raise CloseoutValidationError("host firewall evidence is not accepted")
+    firewall_public = {
+        **firewall,
+        "ruleset_sha256": _required_sha256(
+            firewall["ruleset_sha256"], context="host firewall ruleset hash"
+        ),
+    }
+    return {
+        **raw,
+        "nginx": nginx_public,
+        "tls": tls_public,
+        "firewall": firewall_public,
+    }
+
+
+def _validate_lan_front_door_evidence(
+    raw: Mapping[str, Any],
+    *,
+    git_state: GitState,
+    deployment: DeploymentEvidence,
+    host_evidence: Mapping[str, Any],
+    postboot_challenge_sha256: str,
+) -> dict[str, Any]:
+    keys = {
+        "schema_version",
+        "artifact_type",
+        "recorded_at",
+        "source_head",
+        "source_tree",
+        "boot_id",
+        "machine_id_sha256",
+        "postboot_challenge_sha256",
+        "source",
+        "target",
+        "tls",
+        "http",
+        "direct_backend",
+        "provider_guard",
+    }
+    _require_exact_keys(raw, keys, context="LAN front-door evidence")
+    if (
+        raw["schema_version"] != 1
+        or raw["artifact_type"]
+        != "where_papers_go_administrator_attested_lan_front_door"
+    ):
+        raise CloseoutValidationError("LAN front-door evidence identity is invalid")
+    lan_recorded = _parse_canonical_timestamp(
+        raw["recorded_at"], context="LAN evidence"
+    )
+    host_recorded = _parse_canonical_timestamp(
+        host_evidence["recorded_at"], context="host evidence"
+    )
+    if lan_recorded < host_recorded:
+        raise CloseoutValidationError(
+            "LAN front-door evidence predates the host evidence"
+        )
+    host_boot = _validate_host_boot_public(
+        deployment.host_boot, context="current deployment host boot"
+    )
+    if (
+        raw["source_head"] != git_state.head
+        or raw["source_tree"] != git_state.tree
+        or raw["boot_id"] != host_boot["boot_id"]
+        or raw["machine_id_sha256"] != host_boot["machine_id_sha256"]
+        or raw["postboot_challenge_sha256"]
+        != _required_sha256(
+            postboot_challenge_sha256,
+            context="expected post-boot LAN challenge",
+        )
+    ):
+        raise CloseoutValidationError(
+            "LAN front-door evidence source, boot, or challenge binding differs"
+        )
+
+    source = raw["source"]
+    target = raw["target"]
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        raise CloseoutValidationError("LAN source/target evidence must be objects")
+    _require_exact_keys(
+        source,
+        {"machine_id_sha256", "ip", "lan_cidr"},
+        context="LAN probe source",
+    )
+    _require_exact_keys(
+        target, {"server_name", "ip", "backend_port"}, context="LAN probe target"
+    )
+    source_hash = _required_sha256(
+        source["machine_id_sha256"], context="LAN probe machine ID hash"
+    )
+    try:
+        source_ip = ipaddress.ip_address(source["ip"])
+        target_ip = ipaddress.ip_address(target["ip"])
+        network = ipaddress.ip_network(source["lan_cidr"], strict=True)
+    except (TypeError, ValueError) as exc:
+        raise CloseoutValidationError("LAN probe addressing is invalid") from exc
+    if not (
+        source_ip.version == target_ip.version == network.version == 4
+        and network.is_private
+        and 8 <= network.prefixlen <= 30
+        and source_ip in network
+        and target_ip in network
+        and source_ip != target_ip
+        and source_hash != host_boot["machine_id_sha256"]
+        and not source_ip.is_loopback
+        and not target_ip.is_loopback
+    ):
+        raise CloseoutValidationError("LAN probe is not from a distinct private-LAN host")
+    server_name = _validated_server_name(
+        target["server_name"], context="LAN target"
+    )
+    if (
+        target["backend_port"] != deployment.backend_port
+        or server_name != host_evidence["tls"]["server_name"]
+    ):
+        raise CloseoutValidationError("LAN target differs from the deployed front door")
+
+    tls = raw["tls"]
+    tls_keys = {
+        "server_name",
+        "certificate_sha256",
+        "subject_alt_name_match",
+        "chain_trusted",
+        "currently_valid",
+    }
+    if not isinstance(tls, dict):
+        raise CloseoutValidationError("LAN TLS evidence must be an object")
+    _require_exact_keys(tls, tls_keys, context="LAN TLS evidence")
+    tls_server = _validated_server_name(tls["server_name"], context="LAN TLS")
+    certificate_sha256 = _required_sha256(
+        tls["certificate_sha256"], context="LAN TLS certificate hash"
+    )
+    if not (
+        tls_server == server_name
+        and certificate_sha256 == host_evidence["tls"]["certificate_sha256"]
+        and tls["subject_alt_name_match"] is True
+        and tls["chain_trusted"] is True
+        and tls["currently_valid"] is True
+    ):
+        raise CloseoutValidationError("LAN TLS evidence is not trusted or host-bound")
+
+    http = raw["http"]
+    http_keys = {
+        "redirect_status",
+        "redirect_location",
+        "unauthenticated_status",
+        "authenticated_ui_status",
+        "authenticated_ready_status",
+        "authenticated_detailed_health_status",
+        "ready_body",
+        "detailed_health_ready",
+        "rate_limited_status",
+    }
+    if not isinstance(http, dict):
+        raise CloseoutValidationError("LAN HTTP evidence must be an object")
+    _require_exact_keys(http, http_keys, context="LAN HTTP evidence")
+    if not (
+        http["redirect_status"] == 301
+        and http["redirect_location"]
+        == f"https://{server_name}/api/health/ready"
+        and http["unauthenticated_status"] == 401
+        and http["authenticated_ui_status"] == 200
+        and http["authenticated_ready_status"] == 200
+        and http["authenticated_detailed_health_status"] == 200
+        and http["ready_body"] is True
+        and http["detailed_health_ready"] is True
+        and http["rate_limited_status"] == 429
+    ):
+        raise CloseoutValidationError("LAN HTTP acceptance statuses are incomplete")
+
+    direct = raw["direct_backend"]
+    if not isinstance(direct, dict):
+        raise CloseoutValidationError("LAN direct-backend evidence must be an object")
+    _require_exact_keys(
+        direct,
+        {
+            "backend_port",
+            "backend_connect_succeeded",
+            "authenticated_gate_port",
+            "authenticated_gate_connect_succeeded",
+            "legacy_8765_connect_succeeded",
+        },
+        context="LAN direct-backend evidence",
+    )
+    if not (
+        direct["backend_port"] == deployment.backend_port
+        and direct["backend_connect_succeeded"] is False
+        and direct["authenticated_gate_port"]
+        == host_evidence["nginx"]["authenticated_gate_port"]
+        and direct["authenticated_gate_connect_succeeded"] is False
+        and direct["legacy_8765_connect_succeeded"] is False
+    ):
+        raise CloseoutValidationError("LAN direct backend remains reachable")
+
+    provider = raw["provider_guard"]
+    provider_keys = {
+        "provider_workflows_requested",
+        "valid_search_requests_submitted",
+        "quota_before",
+        "quota_after",
+        "quota_unchanged",
+    }
+    if not isinstance(provider, dict):
+        raise CloseoutValidationError("LAN provider guard must be an object")
+    _require_exact_keys(provider, provider_keys, context="LAN provider guard")
+    before_quota = _validate_shared_quota_public(
+        provider["quota_before"], context="LAN quota before"
+    )
+    after_quota = _validate_shared_quota_public(
+        provider["quota_after"], context="LAN quota after"
+    )
+    current_quota = _validate_shared_quota_public(
+        deployment.shared_quota, context="current deployment shared quota"
+    )
+    if not (
+        provider["provider_workflows_requested"] == 0
+        and not isinstance(provider["provider_workflows_requested"], bool)
+        and provider["valid_search_requests_submitted"] == 0
+        and not isinstance(provider["valid_search_requests_submitted"], bool)
+        and provider["quota_unchanged"] is True
+        and before_quota == after_quota == current_quota
+    ):
+        raise CloseoutValidationError("LAN acceptance did not preserve provider quota")
+    return {
+        **raw,
+        "source": {
+            "machine_id_sha256": source_hash,
+            "ip": source_ip.compressed,
+            "lan_cidr": str(network),
+        },
+        "target": {
+            "server_name": server_name,
+            "ip": target_ip.compressed,
+            "backend_port": deployment.backend_port,
+        },
+        "tls": {
+            **tls,
+            "server_name": tls_server,
+            "certificate_sha256": certificate_sha256,
+        },
+        "provider_guard": {
+            **provider,
+            "quota_before": before_quota,
+            "quota_after": after_quota,
+        },
+    }
 
 
 def _fsync_directory(path: Path) -> None:
@@ -3289,8 +4237,8 @@ def _validate_existing_test_group(
     model_focused: bool,
 ) -> None:
     if not isinstance(value, dict):
-        raise CloseoutValidationError("existing v4 test evidence must be an object")
-    _require_exact_keys(value, expected_keys, context="existing v4 test evidence")
+        raise CloseoutValidationError("existing v5 test evidence must be an object")
+    _require_exact_keys(value, expected_keys, context="existing v5 test evidence")
     public_keys = set(TEST_PUBLIC_KEYS)
     if model_focused:
         public_keys.add("model_runtime_interpreter_sha256")
@@ -3309,14 +4257,14 @@ def _validate_existing_test_group(
     for name in TRACKED_HELPERS:
         if value[name] != tracked[name]:
             raise CloseoutValidationError(
-                "existing v4 test/helper hash binding is inconsistent"
+                "existing v5 test/helper hash binding is inconsistent"
             )
 
 
 def _validate_existing_summary(
     value: Mapping[str, Any], *, directory: str
 ) -> str:
-    _require_exact_keys(value, OUTPUT_KEYS, context="existing v4 summary")
+    _require_exact_keys(value, OUTPUT_KEYS, context="existing v5 summary")
     if (
         value["schema_version"] != OUTPUT_SCHEMA_VERSION
         or value["artifact_type"] != OUTPUT_ARTIFACT_TYPE
@@ -3324,60 +4272,60 @@ def _validate_existing_summary(
         or value["aggregate_only"] is not True
         or value["contains_per_query_values"] is not False
     ):
-        raise CloseoutValidationError("existing v4 summary has invalid identity")
+        raise CloseoutValidationError("existing v5 summary has invalid identity")
     recorded_at = value["recorded_at"]
     if not isinstance(recorded_at, str):
-        raise CloseoutValidationError("existing v4 summary has invalid timestamp")
+        raise CloseoutValidationError("existing v5 summary has invalid timestamp")
     try:
         recorded = datetime.strptime(recorded_at, "%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError as exc:
         raise CloseoutValidationError(
-            "existing v4 summary has invalid timestamp"
+            "existing v5 summary has invalid timestamp"
         ) from exc
     if recorded.strftime("%Y-%m-%dT%H:%M:%S.%fZ") != recorded_at:
-        raise CloseoutValidationError("existing v4 summary timestamp is not canonical")
-    _require_sha256(value["request_sha256"], context="existing v4 request hash")
+        raise CloseoutValidationError("existing v5 summary timestamp is not canonical")
+    _require_sha256(value["request_sha256"], context="existing v5 request hash")
     git = value["git"]
     if not isinstance(git, dict):
-        raise CloseoutValidationError("existing v4 summary has invalid Git binding")
+        raise CloseoutValidationError("existing v5 summary has invalid Git binding")
     _require_exact_keys(
         git,
         {"head", "tree", "branch", "tracked_and_nonignored_worktree_clean"},
-        context="existing v4 Git binding",
+        context="existing v5 Git binding",
     )
     head = git["head"]
     if not isinstance(head, str) or HEX_COMMIT.fullmatch(head) is None:
-        raise CloseoutValidationError("existing v4 summary has invalid HEAD")
+        raise CloseoutValidationError("existing v5 summary has invalid HEAD")
     tree = git["tree"]
     if not isinstance(tree, str) or HEX_COMMIT.fullmatch(tree) is None:
-        raise CloseoutValidationError("existing v4 summary has invalid tree")
+        raise CloseoutValidationError("existing v5 summary has invalid tree")
     _validate_branch(git["branch"])
     if git["tracked_and_nonignored_worktree_clean"] is not True:
-        raise CloseoutValidationError("existing v4 summary was not clean")
+        raise CloseoutValidationError("existing v5 summary was not clean")
 
     tracked = value["tracked_implementation"]
     if not isinstance(tracked, dict):
         raise CloseoutValidationError(
-            "existing v4 tracked implementation must be an object"
+            "existing v5 tracked implementation must be an object"
         )
     _require_exact_keys(
         tracked,
         TRACKED_IMPLEMENTATION_OUTPUT_KEYS,
-        context="existing v4 tracked implementation",
+        context="existing v5 tracked implementation",
     )
     for name, digest in tracked.items():
-        _require_sha256(digest, context=f"existing v4 tracked hash {name}")
+        _require_sha256(digest, context=f"existing v5 tracked hash {name}")
 
     tests = value["tests"]
     if not isinstance(tests, dict):
-        raise CloseoutValidationError("existing v4 tests must be an object")
-    _require_exact_keys(tests, TESTS_OUTPUT_KEYS, context="existing v4 tests")
+        raise CloseoutValidationError("existing v5 tests must be an object")
+    _require_exact_keys(tests, TESTS_OUTPUT_KEYS, context="existing v5 tests")
     if (
         isinstance(tests["official_weight_inference_tests"], bool)
         or tests["official_weight_inference_tests"] != 0
     ):
         raise CloseoutValidationError(
-            "existing v4 official-weight inference count must be zero"
+            "existing v5 official-weight inference count must be zero"
         )
     _validate_existing_test_group(
         tests[FULL_TEST_KEY],
@@ -3396,16 +4344,16 @@ def _validate_existing_summary(
 
     artifacts = value["critical_artifacts"]
     if not isinstance(artifacts, dict):
-        raise CloseoutValidationError("existing v4 artifacts must be an object")
+        raise CloseoutValidationError("existing v5 artifacts must be an object")
     _require_exact_keys(
-        artifacts, set(REQUIRED_ARTIFACTS), context="existing v4 artifacts"
+        artifacts, set(REQUIRED_ARTIFACTS), context="existing v5 artifacts"
     )
     for name in REQUIRED_ARTIFACTS:
         artifact = artifacts[name]
         if not isinstance(artifact, dict):
-            raise CloseoutValidationError("existing v4 artifact must be an object")
+            raise CloseoutValidationError("existing v5 artifact must be an object")
         _require_exact_keys(
-            artifact, {"sha256", "bytes", "mode"}, context="existing v4 artifact"
+            artifact, {"sha256", "bytes", "mode"}, context="existing v5 artifact"
         )
         if (
             artifact["sha256"] != PINNED_ARTIFACT_SHA256[name]
@@ -3414,36 +4362,43 @@ def _validate_existing_summary(
             or artifact["mode"] != "0444"
         ):
             raise CloseoutValidationError(
-                "existing v4 artifact does not match fixed evidence"
+                "existing v5 artifact does not match fixed evidence"
             )
 
     deployment = value["deployment"]
     if not isinstance(deployment, dict):
-        raise CloseoutValidationError("existing v4 deployment must be an object")
+        raise CloseoutValidationError("existing v5 deployment must be an object")
     _require_exact_keys(
-        deployment, DEPLOYMENT_OUTPUT_KEYS, context="existing v4 deployment"
+        deployment, DEPLOYMENT_OUTPUT_KEYS, context="existing v5 deployment"
     )
     for name in ("active", "enabled", "ready", "bindings_current"):
         if deployment[name] is not True:
-            raise CloseoutValidationError("existing v4 deployment is not ready")
+            raise CloseoutValidationError("existing v5 deployment is not ready")
     if (
         deployment["lightrag_store_hashes_verified"] is not True
         or deployment["source_files_verified"] is not True
         or deployment["lightrag_file_count"] != 6
     ):
         raise CloseoutValidationError(
-            "existing v4 integrity gates were not all true"
+            "existing v5 integrity gates were not all true"
         )
     if deployment["listener_scope"] != "loopback_only":
-        raise CloseoutValidationError("existing v4 listener scope is invalid")
+        raise CloseoutValidationError("existing v5 listener scope is invalid")
+    backend_port = deployment["backend_port"]
+    if (
+        isinstance(backend_port, bool)
+        or not isinstance(backend_port, int)
+        or not 1 <= backend_port <= 65535
+    ):
+        raise CloseoutValidationError("existing v5 backend port is invalid")
     for name in ("main_pid", "nrestarts", "process_start_ticks"):
         number = deployment[name]
         if isinstance(number, bool) or not isinstance(number, int) or number < 0:
-            raise CloseoutValidationError("existing v4 process state is invalid")
+            raise CloseoutValidationError("existing v5 process state is invalid")
     if deployment["main_pid"] <= 0:
-        raise CloseoutValidationError("existing v4 process PID is invalid")
+        raise CloseoutValidationError("existing v5 process PID is invalid")
     if deployment["process_start_ticks"] <= 0:
-        raise CloseoutValidationError("existing v4 process start ticks are invalid")
+        raise CloseoutValidationError("existing v5 process start ticks are invalid")
     if (
         not isinstance(deployment["systemd_invocation_id"], str)
         or re.fullmatch(
@@ -3451,14 +4406,14 @@ def _validate_existing_summary(
         )
         is None
     ):
-        raise CloseoutValidationError("existing v4 invocation identity is invalid")
+        raise CloseoutValidationError("existing v5 invocation identity is invalid")
     if (
         deployment["source_head"] != head
         or deployment["source_tree"] != tree
         or not isinstance(deployment["source_release"], str)
         or not deployment["source_release"].startswith("/")
     ):
-        raise CloseoutValidationError("existing v4 source binding is invalid")
+        raise CloseoutValidationError("existing v5 source binding is invalid")
     for name in (
         "systemd_snapshot_sha256",
         "process_snapshot_sha256",
@@ -3468,31 +4423,38 @@ def _validate_existing_summary(
         "lightrag_manifest_sha256",
         "lightrag_store_binding_sha256",
     ):
-        _require_sha256(deployment[name], context=f"existing v4 deployment {name}")
+        _require_sha256(deployment[name], context=f"existing v5 deployment {name}")
+
+    _validate_host_boot_public(
+        deployment["host_boot"], context="existing v5 host boot"
+    )
+    _validate_shared_quota_public(
+        deployment["shared_quota"], context="existing v5 shared quota"
+    )
 
     python_runtime = deployment["python_runtime"]
     if not isinstance(python_runtime, dict):
         raise CloseoutValidationError(
-            "existing v4 Python runtime evidence must be an object"
+            "existing v5 Python runtime evidence must be an object"
         )
     _require_exact_keys(
         python_runtime,
         PYTHON_RUNTIME_OUTPUT_KEYS,
-        context="existing v4 Python runtime evidence",
+        context="existing v5 Python runtime evidence",
     )
     if (
         python_runtime["files_verified"] is not True
         or python_runtime["system_abi_stat_verified"] is not True
     ):
         raise CloseoutValidationError(
-            "existing v4 Python runtime files/system ABI were not verified"
+            "existing v5 Python runtime files/system ABI were not verified"
         )
     if (
         python_runtime["dependency_lock_sha256"]
         != tracked["selected_wheel_lock_sha256"]
     ):
         raise CloseoutValidationError(
-            "existing v4 Python runtime dependency lock is not tracked"
+            "existing v5 Python runtime dependency lock is not tracked"
         )
     for name in (
         "manifest_sha256",
@@ -3503,7 +4465,7 @@ def _validate_existing_summary(
         "dependency_lock_sha256",
     ):
         _require_sha256(
-            python_runtime[name], context=f"existing v4 Python runtime {name}"
+            python_runtime[name], context=f"existing v5 Python runtime {name}"
         )
     runtime_path = python_runtime["runtime"]
     manifest_path = python_runtime["manifest"]
@@ -3514,7 +4476,7 @@ def _validate_existing_summary(
         for path in (runtime_path, manifest_path, executable_path)
     ) or not isinstance(import_paths, list):
         raise CloseoutValidationError(
-            "existing v4 Python runtime paths are invalid"
+            "existing v5 Python runtime paths are invalid"
         )
     runtime = Path(runtime_path)
     if (
@@ -3530,12 +4492,12 @@ def _validate_existing_summary(
         )
     ):
         raise CloseoutValidationError(
-            "existing v4 Python runtime content-address binding is invalid"
+            "existing v5 Python runtime content-address binding is invalid"
         )
     for name in ("python_version", "python_soabi", "python_platform"):
         if not isinstance(python_runtime[name], str) or not python_runtime[name]:
             raise CloseoutValidationError(
-                f"existing v4 Python runtime {name} is invalid"
+                f"existing v5 Python runtime {name} is invalid"
             )
     for name in (
         "elf_file_count",
@@ -3548,23 +4510,23 @@ def _validate_existing_summary(
         number = python_runtime[name]
         if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
             raise CloseoutValidationError(
-                f"existing v4 Python runtime {name} is invalid"
+                f"existing v5 Python runtime {name} is invalid"
             )
     omitted = python_runtime["omitted_entry_point_count"]
     if isinstance(omitted, bool) or not isinstance(omitted, int) or omitted < 0:
         raise CloseoutValidationError(
-            "existing v4 Python runtime omitted-entry count is invalid"
+            "existing v5 Python runtime omitted-entry count is invalid"
         )
 
     worker_process = deployment["worker_process"]
     if not isinstance(worker_process, dict):
         raise CloseoutValidationError(
-            "existing v4 worker process evidence must be an object"
+            "existing v5 worker process evidence must be an object"
         )
     _require_exact_keys(
         worker_process,
         DEPLOYMENT_WORKER_PROCESS_KEYS,
-        context="existing v4 worker process evidence",
+        context="existing v5 worker process evidence",
     )
     if (
         worker_process["exact"] is not True
@@ -3577,31 +4539,31 @@ def _validate_existing_summary(
         != python_runtime["python_executable_sha256"]
     ):
         raise CloseoutValidationError(
-            "existing v4 worker process binding is invalid"
+            "existing v5 worker process binding is invalid"
         )
     for name in ("pid", "parent_pid", "start_ticks"):
         number = worker_process[name]
         if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
             raise CloseoutValidationError(
-                f"existing v4 worker process {name} is invalid"
+                f"existing v5 worker process {name} is invalid"
             )
     for name in ("executable_sha256", "process_snapshot_sha256"):
         _require_sha256(
-            worker_process[name], context=f"existing v4 worker process {name}"
+            worker_process[name], context=f"existing v5 worker process {name}"
         )
     interpreter = worker_process["interpreter"]
     if not isinstance(interpreter, dict):
         raise CloseoutValidationError(
-            "existing v4 worker interpreter evidence is invalid"
+            "existing v5 worker interpreter evidence is invalid"
         )
     _require_exact_keys(
         interpreter,
         WORKER_INTERPRETER_KEYS,
-        context="existing v4 worker interpreter evidence",
+        context="existing v5 worker interpreter evidence",
     )
     if any(interpreter[name] is not True for name in WORKER_INTERPRETER_KEYS):
         raise CloseoutValidationError(
-            "existing v4 worker interpreter flags are invalid"
+            "existing v5 worker interpreter flags are invalid"
         )
     if worker_process["source"] != {
         "head": head,
@@ -3610,7 +4572,7 @@ def _validate_existing_summary(
         "files_verified": True,
     }:
         raise CloseoutValidationError(
-            "existing v4 worker source binding is invalid"
+            "existing v5 worker source binding is invalid"
         )
     expected_worker_runtime = {
         "manifest_sha256": python_runtime["manifest_sha256"],
@@ -3631,14 +4593,14 @@ def _validate_existing_summary(
     }
     if worker_process["python_runtime"] != expected_worker_runtime:
         raise CloseoutValidationError(
-            "existing v4 worker Python runtime binding is invalid"
+            "existing v5 worker Python runtime binding is invalid"
         )
 
     external = value["external_calls"]
     if not isinstance(external, dict):
-        raise CloseoutValidationError("existing v4 external calls must be an object")
+        raise CloseoutValidationError("existing v5 external calls must be an object")
     _require_exact_keys(
-        external, EXTERNAL_CALL_OUTPUT_KEYS, context="existing v4 external calls"
+        external, EXTERNAL_CALL_OUTPUT_KEYS, context="existing v5 external calls"
     )
     if external != {
         "enforcement": "tracked_sitecustomize_nonloopback_socket_guard",
@@ -3649,13 +4611,13 @@ def _validate_existing_summary(
         "af_unix_allowed": True,
         "native_child_network_instrumented": False,
     }:
-        raise CloseoutValidationError("existing v4 external-call evidence is invalid")
+        raise CloseoutValidationError("existing v5 external-call evidence is invalid")
 
     excluded = value["excluded_actions"]
     if not isinstance(excluded, dict):
-        raise CloseoutValidationError("existing v4 excluded actions must be an object")
+        raise CloseoutValidationError("existing v5 excluded actions must be an object")
     _require_exact_keys(
-        excluded, EXCLUDED_ACTION_OUTPUT_KEYS, context="existing v4 excluded actions"
+        excluded, EXCLUDED_ACTION_OUTPUT_KEYS, context="existing v5 excluded actions"
     )
     if excluded != {
         "live_formal500_executed": False,
@@ -3665,13 +4627,13 @@ def _validate_existing_summary(
         "loopback_health_probe": "read_only",
         "scope": "validator_actions_only_not_an_absolute_network_observation",
     }:
-        raise CloseoutValidationError("existing v4 excluded-action evidence is invalid")
+        raise CloseoutValidationError("existing v5 excluded-action evidence is invalid")
 
     publication = value["publication"]
     if not isinstance(publication, dict):
-        raise CloseoutValidationError("existing v4 publication must be an object")
+        raise CloseoutValidationError("existing v5 publication must be an object")
     _require_exact_keys(
-        publication, PUBLICATION_OUTPUT_KEYS, context="existing v4 publication"
+        publication, PUBLICATION_OUTPUT_KEYS, context="existing v5 publication"
     )
     expected_directory = (
         f"{OUTPUT_PREFIX}{recorded.strftime('%Y%m%dT%H%M%S%fZ')}-{head[:12]}"
@@ -3686,9 +4648,9 @@ def _validate_existing_summary(
         "published_from_hidden_building": True,
         "atomic_directory_rename": True,
     }:
-        raise CloseoutValidationError("existing v4 publication binding is invalid")
+        raise CloseoutValidationError("existing v5 publication binding is invalid")
     if value["threat_model_limitations"] != list(THREAT_MODEL_LIMITATIONS):
-        raise CloseoutValidationError("existing v4 threat model is invalid")
+        raise CloseoutValidationError("existing v5 threat model is invalid")
     return head
 
 
@@ -3703,24 +4665,24 @@ def _scan_existing_success(output_root: Path, *, head: str) -> None:
         try:
             directory_stat = entry.lstat()
         except OSError as exc:
-            raise CloseoutValidationError("cannot inspect prior v4 closeout") from exc
+            raise CloseoutValidationError("cannot inspect prior v5 closeout") from exc
         if (
             stat.S_ISLNK(directory_stat.st_mode)
             or not stat.S_ISDIR(directory_stat.st_mode)
             or stat.S_IMODE(directory_stat.st_mode) != 0o555
         ):
-            raise CloseoutValidationError("prior v4 closeout directory is unsafe")
+            raise CloseoutValidationError("prior v5 closeout directory is unsafe")
         try:
             names = sorted(child.name for child in entry.iterdir())
         except OSError as exc:
-            raise CloseoutValidationError("cannot enumerate prior v4 closeout") from exc
+            raise CloseoutValidationError("cannot enumerate prior v5 closeout") from exc
         if names != ["summary.json"]:
-            raise CloseoutValidationError("prior v4 closeout has unexpected entries")
+            raise CloseoutValidationError("prior v5 closeout has unexpected entries")
         summary, _snapshot = _load_json_regular(
             entry / "summary.json", expected_mode=0o444, maximum_bytes=1024 * 1024
         )
         if _validate_existing_summary(summary, directory=entry.name) == head:
-            raise CloseoutValidationError("HEAD already has a successful v4 closeout")
+            raise CloseoutValidationError("HEAD already has a successful v5 closeout")
 
 
 def _verify_published_directory(
@@ -3985,7 +4947,9 @@ def create_closeout(
                     )
                 _reverify_test_evidence(full_tests)
                 _reverify_test_evidence(model_tests)
-                if _deployment_state(project_root, initial_git) != deployment:
+                if not _deployment_observations_match(
+                    deployment, _deployment_state(project_root, initial_git)
+                ):
                     raise CloseoutValidationError(
                         "deployment changed before closeout publication"
                     )
@@ -4010,7 +4974,7 @@ def _load_base_closeout(
         or summary_path.name != "summary.json"
     ):
         raise CloseoutValidationError(
-            "post-deployment reproof requires one canonical v4 closeout summary"
+            "reproof requires one canonical v5/schema-6 closeout summary"
         )
     _verify_published_directory(
         directory,
@@ -4136,9 +5100,307 @@ def create_deployment_reproof(
                 raise CloseoutValidationError(
                     "tracked implementation changed before reproof publication"
                 )
-            if _deployment_state(project_root, current_git) != deployment:
+            if not _deployment_observations_match(
+                deployment, _deployment_state(project_root, current_git)
+            ):
                 raise CloseoutValidationError(
                     "deployment changed before reproof publication"
+                )
+
+        target, summary_sha256 = _write_new_directory(
+            output_root, name, payload, final_checks=final_checks
+        )
+        return target, payload, summary_sha256
+
+
+def _load_host_acceptance_evidence(
+    path: Path,
+    *,
+    git_state: GitState,
+    deployment: DeploymentEvidence,
+    tracked_implementation: Mapping[str, str],
+) -> ExternalEvidence:
+    return _load_root_owned_evidence(
+        path,
+        validator=lambda raw: _validate_host_front_door_evidence(
+            raw,
+            git_state=git_state,
+            deployment=deployment,
+            tracked_implementation=tracked_implementation,
+        ),
+    )
+
+
+def _load_lan_acceptance_evidence(
+    path: Path,
+    *,
+    git_state: GitState,
+    deployment: DeploymentEvidence,
+    host_evidence: Mapping[str, Any],
+    postboot_challenge_sha256: str,
+) -> ExternalEvidence:
+    return _load_root_owned_evidence(
+        path,
+        validator=lambda raw: _validate_lan_front_door_evidence(
+            raw,
+            git_state=git_state,
+            deployment=deployment,
+            host_evidence=host_evidence,
+            postboot_challenge_sha256=postboot_challenge_sha256,
+        ),
+    )
+
+
+def _post_reboot_transition(
+    *, base_deployment: Mapping[str, Any], current: DeploymentEvidence
+) -> dict[str, Any]:
+    base_boot = _validate_host_boot_public(
+        base_deployment["host_boot"], context="base closeout host boot"
+    )
+    current_boot = _validate_host_boot_public(
+        current.host_boot, context="post-reboot host boot"
+    )
+    same_host = bool(
+        base_boot["machine_id_sha256"] == current_boot["machine_id_sha256"]
+    )
+    boot_changed = bool(base_boot["boot_id"] != current_boot["boot_id"])
+    pid_changed = bool(base_deployment["main_pid"] != current.main_pid)
+    start_changed = bool(
+        base_deployment["process_start_ticks"] != current.process_start_ticks
+    )
+    invocation_changed = bool(
+        base_deployment["systemd_invocation_id"]
+        != current.systemd_invocation_id
+    )
+    quota_non_regression = _quota_non_regressed(
+        base_deployment["shared_quota"], current.shared_quota
+    )
+    if not (
+        same_host
+        and boot_changed
+        and pid_changed
+        and start_changed
+        and invocation_changed
+        and quota_non_regression
+    ):
+        raise CloseoutValidationError(
+            "strict post-reboot transition requires the same host, a new boot, "
+            "new PID/start/invocation identity, and non-regressed shared quota"
+        )
+    return {
+        "same_host": True,
+        "base_boot_id": base_boot["boot_id"],
+        "current_boot_id": current_boot["boot_id"],
+        "boot_id_changed": True,
+        "base_main_pid": base_deployment["main_pid"],
+        "current_main_pid": current.main_pid,
+        "main_pid_changed": True,
+        "base_process_start_ticks": base_deployment["process_start_ticks"],
+        "current_process_start_ticks": current.process_start_ticks,
+        "process_start_ticks_changed": True,
+        "base_systemd_invocation_id": base_deployment[
+            "systemd_invocation_id"
+        ],
+        "current_systemd_invocation_id": current.systemd_invocation_id,
+        "systemd_invocation_id_changed": True,
+        "quota_non_regression": True,
+    }
+
+
+def create_post_reboot_reproof(
+    *,
+    base_summary_path: Path,
+    host_front_door_evidence_path: Path,
+    lan_front_door_evidence_path: Path,
+    project_root: Path,
+    output_root: Path,
+) -> tuple[Path, dict[str, Any], str]:
+    """Publish a post-reboot administrator-attested LAN/front-door record."""
+
+    project_root = Path(os.path.abspath(project_root))
+    output_root = Path(os.path.abspath(output_root))
+    _ensure_project_and_output(project_root, output_root)
+    with _exclusive_output_lock(output_root):
+        base = _load_base_closeout(base_summary_path, output_root=output_root)
+        current_git = _git_state(project_root)
+        if current_git != base.git or not current_git.worktree_clean:
+            raise CloseoutValidationError(
+                "current clean Git state does not equal the base closeout"
+            )
+        helpers = _verify_tracked_helpers(project_root)
+        if helpers != base.summary["tracked_implementation"]:
+            raise CloseoutValidationError(
+                "current tracked implementation differs from the base closeout"
+            )
+        deployment = _deployment_state(project_root, current_git)
+        base_deployment = base.summary["deployment"]
+        assert isinstance(base_deployment, dict)
+        transition = _post_reboot_transition(
+            base_deployment=base_deployment, current=deployment
+        )
+        host_evidence = _load_host_acceptance_evidence(
+            host_front_door_evidence_path,
+            git_state=current_git,
+            deployment=deployment,
+            tracked_implementation=helpers,
+        )
+        postboot_challenge = _postboot_challenge_sha256(
+            base_summary_sha256=base.summary_snapshot.sha256,
+            deployment=deployment,
+            host_evidence_sha256=host_evidence.snapshot.sha256,
+        )
+        lan_evidence = _load_lan_acceptance_evidence(
+            lan_front_door_evidence_path,
+            git_state=current_git,
+            deployment=deployment,
+            host_evidence=host_evidence.public,
+            postboot_challenge_sha256=postboot_challenge,
+        )
+        recorded_at, stamp = _utc_stamp()
+        recorded = _parse_canonical_timestamp(
+            recorded_at, context="post-reboot reproof"
+        )
+        base_recorded = _parse_canonical_timestamp(
+            base.summary["recorded_at"], context="base closeout"
+        )
+        host_evidence_time = _parse_canonical_timestamp(
+            host_evidence.public["recorded_at"], context="host evidence"
+        )
+        lan_evidence_time = _parse_canonical_timestamp(
+            lan_evidence.public["recorded_at"], context="LAN evidence"
+        )
+        evidence_times = (host_evidence_time, lan_evidence_time)
+        if host_evidence_time > lan_evidence_time:
+            raise CloseoutValidationError(
+                "LAN front-door evidence predates the host evidence"
+            )
+        if any(
+            observed <= base_recorded
+            or observed > recorded
+            or (recorded - observed).total_seconds() > EVIDENCE_MAX_AGE_SECONDS
+            for observed in evidence_times
+        ):
+            raise CloseoutValidationError(
+                "front-door evidence must be fresh, post-base, and not future-dated"
+            )
+        name = f"{STRICT_REPROOF_PREFIX}{stamp}-{current_git.head[:12]}"
+        payload: dict[str, Any] = {
+            "schema_version": STRICT_REPROOF_SCHEMA_VERSION,
+            "artifact_type": STRICT_REPROOF_ARTIFACT_TYPE,
+            "status": "administrator_attested_lan_front_door_complete",
+            "recorded_at": recorded_at,
+            "reproof_kind": "administrator_attested_lan_front_door",
+            "base_closeout": {
+                "directory": base.directory.name,
+                "summary_sha256": base.summary_snapshot.sha256,
+                "recorded_at": base.summary["recorded_at"],
+                "head": current_git.head,
+                "tree": current_git.tree,
+                "deployment_invocation_id": base_deployment[
+                    "systemd_invocation_id"
+                ],
+                "deployment_process_start_ticks": base_deployment[
+                    "process_start_ticks"
+                ],
+            },
+            "git": {
+                "head": current_git.head,
+                "tree": current_git.tree,
+                "branch": current_git.branch,
+                "tracked_and_nonignored_worktree_clean": True,
+            },
+            "tracked_implementation": helpers,
+            "deployment": deployment.as_dict(),
+            "restart_transition": transition,
+            "front_door": {
+                "postboot_challenge_sha256": postboot_challenge,
+                "host_evidence_sha256": host_evidence.snapshot.sha256,
+                "lan_evidence_sha256": lan_evidence.snapshot.sha256,
+                "host": dict(host_evidence.public),
+                "lan": dict(lan_evidence.public),
+            },
+            "publication": {
+                "directory": name,
+                "directory_mode": "0555",
+                "summary_mode": "0444",
+                "existing_directories_preserved": True,
+                "overwrite_supported": False,
+                "same_head_replay_supported": True,
+                "published_from_hidden_building": True,
+                "atomic_directory_rename": True,
+            },
+            "threat_model_limitations": list(
+                STRICT_REPROOF_THREAT_MODEL_LIMITATIONS
+            ),
+        }
+        _require_exact_keys(
+            payload, STRICT_REPROOF_OUTPUT_KEYS, context="strict deployment reproof"
+        )
+        _require_exact_keys(
+            payload["base_closeout"],
+            REPROOF_BASE_KEYS,
+            context="strict deployment reproof base",
+        )
+
+        def final_checks() -> None:
+            if _git_state(project_root) != current_git:
+                raise CloseoutValidationError(
+                    "Git state changed before strict reproof publication"
+                )
+            final_base = _load_base_closeout(
+                base.summary_path, output_root=output_root
+            )
+            if (
+                final_base.summary_snapshot != base.summary_snapshot
+                or final_base.summary != base.summary
+            ):
+                raise CloseoutValidationError(
+                    "base closeout changed before strict reproof publication"
+                )
+            if _verify_tracked_helpers(project_root) != helpers:
+                raise CloseoutValidationError(
+                    "tracked implementation changed before strict reproof publication"
+                )
+            final_deployment = _deployment_state(project_root, current_git)
+            if not _deployment_observations_match(deployment, final_deployment):
+                raise CloseoutValidationError(
+                    "deployment changed before strict reproof publication"
+                )
+            final_host = _load_host_acceptance_evidence(
+                host_evidence.path,
+                git_state=current_git,
+                deployment=final_deployment,
+                tracked_implementation=helpers,
+            )
+            if (
+                final_host.snapshot != host_evidence.snapshot
+                or final_host.public != host_evidence.public
+            ):
+                raise CloseoutValidationError(
+                    "front-door evidence changed before strict reproof publication"
+                )
+            final_challenge = _postboot_challenge_sha256(
+                base_summary_sha256=base.summary_snapshot.sha256,
+                deployment=final_deployment,
+                host_evidence_sha256=final_host.snapshot.sha256,
+            )
+            if final_challenge != postboot_challenge:
+                raise CloseoutValidationError(
+                    "post-boot challenge changed before strict reproof publication"
+                )
+            final_lan = _load_lan_acceptance_evidence(
+                lan_evidence.path,
+                git_state=current_git,
+                deployment=final_deployment,
+                host_evidence=final_host.public,
+                postboot_challenge_sha256=final_challenge,
+            )
+            if (
+                final_lan.snapshot != lan_evidence.snapshot
+                or final_lan.public != lan_evidence.public
+            ):
+                raise CloseoutValidationError(
+                    "front-door evidence changed before strict reproof publication"
                 )
 
         target, summary_sha256 = _write_new_directory(
@@ -4152,12 +5414,31 @@ def build_parser() -> argparse.ArgumentParser:
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--input", type=Path)
     operation.add_argument("--post-deployment-from", type=Path)
+    operation.add_argument("--post-reboot-from", type=Path)
+    parser.add_argument("--host-front-door-evidence", type=Path)
+    parser.add_argument("--lan-front-door-evidence", type=Path)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        strict_evidence = (
+            arguments.host_front_door_evidence,
+            arguments.lan_front_door_evidence,
+        )
+        if arguments.post_reboot_from is None and any(
+            value is not None for value in strict_evidence
+        ):
+            raise CloseoutValidationError(
+                "front-door evidence arguments require --post-reboot-from"
+            )
+        if arguments.post_reboot_from is not None and any(
+            value is None for value in strict_evidence
+        ):
+            raise CloseoutValidationError(
+                "--post-reboot-from requires both host and LAN front-door evidence"
+            )
         if arguments.input is not None:
             target, _payload, summary_sha256 = create_closeout(
                 input_path=arguments.input,
@@ -4165,13 +5446,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=DEFAULT_OUTPUT_ROOT,
             )
             status = "aggregate_only_closeout_validation_complete"
-        else:
+        elif arguments.post_deployment_from is not None:
             target, _payload, summary_sha256 = create_deployment_reproof(
                 base_summary_path=arguments.post_deployment_from,
                 project_root=PROJECT_ROOT,
                 output_root=DEFAULT_OUTPUT_ROOT,
             )
             status = "post_deployment_reproof_complete"
+        else:
+            assert arguments.post_reboot_from is not None
+            assert arguments.host_front_door_evidence is not None
+            assert arguments.lan_front_door_evidence is not None
+            target, _payload, summary_sha256 = create_post_reboot_reproof(
+                base_summary_path=arguments.post_reboot_from,
+                host_front_door_evidence_path=(
+                    arguments.host_front_door_evidence
+                ),
+                lan_front_door_evidence_path=arguments.lan_front_door_evidence,
+                project_root=PROJECT_ROOT,
+                output_root=DEFAULT_OUTPUT_ROOT,
+            )
+            status = "administrator_attested_lan_front_door_complete"
     except (CloseoutValidationError, OSError) as exc:
         raise SystemExit(str(exc)) from exc
     print(
