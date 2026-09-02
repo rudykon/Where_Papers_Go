@@ -260,8 +260,11 @@ REQUIRED_CRITICAL_PATHS = (
     "data/jcr_partition_2025.csv",
     "data/manifest.json",
     "data/th_cpl_partition_2019.csv",
+    "deploy/monitoring/policy-v1.json",
     "deploy/nginx/where-papers-go.conf.in",
     "deploy/python/selected-wheels-cpython-3.14.5-linux-x86_64.json",
+    "deploy/systemd/where-papers-go-monitor.service.in",
+    "deploy/systemd/where-papers-go-monitor.timer.in",
     "deploy/systemd/where-papers-go.service.in",
     LOGO_PATH,
     "scripts/__init__.py",
@@ -269,6 +272,7 @@ REQUIRED_CRITICAL_PATHS = (
     "scripts/build_graph.py",
     "scripts/closeout_offline_guard/sitecustomize.py",
     "scripts/manage_deployment.py",
+    "scripts/monitor_operations.py",
     "scripts/run_linux_offline_gate.sh",
     "scripts/run_closeout_tests.py",
     "scripts/validate_closeout.py",
@@ -280,6 +284,7 @@ REQUIRED_CRITICAL_PATHS = (
     "where_paper_go/graph_index.py",
     "where_paper_go/recommender.py",
     "where_paper_go/web_app.py",
+    "where_paper_go/web_security.py",
     "where_paper_go/worker.py",
 )
 

@@ -35,6 +35,25 @@ _MAX_API_TOKEN_FILE_BYTES = 64 * 1024
 _API_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~-]{32,256}\Z")
 _IPV4_LOOPBACK = ipaddress.ip_network("127.0.0.0/8")
 _IPV6_LOOPBACK = ipaddress.ip_network("::1/128")
+_AUDIT_FIELDS = frozenset(
+    {
+        "request_id",
+        "client_ip",
+        "method",
+        "path",
+        "status",
+        "response_bytes",
+        "duration_ms",
+        "network",
+        "auth",
+        "rate_limited",
+        "recommendation_outcome",
+        "terminal_status",
+        "terminal_elapsed_ms",
+        "client_disconnected",
+    }
+)
+_AUDIT_RESERVED_FIELDS = frozenset({"event", "audit_schema_version"})
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -383,10 +402,23 @@ def redact_sensitive_text(text: Any, secrets: tuple[str, ...] = ()) -> str:
 
 
 def audit_record(**fields: Any) -> str:
-    """Serialize one compact, body-free journal record."""
+    """Serialize exactly one compact, body-free journal schema.
+
+    The request handler supplies every data field explicitly.  Rejecting both
+    missing and additional names prevents a future caller from quietly adding
+    a request body, credential, query, or result to the production journal.
+    The two schema identity fields may be supplied by a caller for API
+    compatibility, but their trusted values are always written last.
+    """
+
+    supplied = frozenset(fields)
+    data_fields = supplied - _AUDIT_RESERVED_FIELDS
+    if data_fields != _AUDIT_FIELDS:
+        raise ValueError("audit record fields do not match the fixed safe schema")
+    payload = {name: fields[name] for name in _AUDIT_FIELDS}
 
     return json.dumps(
-        {"event": "http_request", **fields},
+        {**payload, "event": "http_request", "audit_schema_version": 2},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

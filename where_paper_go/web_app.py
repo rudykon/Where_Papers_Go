@@ -1945,6 +1945,11 @@ class VenueHandler(BaseHTTPRequestHandler):
         self._network_state = "unchecked"
         self._auth_state = "not_applicable"
         self._rate_limited = False
+        self._recommendation_outcome = "not_applicable"
+        self._recommendation_started: float | None = None
+        self._terminal_status: int | None = None
+        self._terminal_elapsed_ms: int | None = None
+        self._client_disconnected = False
         try:
             super().handle_one_request()
         finally:
@@ -1982,6 +1987,10 @@ class VenueHandler(BaseHTTPRequestHandler):
                     network=self._network_state,
                     auth=self._auth_state,
                     rate_limited=self._rate_limited,
+                    recommendation_outcome=self._recommendation_outcome,
+                    terminal_status=self._terminal_status,
+                    terminal_elapsed_ms=self._terminal_elapsed_ms,
+                    client_disconnected=self._client_disconnected,
                 )
                 sys.stderr.write("[audit] " + record + "\n")
 
@@ -1993,6 +2002,37 @@ class VenueHandler(BaseHTTPRequestHandler):
     def send_response(self, code: int, message: str | None = None) -> None:
         self._response_status = int(code)
         super().send_response(code, message)
+
+    def _begin_recommendation(self) -> None:
+        """Mark an admitted, validated recommendation as awaiting a terminal result."""
+
+        self._recommendation_outcome = "incomplete"
+        self._recommendation_started = time.monotonic()
+        self._terminal_status = None
+        self._terminal_elapsed_ms = None
+
+    def _finish_recommendation(
+        self,
+        outcome: str,
+        status: int,
+        elapsed_ms: Any = None,
+    ) -> None:
+        """Record the first trusted recommendation terminal without response data."""
+
+        if self._recommendation_outcome != "incomplete":
+            return
+        if outcome not in {"complete", "error"}:
+            raise ValueError("invalid recommendation terminal outcome")
+        if isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, int):
+            started = self._recommendation_started
+            elapsed_ms = round(
+                (time.monotonic() - started) * 1000
+                if started is not None
+                else 0
+            )
+        self._recommendation_outcome = outcome
+        self._terminal_status = int(status)
+        self._terminal_elapsed_ms = max(0, elapsed_ms)
 
     def end_headers(self) -> None:
         self.send_header("X-Request-ID", self._request_id)
@@ -2037,6 +2077,7 @@ class VenueHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
             self._response_bytes = 0
+            self._client_disconnected = True
 
     def _send_file(self, path: Path) -> None:
         try:
@@ -2058,6 +2099,7 @@ class VenueHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
             self._response_bytes = 0
+            self._client_disconnected = True
 
     def _content_length(self) -> int:
         if self.headers.get("Transfer-Encoding") is not None:
@@ -2189,12 +2231,27 @@ class VenueHandler(BaseHTTPRequestHandler):
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
+            self._client_disconnected = True
             return
         self.close_connection = True
         disconnected = False
 
         def emit(payload: dict[str, Any]) -> None:
             nonlocal disconnected
+            event_type = payload.get("type")
+            if event_type == "complete":
+                self._finish_recommendation(
+                    "complete", HTTPStatus.OK, payload.get("elapsed_ms")
+                )
+            elif event_type == "error":
+                terminal_status = payload.get("status")
+                if isinstance(terminal_status, bool) or not isinstance(
+                    terminal_status, int
+                ):
+                    terminal_status = HTTPStatus.INTERNAL_SERVER_ERROR
+                self._finish_recommendation(
+                    "error", terminal_status, payload.get("elapsed_ms")
+                )
             if disconnected:
                 return
             try:
@@ -2204,6 +2261,7 @@ class VenueHandler(BaseHTTPRequestHandler):
                 self._response_bytes += len(encoded)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 disconnected = True
+                self._client_disconnected = True
 
         _run_search_stream(body, emit)
 
@@ -2288,9 +2346,15 @@ class VenueHandler(BaseHTTPRequestHandler):
                 # Validate before marking the response committed.  The stream
                 # helper validates again immediately before sending its 200.
                 _search_command(body)
+                self._begin_recommendation()
                 stream_response_sent = True
                 self._send_search_stream(body)
                 return
+            # Keep malformed API requests out of recommendation outcome
+            # accounting.  Once validation succeeds, every non-stream request
+            # must become complete or error before its JSON response is sent.
+            _search_command(body)
+            self._begin_recommendation()
             status, payload = _run_search(body)
         except TimeoutError:
             close_response = True
@@ -2313,6 +2377,15 @@ class VenueHandler(BaseHTTPRequestHandler):
         finally:
             self.server.search_slots.release()
         if not stream_response_sent:
+            if self._recommendation_outcome == "incomplete":
+                elapsed_ms = (
+                    payload.get("elapsed_ms") if isinstance(payload, dict) else None
+                )
+                self._finish_recommendation(
+                    "complete" if int(status) == HTTPStatus.OK else "error",
+                    status,
+                    elapsed_ms,
+                )
             self._send_json(status, payload, close_connection=close_response)
 
 

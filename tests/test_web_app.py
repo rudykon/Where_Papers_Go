@@ -1421,6 +1421,8 @@ class WebAppTests(TestCase):
             ["accepted", "progress", "results", "complete"],
         )
         self.assertEqual(events[-1]["payload"]["results"][0]["name"], "MobiCom")
+        self.assertIsInstance(events[-1]["elapsed_ms"], int)
+        self.assertGreaterEqual(events[-1]["elapsed_ms"], 0)
 
         manager = web_app.RetrievalWorkerManager()
         process = Mock(pid=4321)
@@ -1525,6 +1527,8 @@ class WebAppTests(TestCase):
             ["accepted", "results", "error"],
         )
         self.assertEqual(events[-1]["status"], HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertIsInstance(events[-1]["elapsed_ms"], int)
+        self.assertGreaterEqual(events[-1]["elapsed_ms"], 0)
         self.assertNotIn("complete", {event["type"] for event in events})
         store.assert_not_called()
 
@@ -1584,3 +1588,5 @@ class WebAppTests(TestCase):
         stream.assert_not_called()
         self.assertEqual([event["type"] for event in events], ["accepted", "complete"])
         self.assertTrue(events[-1]["payload"]["result_cache"]["hit"])
+        self.assertIsInstance(events[-1]["elapsed_ms"], int)
+        self.assertGreaterEqual(events[-1]["elapsed_ms"], 0)

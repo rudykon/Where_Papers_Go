@@ -1,0 +1,48 @@
+[Unit]
+Description=Where Papers Go bounded operations monitor
+After=where-papers-go.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@@SOURCE_RELEASE@@
+# Build a closed command environment at the exec boundary.  Every mutable
+# deployment identity is passed as an explicit, reviewed argument; the monitor
+# does not consume the service's mutable environment or invoke /api/search.
+# Applied by systemd before it loads /usr/bin/env.  This first layer removes
+# loader/GCONV/OpenSSL/Python/proxy injection; env -i below independently
+# rebuilds the monitor's complete command environment as the second layer.
+UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT LD_BIND_NOW LD_DEBUG LD_DEBUG_OUTPUT LD_DYNAMIC_WEAK LD_HWCAP_MASK LD_LIBRARY_PATH LD_ORIGIN_PATH LD_PREFER_MAP_32BIT_EXEC LD_PRELOAD LD_PROFILE LD_SHOW_AUXV LD_TRACE_LOADED_OBJECTS OPENSSL_CONF OPENSSL_CONF_INCLUDE OPENSSL_ENGINES OPENSSL_MODULES SSLKEYLOGFILE SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE AWS_CA_BUNDLE GRPC_DEFAULT_SSL_ROOTS_FILE_PATH HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy PYTHONBREAKPOINT PYTHONCASEOK PYTHONDEBUG PYTHONDEVMODE PYTHONDUMPREFS PYTHONEXECUTABLE PYTHONFAULTHANDLER PYTHONHASHSEED PYTHONHOME PYTHONINSPECT PYTHONMALLOC PYTHONOPTIMIZE PYTHONPATH PYTHONPLATLIBDIR PYTHONPROFILEIMPORTTIME PYTHONPYCACHEPREFIX PYTHONSTARTUP PYTHONTRACEMALLOC PYTHONUSERBASE PYTHONWARNINGS
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 UV_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH=@@SOURCE_RELEASE@@:@@PYTHON_IMPORT_PATH@@ @@PYTHON@@ -S -P -B -m scripts.monitor_operations --policy @@MONITOR_POLICY@@ --expected-policy-sha256 @@MONITOR_POLICY_SHA256@@ --state @@MONITOR_STATE_DIR@@/operations-monitor-v1.json --token-file @@API_TOKEN_FILE@@ --source-manifest @@SOURCE_MANIFEST@@ --expected-source-head @@SOURCE_HEAD@@ --expected-source-tree @@SOURCE_TREE@@ --expected-source-manifest-sha256 @@SOURCE_MANIFEST_SHA256@@ --python-runtime-manifest @@PYTHON_RUNTIME_MANIFEST@@ --expected-python-runtime-manifest-sha256 @@PYTHON_RUNTIME_MANIFEST_SHA256@@ --expected-python-runtime-tree-sha256 @@PYTHON_RUNTIME_TREE_SHA256@@ --expected-python-executable-sha256 @@PYTHON_EXECUTABLE_SHA256@@ --runtime-manifest @@RUNTIME_MANIFEST@@ --expected-runtime-manifest-sha256 @@RUNTIME_MANIFEST_SHA256@@ --expected-store-binding-sha256 @@LIGHTRAG_STORE_BINDING_SHA256@@ --apply
+# Exit 2 means a validated first/escalated/repeated/recovery event was emitted.
+# It must remain observable as ExecMainStatus=2 without turning the timer into
+# a failed unit.  Input, collection, or safety failures return 3 and do fail.
+SuccessExitStatus=2
+# The timer owns cadence; never turn an event or collector failure into a
+# restart storm inside the same minute.
+Restart=no
+# The policy independently bounds the health and journal collectors.  Leave
+# enough unit-level headroom for both bounds plus systemctl and atomic state.
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=@@SOURCE_RELEASE@@
+ReadOnlyPaths=@@PYTHON_RUNTIME@@
+ReadOnlyPaths=@@MONITOR_POLICY@@
+ReadOnlyPaths=@@API_TOKEN_FILE@@
+ReadOnlyPaths=@@RUNTIME_MANIFEST@@
+# This is the monitor's only persistent write boundary.  The state file and
+# journal cursor are atomically updated inside this private 0700 directory.
+ReadWritePaths=@@MONITOR_STATE_DIR@@
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=where-papers-go-monitor

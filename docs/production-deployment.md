@@ -101,6 +101,9 @@ cannot bypass the front door or forge client identity through port 8001.
 - `deploy/systemd/where-papers-go.service.in`: persistent user-unit template,
   restart policy, source/runtime-bound startup health gate, write boundary, and
   systemd hardening;
+- `deploy/systemd/where-papers-go-monitor.{service,timer}.in`: minute-scale,
+  deduplicating operations-monitor schedule with immutable identity bindings
+  and a monitor-state-only persistent write boundary;
 - `deploy/env/where-papers-go.env.example`: legacy/development `render-env`
   reference, deliberately not consumed by the hardened production unit;
 - `deploy/nginx/where-papers-go.conf.in`: TLS, Basic Auth, private backend
@@ -974,3 +977,171 @@ and logs, then
 return by another audited CAS/render to the last ready combination. Do not
 reduce the health contract, erase diagnostic trees, reset shared quota state,
 or replace indexes in place.
+
+## Operations monitor deployment and evidence boundary
+
+The user timer in
+`deploy/systemd/where-papers-go-monitor.{service,timer}.in` samples the already
+running service once per minute. It is deliberately not part of application
+startup and must not start or restart `where-papers-go.service`. The monitor
+performs only a token-authenticated GET of the fixed detailed loopback endpoint
+`http://127.0.0.1:8001/api/health`, reads bounded user-unit and journal state,
+and maintains its transition/deduplication state. It never calls
+`/api/search`, an LLM, Search, embedding, or another provider endpoint.
+Each valid sample covers unit availability, PID/start and uptime, `NRestarts`,
+body-free terminal request status and latency from the user journal, shared
+quota consumption, and the complete expected source/runtime/LightRAG hash
+proof. Thresholds and bounded journal limits come only from the hash-pinned
+policy.
+
+Render the service template only after the application unit has been rendered
+from the merged immutable source and runtime. Replace every `@@...@@` token
+with the exact value proved by that application render and post-start health:
+the immutable source release, Python executable/import path and runtime, API
+token, private monitor state directory, policy plus its SHA-256, source
+HEAD/tree/manifest SHA-256, Python manifest/tree/executable SHA-256, active
+generation-manifest SHA-256, and LightRAG store-binding SHA-256. The last two
+values bind the health response to the startup-verified six-file LightRAG set;
+a ready boolean alone is not an acceptable replacement. Do not obtain values
+from an older closeout or a mutable checkout.
+
+Use the fixed monitor state base shown below. If it already exists it must be a
+real directory owned by the service user with mode `0700`; `--apply` can create
+it, while a dry run never writes it. The renderer derives a separate `0700`
+child named by a canonical hash of both the policy and complete deployment
+binding. Thus a successor cannot overwrite or inherit its predecessor's
+baselines, cursor, alert history, or pending events, and an older namespace is
+preserved for rollback evidence. The token remains the existing real,
+single-link, owner-only backend credential. Select the tracked policy from the
+same immutable source release, keep its expected SHA-256 in the rendered unit,
+and do not copy it to a mutable policy path. Do not place token bytes in the
+template, policy, command line, state, journal, or Git:
+
+```bash
+set -euo pipefail
+install -d -m 0700 "$HOME/.local/state/where-papers-go/monitor"
+MONITOR_RENDER_ARGS=(
+  --source-release "$HOME/.local/lib/where-papers-go/releases/release-SOURCE_MANIFEST_SHA256"
+  --expected-source-manifest-sha256 SOURCE_MANIFEST_SHA256
+  --python-runtime "$HOME/.local/lib/where-papers-go/python-runtimes/python-runtime-PYTHON_RUNTIME_MANIFEST_SHA256"
+  --expected-python-runtime-manifest-sha256 PYTHON_RUNTIME_MANIFEST_SHA256
+  --runtime-dir "$HOME/.local/state/where-papers-go/current"
+  --expected-runtime-manifest-sha256 MANIFEST_SHA256
+  --api-token-file "$HOME/.config/where-papers-go/backend.token"
+  --state-dir "$HOME/.local/state/where-papers-go/monitor"
+)
+# Production-target dry-run: validates all immutable inputs and reports the
+# exact candidate identities without installing, enabling, or starting either
+# unit.
+python -m scripts.manage_deployment render-monitor-systemd \
+  "${MONITOR_RENDER_ARGS[@]}" \
+  --service-output "$HOME/.config/systemd/user/where-papers-go-monitor.service" \
+  --timer-output "$HOME/.config/systemd/user/where-papers-go-monitor.timer"
+# Materialize disposable candidates through the same renderer, then reject any
+# unresolved token and require both units to pass the user-manager parser.
+python -m scripts.manage_deployment render-monitor-systemd \
+  "${MONITOR_RENDER_ARGS[@]}" \
+  --service-output /tmp/where-papers-go-monitor.service \
+  --timer-output /tmp/where-papers-go-monitor.timer --apply
+! rg -n '@@[A-Z0-9_]+@@' /tmp/where-papers-go-monitor.service \
+  /tmp/where-papers-go-monitor.timer
+systemd-analyze --user verify /tmp/where-papers-go-monitor.service
+systemd-analyze --user verify /tmp/where-papers-go-monitor.timer
+# Only now atomically install each reviewed file at the user-unit paths.
+python -m scripts.manage_deployment render-monitor-systemd \
+  "${MONITOR_RENDER_ARGS[@]}" \
+  --service-output "$HOME/.config/systemd/user/where-papers-go-monitor.service" \
+  --timer-output "$HOME/.config/systemd/user/where-papers-go-monitor.timer" \
+  --apply
+systemctl --user daemon-reload
+systemctl --user enable --now where-papers-go-monitor.timer
+systemctl --user start where-papers-go-monitor.service
+```
+
+`render-monitor-systemd` fixes the policy and both templates to the selected
+immutable source release. It validates and fills the source HEAD/tree,
+policy, local source/Python/generation manifests, Python tree/executable,
+active six-file runtime and store-binding hashes itself; callers cannot
+override those derived values. `--apply` only installs the rendered files. It
+does not reload the user manager, enable a timer, or start a unit, so those
+three actions remain explicit after syntax verification.
+
+The renderer is intentionally checkout-bound as well as release-bound. The
+selected release HEAD and tree must exactly equal the executing checkout's Git
+`HEAD^{commit}` and `HEAD^{tree}`. The selected release copy, current checkout
+copy, and committed Git blob for `scripts/manage_deployment.py` must be
+byte-for-byte identical and stable across the render. A staged or unstaged
+renderer edit therefore fails even a dry-run; commit it, rebuild the immutable
+source release from that commit, and review the new source manifest instead of
+overriding the proof. To render an approved older rollback release, execute the
+renderer from a clean checkout at that release's exact commit/tree.
+
+The renderer also requires the selected release's monitor core and policy
+bytes to equal the module/policy in the checkout executing the render. This is
+the explicit maintenance-window precondition that the selected immutable
+release is the current reviewed merge; do not use a newer checkout to render
+an older release (or the reverse).
+
+The result reports both `deployment_binding_sha256` and
+`monitor_state_namespace_sha256`, plus the selected child path. Confirm the
+rendered `--state` and `ReadWritePaths` use that child, not the shared base.
+Service and timer replacements are individually crash-atomic and preserve
+different predecessors as timestamped backups; they are not a two-file
+transaction, so verify both reported hashes and both unit files before
+`daemon-reload`.
+
+The service executes the content-addressed interpreter as `-S -P -B` with an
+empty, explicitly rebuilt environment. Before `/usr/bin/env` itself is loaded,
+systemd applies the same ordered `UnsetEnvironment=` contract as the main
+service, clearing the complete audited GCONV/glibc loader, OpenSSL/CA, proxy,
+and Python injection set. `/usr/bin/env -i` is an independent second layer; it
+does not replace the pre-exec scrub. `ProtectSystem=strict` and
+`ProtectHome=read-only` leave only the selected content-addressed monitor state
+directory as its persistent write boundary. The policy hash and all deployed
+source/runtime hashes are mandatory command arguments, not ambient environment
+overrides.
+The timer uses a one-minute calendar schedule, `Persistent=true`, and a small
+random delay. Persistence causes one catch-up activation after user-manager
+downtime; it does not reconstruct every missed sample.
+
+The checked policy intentionally leaves the generic latency warning and
+critical thresholds `null`. It records bounded body-free terminal latency and
+flags the fixed 900,000 ms hard-timeout condition, but neither value is a
+production latency SLO. Establish latency thresholds only from a separately
+approved end-to-end acceptance run; do not tune them from this loopback
+monitor.
+
+Interpret the one-shot status precisely:
+
+- exit `0`: a valid sample produced no alert transition;
+- exit `2`: a valid first, escalation, bounded repeat, or recovery event was
+  emitted. `SuccessExitStatus=2` intentionally keeps the timer healthy while
+  preserving `ExecMainStatus=2` and the JSON event in the user journal;
+- exit `3`: policy, credential, state, collection, identity, or other
+  fail-closed safety validation failed. This remains a failed unit and must be
+  investigated rather than allowlisted.
+
+Inspect both the machine-readable sample and the scheduler state after
+installation and after a real reboot:
+
+```bash
+systemctl --user show where-papers-go-monitor.timer \
+  -p ActiveState -p UnitFileState -p LastTriggerUSec -p NextElapseUSecRealtime
+systemctl --user show where-papers-go-monitor.service \
+  -p Result -p ExecMainCode -p ExecMainStatus
+journalctl --user -u where-papers-go-monitor.service --since=-10min \
+  --output=cat
+```
+
+This timer establishes local sampling, stateful event generation, and journal
+evidence only. It does **not** prove that a human received an alert. A real
+notification receiver, credentials, routing, retry/dead-letter behaviour and
+delivery drill still require external administrator configuration and
+acceptance. The user monitor also cannot read administrator-owned Nginx access
+and error logs under the hardened boundary; ingestion of those logs and proxy
+error-rate/latency reconciliation remain an administrator-owned integration.
+Finally, local loopback health and journal latency are not an end-to-end SLA.
+Authenticated HTTPS client latency, error rate, certificate path, proxy limits,
+and any authorized real Search/LLM path require a separate production
+acceptance run. Do not trigger Search merely to make this monitor appear
+complete.

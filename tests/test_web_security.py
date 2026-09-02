@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from http import HTTPStatus
 import io
 import ipaddress
 import json
 import os
 from pathlib import Path
 import socket
+import struct
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -307,17 +309,56 @@ class WebSecurityTests(TestCase):
         self.assertGreaterEqual(redacted.count("[REDACTED]"), 2)
 
     def test_audit_record_contains_no_body_or_authorization(self) -> None:
+        safe_fields = {
+            "request_id": "a" * 32,
+            "method": "POST",
+            "path": "/api/search",
+            "status": 429,
+            "response_bytes": 123,
+            "duration_ms": 7,
+            "client_ip": "127.0.0.1",
+            "network": "accepted",
+            "auth": "accepted",
+            "rate_limited": True,
+            "recommendation_outcome": "not_applicable",
+            "terminal_status": None,
+            "terminal_elapsed_ms": None,
+            "client_disconnected": False,
+        }
         record = audit_record(
-            request_id="abc",
-            method="POST",
-            path="/api/search",
-            status=429,
-            client_ip="127.0.0.1",
+            event="forged",
+            audit_schema_version=999,
+            **safe_fields,
         )
         payload = json.loads(record)
         self.assertEqual(payload["event"], "http_request")
+        self.assertEqual(payload["audit_schema_version"], 2)
+        self.assertEqual(payload["recommendation_outcome"], "not_applicable")
+        self.assertIsNone(payload["terminal_status"])
+        self.assertIsNone(payload["terminal_elapsed_ms"])
+        self.assertIs(payload["client_disconnected"], False)
         self.assertNotIn("query", payload)
+        self.assertNotIn("body", payload)
+        self.assertNotIn("token", payload)
+        self.assertNotIn("result", payload)
         self.assertNotIn("authorization", payload)
+
+        for forbidden in (
+            "query",
+            "body",
+            "token",
+            "result",
+            "authorization",
+            "unexpected",
+        ):
+            with self.subTest(forbidden=forbidden), self.assertRaisesRegex(
+                ValueError, "fixed safe schema"
+            ):
+                audit_record(**safe_fields, **{forbidden: "must-not-be-logged"})
+        incomplete = dict(safe_fields)
+        del incomplete["client_disconnected"]
+        with self.assertRaisesRegex(ValueError, "fixed safe schema"):
+            audit_record(**incomplete)
 
     def test_live_endpoint_has_security_headers_without_python_banner(self) -> None:
         audit_stream = io.StringIO()
@@ -373,11 +414,18 @@ class WebSecurityTests(TestCase):
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
         self.assertNotIn("Python", headers["Server"])
-        audit_lines = [
-            line for line in audit_stream.getvalue().splitlines() if "http_request" in line
+        audit_payloads = [
+            json.loads(line.partition("[audit] ")[2])
+            for line in audit_stream.getvalue().splitlines()
+            if line.startswith("[audit] ")
         ]
-        self.assertEqual(len(audit_lines), 4)
-        self.assertTrue(all('"status":0' not in line for line in audit_lines))
+        self.assertEqual(len(audit_payloads), 4)
+        for audit in audit_payloads:
+            self.assertNotEqual(audit["status"], 0)
+            self.assertEqual(audit["recommendation_outcome"], "not_applicable")
+            self.assertIsNone(audit["terminal_status"])
+            self.assertIsNone(audit["terminal_elapsed_ms"])
+            self.assertIs(audit["client_disconnected"], False)
 
     def test_server_can_bind_without_listening_until_preload_is_ready(self) -> None:
         try:
@@ -460,6 +508,182 @@ class WebSecurityTests(TestCase):
             self.assertEqual(second_error.exception.headers["Retry-After"], "60")
         finally:
             second_error.exception.close()
+
+        # Recommendation outcome is independent of the outer HTTP status.  In
+        # particular, an NDJSON stream has already committed HTTP 200 before a
+        # terminal error can be reported.
+        audit_stream = io.StringIO()
+        private_token = "audit-private-token-value-that-must-not-leak"
+        private_query = "audit-private-query-that-must-not-leak"
+        private_result = "audit-private-result-that-must-not-leak"
+        with patch.object(web_app.sys, "stderr", audit_stream):
+            audited_url = self._serve(
+                WebSecurityConfig(
+                    api_token=private_token,
+                    require_api_auth=True,
+                    rate_limit_requests=100,
+                    audit_enabled=True,
+                )
+            )
+            headers = {
+                "Authorization": "Bearer " + private_token,
+                "Content-Type": "application/json",
+            }
+            request_body = json.dumps({"query": private_query}).encode("utf-8")
+            with patch.object(
+                web_app,
+                "_run_search",
+                side_effect=(
+                    (
+                        HTTPStatus.OK,
+                        {"results": [{"name": private_result}], "elapsed_ms": 7},
+                    ),
+                    (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": private_result, "elapsed_ms": 11},
+                    ),
+                ),
+            ):
+                ordinary = urllib.request.Request(
+                    audited_url + "/api/search",
+                    data=request_body,
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(ordinary, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.load(response)["elapsed_ms"], 7)
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    urllib.request.urlopen(ordinary, timeout=5)
+                try:
+                    self.assertEqual(failed.exception.code, 503)
+                    self.assertEqual(json.load(failed.exception)["elapsed_ms"], 11)
+                finally:
+                    failed.exception.close()
+
+            def terminal_error_stream(_body, emit):
+                emit({"type": "accepted", "elapsed_ms": 0})
+                emit(
+                    {
+                        "type": "error",
+                        "status": HTTPStatus.SERVICE_UNAVAILABLE,
+                        "elapsed_ms": 13,
+                        "error": private_result,
+                    }
+                )
+
+            with patch.object(
+                web_app, "_run_search_stream", side_effect=terminal_error_stream
+            ):
+                streamed = urllib.request.Request(
+                    audited_url + "/api/search/stream",
+                    data=request_body,
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(streamed, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    events = [json.loads(line) for line in response]
+                self.assertEqual(events[-1]["type"], "error")
+
+            def unterminated_stream(_body, emit):
+                emit({"type": "accepted", "elapsed_ms": 0})
+
+            with patch.object(
+                web_app, "_run_search_stream", side_effect=unterminated_stream
+            ):
+                with urllib.request.urlopen(streamed, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(
+                        [json.loads(line)["type"] for line in response],
+                        ["accepted"],
+                    )
+
+            stream_entered = threading.Event()
+            release_stream = threading.Event()
+
+            def disconnected_stream(_body, emit):
+                stream_entered.set()
+                release_stream.wait(timeout=5)
+                emit({"type": "progress", "padding": "x" * 1_000_000})
+
+            with patch.object(
+                web_app, "_run_search_stream", side_effect=disconnected_stream
+            ):
+                parsed = urllib.parse.urlparse(audited_url)
+                client = socket.create_connection(
+                    (parsed.hostname, parsed.port), timeout=5
+                )
+                client.sendall(
+                    b"POST /api/search/stream HTTP/1.1\r\n"
+                    b"Host: localhost\r\n"
+                    + f"Authorization: Bearer {private_token}\r\n".encode("ascii")
+                    + b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(request_body)}\r\n".encode("ascii")
+                    + b"Connection: close\r\n\r\n"
+                    + request_body
+                )
+                self.assertTrue(stream_entered.wait(timeout=5))
+                client.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_LINGER,
+                    struct.pack("ii", 1, 0),
+                )
+                client.close()
+                release_stream.set()
+                deadline = time.monotonic() + 5
+                while audit_stream.getvalue().count("[audit] ") < 5:
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+
+        audit_text = audit_stream.getvalue()
+        audit_payloads = [
+            json.loads(line.partition("[audit] ")[2])
+            for line in audit_text.splitlines()
+            if line.startswith("[audit] ")
+        ]
+        self.assertEqual(len(audit_payloads), 5)
+        ordinary_complete, ordinary_error, stream_error, no_terminal, disconnected = (
+            audit_payloads
+        )
+        self.assertEqual(
+            (
+                ordinary_complete["status"],
+                ordinary_complete["recommendation_outcome"],
+                ordinary_complete["terminal_status"],
+                ordinary_complete["terminal_elapsed_ms"],
+            ),
+            (200, "complete", 200, 7),
+        )
+        self.assertEqual(
+            (
+                ordinary_error["status"],
+                ordinary_error["recommendation_outcome"],
+                ordinary_error["terminal_status"],
+                ordinary_error["terminal_elapsed_ms"],
+            ),
+            (503, "error", 503, 11),
+        )
+        self.assertEqual(
+            (
+                stream_error["status"],
+                stream_error["recommendation_outcome"],
+                stream_error["terminal_status"],
+                stream_error["terminal_elapsed_ms"],
+            ),
+            (200, "error", 503, 13),
+        )
+        for record in (no_terminal, disconnected):
+            self.assertEqual(record["status"], 200)
+            self.assertEqual(record["recommendation_outcome"], "incomplete")
+            self.assertIsNone(record["terminal_status"])
+            self.assertIsNone(record["terminal_elapsed_ms"])
+        self.assertEqual(
+            [record["client_disconnected"] for record in audit_payloads],
+            [False, False, False, False, True],
+        )
+        for secret in (private_token, private_query, private_result):
+            self.assertNotIn(secret, audit_text)
 
     def test_http_allowlist_rejects_direct_peer_before_any_endpoint(self) -> None:
         denied_url = self._serve(

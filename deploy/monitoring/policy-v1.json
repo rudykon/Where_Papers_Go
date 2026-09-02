@@ -1,0 +1,55 @@
+{
+  "artifact_type": "where_papers_go_operations_monitor_policy",
+  "schema_version": 1,
+  "service": {
+    "unit": "where-papers-go.service",
+    "health_url": "http://127.0.0.1:8001/api/health",
+    "health_timeout_seconds": 60
+  },
+  "journal": {
+    "enabled": true,
+    "initial_lookback_seconds": 21600,
+    "max_entries": 5000,
+    "timeout_seconds": 30
+  },
+  "thresholds": {
+    "minimum_uptime_seconds": 300,
+    "restart_warning_delta": 1,
+    "restart_critical_delta": 3,
+    "search_minimum_samples": 20,
+    "search_error_warning_count": 3,
+    "search_error_critical_count": 10,
+    "search_error_warning_rate": 0.05,
+    "search_error_critical_rate": 0.2,
+    "search_latency_warning_ms": null,
+    "search_latency_critical_ms": null,
+    "tavily_remaining_warning_ratio": 0.2,
+    "tavily_remaining_critical_ratio": 0.05,
+    "tavily_consumed_warning_delta": 50,
+    "tavily_consumed_critical_delta": 200
+  },
+  "deduplication": {
+    "repeat_seconds": 21600,
+    "recovery_observations": 2
+  },
+  "histogram_upper_bounds_ms": [
+    1000,
+    3000,
+    5000,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    900000
+  ],
+  "limits": {
+    "policy_bytes": 65536,
+    "state_bytes": 262144,
+    "health_response_bytes": 2097152,
+    "journal_output_bytes": 16777216,
+    "journal_message_bytes": 65536,
+    "systemctl_output_bytes": 65536,
+    "pending_events": 32
+  }
+}
