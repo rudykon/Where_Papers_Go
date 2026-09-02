@@ -584,6 +584,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for required_fragment in (
             "/usr/bin/unshare",
+            "--propagation private",
             "--mount-proc",
             "--kill-child=KILL",
             "--clear-groups",
@@ -603,8 +604,10 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             'wpg-root "$command_path" "$@"',
             'wpg-unprivileged "$@"',
             "GITHUB_ENV+x",
+            "OS-level offline gate retained propagating mounts",
         ):
             self.assertIn(required_fragment, offline_wrapper)
+        self.assertNotIn("mount --make-rprivate /", offline_wrapper)
         for local_name, environment_name in (
             ("caller_uid", "WPG_PR_CALLER_UID"),
             ("caller_gid", "WPG_PR_CALLER_GID"),
@@ -711,6 +714,18 @@ NoNewPrivs:\t1
         self.assertFalse(
             validate_pr_gates._sandbox_mounts_are_private(
                 mountinfo.replace("/tmp rw,nosuid,nodev", "/tmp rw,nosuid"),
+                project_root=project_root,
+                caller_home=caller_home,
+                runner_commands_dir="/nonexistent",
+                runner_tool_cache=runner_tool_cache,
+            )
+        )
+        self.assertFalse(
+            validate_pr_gates._sandbox_mounts_are_private(
+                mountinfo.replace(
+                    "/ /proc rw,nosuid,nodev,noexec - proc",
+                    "/ /proc rw,nosuid,nodev,noexec shared:42 - proc",
+                ),
                 project_root=project_root,
                 caller_home=caller_home,
                 runner_commands_dir="/nonexistent",

@@ -1574,6 +1574,11 @@ def _sandbox_mounts_are_private(
             return False
         if separator < 6 or len(parts) <= separator + 2:
             return False
+        if any(
+            field.startswith(("shared:", "master:", "propagate_from:"))
+            for field in parts[6:separator]
+        ):
+            return False
         mountpoint = _decode_mount_component(parts[4])
         entries[mountpoint] = (set(parts[5].split(",")), parts[separator + 1])
 
