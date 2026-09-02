@@ -253,11 +253,11 @@
       "sha256": "0507d409b50ec8fbe53359f147c26a05062e2e66febf6b6bd40c001965b20b41"
     },
     {
-      "bytes": 11929,
-      "git_blob_sha1": "4547529671a85095b91a6d8d817a56979d97b13e",
+      "bytes": 12086,
+      "git_blob_sha1": "e269624bddeddfa44cc5088eb28d1181aeff4268",
       "mode": "100644",
       "path": "scripts/run_linux_offline_gate.sh",
-      "sha256": "e3ad2a815490db2d5202839275d3910f4ca1b1c81b4bc4751a6e10eedbe2f1ea"
+      "sha256": "b701d87bd98d59e978ed10f287a1baa4d27b4cf93146f81572b7c7565557a557"
     },
     {
       "bytes": 27925,
@@ -288,11 +288,11 @@
       "sha256": "73c58053ec13d5de79abdc4bb633205eedc2d8520f823a127afe1263e5b9aafb"
     },
     {
-      "bytes": 36301,
-      "git_blob_sha1": "46e965954c818f91b854683e3c6f4268a266b9be",
+      "bytes": 36403,
+      "git_blob_sha1": "04e7e144af6b51e0c279182188e5c5f281bff453",
       "mode": "100644",
       "path": "tests/test_closeout_runner.py",
-      "sha256": "ee8a6cef65f71ed8243b4610e877ebf16f14fbc9992653752e3a5678360c01d8"
+      "sha256": "cd34c321efef788b0da1fe8b968a0bcb3f63c69440b98deb42cbc4a519b76ddb"
     },
     {
       "bytes": 166729,
@@ -674,7 +674,7 @@
     "no_new_privs_required": true,
     "nonloopback_python_socket_attempts_allowed": 0,
     "os_isolation_path": "scripts/run_linux_offline_gate.sh",
-    "os_isolation_sha256": "e3ad2a815490db2d5202839275d3910f4ca1b1c81b4bc4751a6e10eedbe2f1ea",
+    "os_isolation_sha256": "b701d87bd98d59e978ed10f287a1baa4d27b4cf93146f81572b7c7565557a557",
     "os_isolation_token": "linux-sandbox-v3",
     "runner_command_files_writable": false,
     "runner_tool_cache_writable": false,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "4411d792d5ad689e0711e378a949705493e99ccceedc92a340628d3ee9f5d94a"
+    "inventory_sha256": "1a5fc83d1845515ffa942fff020a4fbd93c8caa37ce497b4836e45c388934453"
   },
   "tests": {
     "full": {

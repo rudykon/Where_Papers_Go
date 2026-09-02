@@ -124,7 +124,12 @@ elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   exit 2
 fi
 
-/usr/bin/sudo -n /usr/bin/env -i \
+/usr/bin/sudo -n /usr/bin/setpriv \
+  --reuid=0 \
+  --regid=0 \
+  --clear-groups \
+  -- \
+  /usr/bin/env -i \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
@@ -170,8 +175,9 @@ fi
     caller_home="${WPG_PR_CALLER_HOME:?}"
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
-    if [[ "$(/usr/bin/id -u)" -ne 0 ]]; then
-      echo "OS-level offline gate privileged setup shell lost effective root" >&2
+    if [[ "$(/usr/bin/id -r -u):$(/usr/bin/id -u):$(/usr/bin/id -r -g):$(/usr/bin/id -g)" != \
+          "0:0:0:0" ]]; then
+      echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
 

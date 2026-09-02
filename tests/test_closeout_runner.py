@@ -584,6 +584,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for required_fragment in (
             "/usr/bin/unshare",
+            "/usr/bin/sudo -n /usr/bin/setpriv",
+            "--reuid=0",
+            "--regid=0",
             "--propagation private",
             "/bin/bash --noprofile --norc -p",
             "--mount-proc",
@@ -606,7 +609,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             'wpg-unprivileged "$@"',
             "GITHUB_ENV+x",
             "OS-level offline gate retained propagating mounts",
-            "OS-level offline gate privileged setup shell lost effective root",
+            "OS-level offline gate privileged setup shell lacks aligned root IDs",
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
