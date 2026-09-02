@@ -205,7 +205,10 @@ fi
         wpg-private "$target"
     }
 
-    /usr/bin/mount --make-rprivate /
+    # `unshare --mount --propagation private` above already applies the
+    # recursive MS_PRIVATE transition before this shell starts.  Repeating
+    # that mount operation is rejected by some otherwise capable hosted
+    # runners, so verify the resulting namespace below after privileges drop.
     /usr/bin/mount -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
       wpg-run /run
@@ -296,6 +299,14 @@ fi
           [[ "$capability_set" == 0000000000000000 ]]
         done
         [[ "$(pwd -P)" == "$project_root" ]]
+        while IFS= read -r mount_line; do
+          case " $mount_line " in
+            *" shared:"*|*" master:"*|*" propagate_from:"*)
+              echo "OS-level offline gate retained propagating mounts" >&2
+              exit 2
+              ;;
+          esac
+        done </proc/self/mountinfo
         [[ ! -w . && ! -w "$project_root" ]]
         [[ ! -w "$project_root/.github/pr-gate-manifest.json" ]]
         [[ ! -w "$project_root/scripts/validate_pr_gates.py" ]]
