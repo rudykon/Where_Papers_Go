@@ -159,7 +159,7 @@ fi
     --mount-proc \
     --propagation private \
     -- \
-  /bin/bash --noprofile --norc -Eeuo pipefail -c '
+  /bin/bash -p --noprofile --norc -Eeuo pipefail -c '
     # Metadata is carried by the explicit env -i block above.  Keep every
     # positional parameter reserved for the target command across both
     # bash -c boundaries.
@@ -169,6 +169,11 @@ fi
     runner_commands_dir="${WPG_PR_RUNNER_COMMANDS_DIR:?}"
     caller_home="${WPG_PR_CALLER_HOME:?}"
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
+
+    if [[ "$(/usr/bin/id -u)" -ne 0 ]]; then
+      echo "OS-level offline gate privileged setup shell lost effective root" >&2
+      exit 2
+    fi
 
     # Drop the inherited checkout cwd before overmounting it.  Otherwise the
     # old mount remains reachable through the process's cwd despite the new
