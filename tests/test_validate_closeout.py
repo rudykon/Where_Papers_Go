@@ -73,6 +73,10 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         pid: int = 1234,
         start_ticks: int = 9876,
         invocation_id: str = "8" * 32,
+        boot_id: str = "11111111-1111-4111-8111-111111111111",
+        uptime_seconds: float = 10_000.0,
+        quota_revision: int = 7,
+        quota_used: int = 3,
     ) -> validate_closeout.DeploymentEvidence:
         python_runtime = self.python_runtime()
         worker_process = self.worker_process(main_pid=pid)
@@ -83,6 +87,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             bindings_current=True,
             lightrag_store_hashes_verified=proof,
             listener_scope="loopback_only",
+            backend_port=8001,
             main_pid=pid,
             nrestarts=1,
             process_start_ticks=start_ticks,
@@ -99,8 +104,193 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             process_snapshot_sha256="6" * 64,
             health_snapshot_sha256="e" * 64,
             listener_snapshot_sha256="a" * 64,
+            host_boot={
+                "boot_id": boot_id,
+                "machine_id_sha256": validate_closeout._machine_id_sha256(
+                    "a" * 32
+                ),
+                "uptime_seconds": uptime_seconds,
+                "linger": True,
+            },
+            shared_quota=self.shared_quota(
+                revision=quota_revision, used=quota_used
+            ),
             python_runtime=python_runtime,
             worker_process=worker_process,
+        )
+
+    @staticmethod
+    def shared_quota(*, revision: int = 7, used: int = 3) -> dict[str, object]:
+        total = 20
+        copy_hash = hashlib.sha256(f"quota-{revision}-{used}".encode()).hexdigest()
+        candidate = {
+            "present": True,
+            "valid": True,
+            "revision": revision,
+            "sha256": copy_hash,
+            "bytes": 4096,
+            "mode": "0600",
+        }
+        return {
+            "ready": True,
+            "state_revision": revision,
+            "configuration_current": True,
+            "replicated_revision": True,
+            "used": used,
+            "remaining": total - used,
+            "total_capacity": total,
+            "configured_keyset_sha256": "4" * 64,
+            "copies": {
+                "primary": dict(candidate),
+                "backup": dict(candidate),
+            },
+        }
+
+    def host_front_door_evidence(
+        self,
+        deployment: validate_closeout.DeploymentEvidence,
+        *,
+        tracked_implementation: dict[str, str],
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "artifact_type": (
+                "where_papers_go_administrator_attested_host_front_door"
+            ),
+            "recorded_at": "2026-08-31T12:00:30.000000Z",
+            "source_head": self.head,
+            "source_tree": "9" * 40,
+            "boot_id": deployment.host_boot["boot_id"],
+            "machine_id_sha256": deployment.host_boot["machine_id_sha256"],
+            "nginx": {
+                "active": True,
+                "enabled": True,
+                "binary_path": "/usr/sbin/nginx",
+                "binary_sha256": "5" * 64,
+                "template_sha256": tracked_implementation[
+                    "nginx_template_sha256"
+                ],
+                "renderer_sha256": tracked_implementation[
+                    "deployment_manager_sha256"
+                ],
+                "main_pid": 2468,
+                "systemd_invocation_id": "a" * 32,
+                "process_executable_sha256": "5" * 64,
+                "version": "nginx/1.24.0",
+                "server_name": "papers.example.org",
+                "upstream_port": deployment.backend_port,
+                "authenticated_gate_port": 18002,
+                "listener_scope": "loopback_only",
+                "active_config_sha256": "6" * 64,
+                "rendered_config_sha256": "6" * 64,
+                "configuration_tested": True,
+                "certificate_private_key_match": True,
+            },
+            "tls": {
+                "server_name": "papers.example.org",
+                "certificate_sha256": "7" * 64,
+                "subject_alt_name_match": True,
+                "chain_trusted": True,
+                "currently_valid": True,
+                "not_before": "2026-08-01T00:00:00.000000Z",
+                "not_after": "2027-08-01T00:00:00.000000Z",
+            },
+            "firewall": {
+                "manager": "nftables",
+                "ruleset_sha256": "8" * 64,
+                "backend_port": deployment.backend_port,
+                "backend_port_denied": True,
+                "authenticated_gate_port": 18002,
+                "authenticated_gate_port_denied": True,
+                "legacy_port_8765_denied": True,
+                "front_door_ports_allowed": [80, 443],
+            },
+        }
+
+    def lan_front_door_evidence(
+        self,
+        deployment: validate_closeout.DeploymentEvidence,
+        *,
+        postboot_challenge_sha256: str,
+    ) -> dict[str, object]:
+        quota = deployment.as_dict()["shared_quota"]
+        return {
+            "schema_version": 1,
+            "artifact_type": (
+                "where_papers_go_administrator_attested_lan_front_door"
+            ),
+            "recorded_at": "2026-08-31T12:00:45.000000Z",
+            "source_head": self.head,
+            "source_tree": "9" * 40,
+            "boot_id": deployment.host_boot["boot_id"],
+            "machine_id_sha256": deployment.host_boot[
+                "machine_id_sha256"
+            ],
+            "postboot_challenge_sha256": postboot_challenge_sha256,
+            "source": {
+                "machine_id_sha256": validate_closeout._machine_id_sha256(
+                    "b" * 32
+                ),
+                "ip": "172.22.13.156",
+                "lan_cidr": "172.22.13.0/24",
+            },
+            "target": {
+                "server_name": "papers.example.org",
+                "ip": "172.22.13.155",
+                "backend_port": deployment.backend_port,
+            },
+            "tls": {
+                "server_name": "papers.example.org",
+                "certificate_sha256": "7" * 64,
+                "subject_alt_name_match": True,
+                "chain_trusted": True,
+                "currently_valid": True,
+            },
+            "http": {
+                "redirect_status": 301,
+                "redirect_location": (
+                    "https://papers.example.org/api/health/ready"
+                ),
+                "unauthenticated_status": 401,
+                "authenticated_ui_status": 200,
+                "authenticated_ready_status": 200,
+                "authenticated_detailed_health_status": 200,
+                "ready_body": True,
+                "detailed_health_ready": True,
+                "rate_limited_status": 429,
+            },
+            "direct_backend": {
+                "backend_port": deployment.backend_port,
+                "backend_connect_succeeded": False,
+                "authenticated_gate_port": 18002,
+                "authenticated_gate_connect_succeeded": False,
+                "legacy_8765_connect_succeeded": False,
+            },
+            "provider_guard": {
+                "provider_workflows_requested": 0,
+                "valid_search_requests_submitted": 0,
+                "quota_before": quota,
+                "quota_after": quota,
+                "quota_unchanged": True,
+            },
+        }
+
+    def external_evidence(
+        self, name: str, public: dict[str, object]
+    ) -> validate_closeout.ExternalEvidence:
+        payload = json.dumps(public, sort_keys=True).encode()
+        return validate_closeout.ExternalEvidence(
+            path=self.root / name,
+            snapshot=validate_closeout.FileSnapshot(
+                1,
+                2 if name.startswith("host") else 3,
+                len(payload),
+                0o444,
+                4,
+                5,
+                hashlib.sha256(payload).hexdigest(),
+            ),
+            public=public,
         )
 
     @staticmethod
@@ -291,18 +481,7 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             "_verify_tracked_helpers": patch.object(
                 validate_closeout,
                 "_verify_tracked_helpers",
-                return_value={
-                    name: (
-                        "2" * 64
-                        if name == "offline_guard_sha256"
-                        else (
-                            self.python_runtime()["dependency_lock_sha256"]
-                            if name == "selected_wheel_lock_sha256"
-                            else "1" * 64
-                        )
-                    )
-                    for name in validate_closeout.TRACKED_IMPLEMENTATION_FILES
-                },
+                return_value=self.tracked_implementation(),
             ),
             "_run_full_test_suite": patch.object(
                 validate_closeout,
@@ -330,6 +509,20 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         }
         values.update(overrides)
         return tuple(values.values())
+
+    def tracked_implementation(self) -> dict[str, str]:
+        return {
+            name: (
+                "2" * 64
+                if name == "offline_guard_sha256"
+                else (
+                    self.python_runtime()["dependency_lock_sha256"]
+                    if name == "selected_wheel_lock_sha256"
+                    else "1" * 64
+                )
+            )
+            for name in validate_closeout.TRACKED_IMPLEMENTATION_FILES
+        }
 
     def create(self):
         with self._stack(self.create_patches()):
@@ -363,7 +556,15 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         summary_path = target / "summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         self.assertEqual(summary, payload)
-        self.assertEqual(summary["schema_version"], 5)
+        self.assertEqual(
+            validate_closeout.OUTPUT_PREFIX,
+            "final_delivery_validation_v5_",
+        )
+        self.assertEqual(
+            validate_closeout.LEGACY_OUTPUT_PREFIX,
+            "final_delivery_validation_v4_",
+        )
+        self.assertEqual(summary["schema_version"], 6)
         self.assertEqual(set(summary), validate_closeout.OUTPUT_KEYS)
         self.assertEqual(summary["git"]["head"], self.head)
         self.assertEqual(summary["git"]["tree"], "9" * 40)
@@ -385,6 +586,9 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             set(validate_closeout.REQUIRED_ARTIFACTS),
         )
         self.assertTrue(summary["deployment"]["lightrag_store_hashes_verified"])
+        self.assertTrue(summary["deployment"]["host_boot"]["linger"])
+        self.assertTrue(summary["deployment"]["shared_quota"]["ready"])
+        self.assertEqual(summary["deployment"]["backend_port"], 8001)
         self.assertTrue(summary["deployment"]["python_runtime"]["files_verified"])
         self.assertEqual(
             set(summary["deployment"]["python_runtime"]),
@@ -702,6 +906,28 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         self.assertTrue((failed[0] / "summary.json").is_file())
 
     def test_same_head_success_cannot_be_replayed_with_new_timestamp(self) -> None:
+        legacy_directory = self.output_root / (
+            validate_closeout.LEGACY_OUTPUT_PREFIX
+            + "20260831T115900000000Z-"
+            + self.head[:12]
+        )
+        legacy_directory.mkdir()
+        legacy_summary = legacy_directory / "summary.json"
+        legacy_summary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 5,
+                    "artifact_type": validate_closeout.OUTPUT_ARTIFACT_TYPE,
+                    "git": {"head": self.head},
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        legacy_summary.chmod(0o444)
+        legacy_directory.chmod(0o555)
+        legacy_bytes = legacy_summary.read_bytes()
         self.write_request()
         with self._stack(self.create_patches()):
             validate_closeout.create_closeout(
@@ -725,13 +951,14 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         with self._stack(second_patches):
             with self.assertRaisesRegex(
                 validate_closeout.CloseoutValidationError,
-                "already has a successful v4 closeout",
+                "already has a successful v5 closeout",
             ):
                 validate_closeout.create_closeout(
                     input_path=self.input_path,
                     project_root=self.root,
                     output_root=self.output_root,
                 )
+        self.assertEqual(legacy_summary.read_bytes(), legacy_bytes)
 
     def test_hidden_building_is_checked_before_atomic_publication(self) -> None:
         name = (
@@ -769,6 +996,23 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         base_target, _payload, _digest = self.create()
         base_summary = base_target / "summary.json"
         base_bytes = base_summary.read_bytes()
+        legacy_directory = self.output_root / (
+            validate_closeout.LEGACY_OUTPUT_PREFIX
+            + "20260831T115900000000Z-"
+            + self.head[:12]
+        )
+        legacy_directory.mkdir()
+        legacy_summary = legacy_directory / "summary.json"
+        legacy_summary.write_text('{"schema_version":5}\n', encoding="utf-8")
+        legacy_summary.chmod(0o444)
+        legacy_directory.chmod(0o555)
+        with self.assertRaisesRegex(
+            validate_closeout.CloseoutValidationError,
+            "canonical v5/schema-6 closeout",
+        ):
+            validate_closeout._load_base_closeout(
+                legacy_summary, output_root=self.output_root
+            )
         updated = self.deployment(
             pid=4321,
             start_ticks=5555,
@@ -800,7 +1044,15 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
             set(payload["base_closeout"]), validate_closeout.REPROOF_BASE_KEYS
         )
         self.assertEqual(payload["git"]["head"], self.head)
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(
+            validate_closeout.REPROOF_PREFIX,
+            "final_delivery_deployment_reproof_v3_",
+        )
+        self.assertEqual(
+            validate_closeout.LEGACY_REPROOF_PREFIX,
+            "final_delivery_deployment_reproof_v2_",
+        )
         self.assertEqual(payload["deployment"]["main_pid"], 4321)
         self.assertTrue(payload["publication"]["same_head_replay_supported"])
         self.assertEqual(
@@ -841,6 +1093,345 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         self.assertEqual(base_summary.read_bytes(), base_bytes)
         self.assertTrue(target.is_dir())
         self.assertTrue(second_target.is_dir())
+
+        strict_deployment = self.deployment(
+            pid=6789,
+            start_ticks=7777,
+            invocation_id="5" * 32,
+            boot_id="22222222-2222-4222-8222-222222222222",
+            uptime_seconds=90.0,
+            quota_revision=8,
+            quota_used=3,
+        )
+        tracked_implementation = self.tracked_implementation()
+        host_raw = self.host_front_door_evidence(
+            strict_deployment,
+            tracked_implementation=tracked_implementation,
+        )
+        host_public = validate_closeout._validate_host_front_door_evidence(
+            host_raw,
+            git_state=self.git_state(),
+            deployment=strict_deployment,
+            tracked_implementation=tracked_implementation,
+        )
+        host_record = self.external_evidence("host.json", host_public)
+        postboot_challenge = validate_closeout._postboot_challenge_sha256(
+            base_summary_sha256=_digest,
+            deployment=strict_deployment,
+            host_evidence_sha256=host_record.snapshot.sha256,
+        )
+        lan_raw = self.lan_front_door_evidence(
+            strict_deployment,
+            postboot_challenge_sha256=postboot_challenge,
+        )
+        lan_public = validate_closeout._validate_lan_front_door_evidence(
+            lan_raw,
+            git_state=self.git_state(),
+            deployment=strict_deployment,
+            host_evidence=host_public,
+            postboot_challenge_sha256=postboot_challenge,
+        )
+        lan_record = self.external_evidence("lan.json", lan_public)
+        strict_patches = self.create_patches(
+            _deployment_state=patch.object(
+                validate_closeout,
+                "_deployment_state",
+                return_value=strict_deployment,
+            ),
+            _load_host_acceptance_evidence=patch.object(
+                validate_closeout,
+                "_load_host_acceptance_evidence",
+                return_value=host_record,
+            ),
+            _load_lan_acceptance_evidence=patch.object(
+                validate_closeout,
+                "_load_lan_acceptance_evidence",
+                return_value=lan_record,
+            ),
+            _utc_stamp=patch.object(
+                validate_closeout,
+                "_utc_stamp",
+                return_value=(
+                    "2026-08-31T12:01:00.000000Z",
+                    "20260831T120100000000Z",
+                ),
+            ),
+        )
+        with self._stack(strict_patches):
+            strict_target, strict_payload, strict_digest = (
+                validate_closeout.create_post_reboot_reproof(
+                    base_summary_path=base_summary,
+                    host_front_door_evidence_path=host_record.path,
+                    lan_front_door_evidence_path=lan_record.path,
+                    project_root=self.root,
+                    output_root=self.output_root,
+                )
+            )
+        self.assertTrue(
+            strict_target.name.startswith(validate_closeout.STRICT_REPROOF_PREFIX)
+        )
+        self.assertEqual(strict_payload["schema_version"], 1)
+        self.assertEqual(
+            strict_payload["artifact_type"],
+            validate_closeout.STRICT_REPROOF_ARTIFACT_TYPE,
+        )
+        self.assertEqual(
+            strict_payload["status"],
+            "administrator_attested_lan_front_door_complete",
+        )
+        self.assertEqual(
+            strict_payload["reproof_kind"],
+            "administrator_attested_lan_front_door",
+        )
+        self.assertEqual(
+            set(strict_payload), validate_closeout.STRICT_REPROOF_OUTPUT_KEYS
+        )
+        self.assertTrue(strict_payload["restart_transition"]["boot_id_changed"])
+        self.assertTrue(strict_payload["restart_transition"]["quota_non_regression"])
+        self.assertEqual(
+            strict_payload["front_door"]["lan"]["http"]["rate_limited_status"],
+            429,
+        )
+        self.assertEqual(
+            strict_payload["front_door"]["postboot_challenge_sha256"],
+            postboot_challenge,
+        )
+        self.assertEqual(
+            hashlib.sha256((strict_target / "summary.json").read_bytes()).hexdigest(),
+            strict_digest,
+        )
+        strict_serialized = json.dumps(strict_payload, sort_keys=True)
+        for secret in (
+            "test-password",
+            "Authorization: Basic",
+            "nginx-proxy-test-token",
+            "PRIVATE KEY-----",
+        ):
+            self.assertNotIn(secret, strict_serialized)
+        self.assertEqual(base_summary.read_bytes(), base_bytes)
+
+        transition_failures = (
+            self.deployment(
+                pid=6789,
+                start_ticks=7777,
+                invocation_id="5" * 32,
+            ),
+            self.deployment(
+                pid=1234,
+                start_ticks=7777,
+                invocation_id="5" * 32,
+                boot_id="22222222-2222-4222-8222-222222222222",
+            ),
+            self.deployment(
+                pid=6789,
+                start_ticks=7777,
+                invocation_id="5" * 32,
+                boot_id="22222222-2222-4222-8222-222222222222",
+                quota_revision=8,
+                quota_used=2,
+            ),
+        )
+        different_host = self.deployment(
+            pid=6789,
+            start_ticks=7777,
+            invocation_id="5" * 32,
+            boot_id="22222222-2222-4222-8222-222222222222",
+            quota_revision=8,
+        )
+        different_host.host_boot["machine_id_sha256"] = "e" * 64
+        for invalid_deployment in (*transition_failures, different_host):
+            with self.subTest(invalid_transition=invalid_deployment.host_boot):
+                with self.assertRaisesRegex(
+                    validate_closeout.CloseoutValidationError,
+                    "strict post-reboot transition",
+                ):
+                    validate_closeout._post_reboot_transition(
+                        base_deployment=_payload["deployment"],
+                        current=invalid_deployment,
+                    )
+
+        same_revision_changed = self.shared_quota(revision=7, used=3)
+        same_revision_changed["copies"]["primary"]["sha256"] = "e" * 64
+        same_revision_changed["copies"]["backup"]["sha256"] = "e" * 64
+        self.assertTrue(
+            validate_closeout._quota_non_regressed(
+                self.shared_quota(revision=7, used=2),
+                self.shared_quota(revision=7, used=2),
+            )
+        )
+        self.assertFalse(
+            validate_closeout._quota_non_regressed(
+                self.shared_quota(revision=7, used=2),
+                same_revision_changed,
+            )
+        )
+        self.assertTrue(
+            validate_closeout._quota_non_regressed(
+                self.shared_quota(revision=7, used=2),
+                self.shared_quota(revision=8, used=3),
+            )
+        )
+
+        invalid_lan_documents = []
+        for path, value in (
+            (("http", "redirect_status"), 302),
+            (("http", "unauthenticated_status"), 200),
+            (("http", "rate_limited_status"), 200),
+            (("tls", "chain_trusted"), False),
+            (("direct_backend", "backend_connect_succeeded"), True),
+            (("direct_backend", "authenticated_gate_connect_succeeded"), True),
+            (("direct_backend", "authenticated_gate_port"), 18003),
+            (("provider_guard", "provider_workflows_requested"), 1),
+            (("source_head",), "e" * 40),
+            (("source_tree",), "e" * 40),
+            (("boot_id",), "11111111-1111-4111-8111-111111111111"),
+            (("machine_id_sha256",), "e" * 64),
+            (
+                ("source", "machine_id_sha256"),
+                strict_deployment.host_boot["machine_id_sha256"],
+            ),
+            (("postboot_challenge_sha256",), "d" * 64),
+            (("recorded_at",), "2026-08-31T12:00:29.000000Z"),
+        ):
+            candidate = json.loads(json.dumps(lan_raw))
+            if len(path) == 1:
+                candidate[path[0]] = value
+            else:
+                candidate[path[0]][path[1]] = value
+            invalid_lan_documents.append(candidate)
+        for invalid_lan in invalid_lan_documents:
+            with self.subTest(invalid_lan=invalid_lan):
+                with self.assertRaises(validate_closeout.CloseoutValidationError):
+                    validate_closeout._validate_lan_front_door_evidence(
+                        invalid_lan,
+                        git_state=self.git_state(),
+                        deployment=strict_deployment,
+                        host_evidence=host_public,
+                        postboot_challenge_sha256=postboot_challenge,
+                    )
+
+        invalid_host_documents = []
+        for path, value in (
+            (("nginx", "active_config_sha256"), "a" * 64),
+            (("nginx", "template_sha256"), "a" * 64),
+            (("nginx", "renderer_sha256"), "a" * 64),
+            (
+                ("nginx", "authenticated_gate_port"),
+                strict_deployment.backend_port,
+            ),
+            (("nginx", "authenticated_gate_port"), 1023),
+            (("nginx", "authenticated_gate_port"), 8765),
+            (("nginx", "listener_scope"), "lan"),
+            (("tls", "currently_valid"), False),
+            (("firewall", "backend_port_denied"), False),
+            (("firewall", "authenticated_gate_port_denied"), False),
+        ):
+            candidate = json.loads(json.dumps(host_raw))
+            candidate[path[0]][path[1]] = value
+            invalid_host_documents.append(candidate)
+        for invalid_host in invalid_host_documents:
+            with self.subTest(invalid_host=invalid_host):
+                with self.assertRaises(validate_closeout.CloseoutValidationError):
+                    validate_closeout._validate_host_front_door_evidence(
+                        invalid_host,
+                        git_state=self.git_state(),
+                        deployment=strict_deployment,
+                        tracked_implementation=tracked_implementation,
+                    )
+
+        if os.geteuid() != 0:
+            untrusted = self.root / "untrusted-front-door.json"
+            untrusted.write_text("{}\n", encoding="utf-8")
+            untrusted.chmod(0o444)
+            with self.assertRaisesRegex(
+                validate_closeout.CloseoutValidationError, "root-owned"
+            ):
+                validate_closeout._load_root_owned_evidence(
+                    untrusted, validator=lambda value: dict(value)
+                )
+
+        later_uptime = self.deployment(uptime_seconds=10_001.0)
+        self.assertTrue(
+            validate_closeout._deployment_observations_match(
+                self.deployment(), later_uptime
+            )
+        )
+        self.assertFalse(
+            validate_closeout._deployment_observations_match(
+                later_uptime, self.deployment()
+            )
+        )
+
+        drifted_host_record = validate_closeout.ExternalEvidence(
+            path=host_record.path,
+            snapshot=validate_closeout.FileSnapshot(
+                host_record.snapshot.device,
+                host_record.snapshot.inode,
+                host_record.snapshot.size,
+                host_record.snapshot.mode,
+                host_record.snapshot.mtime_ns + 1,
+                host_record.snapshot.ctime_ns + 1,
+                host_record.snapshot.sha256,
+            ),
+            public=host_record.public,
+        )
+        drift_patches = self.create_patches(
+            _deployment_state=patch.object(
+                validate_closeout,
+                "_deployment_state",
+                return_value=strict_deployment,
+            ),
+            _load_host_acceptance_evidence=patch.object(
+                validate_closeout,
+                "_load_host_acceptance_evidence",
+                side_effect=[host_record, drifted_host_record],
+            ),
+            _load_lan_acceptance_evidence=patch.object(
+                validate_closeout,
+                "_load_lan_acceptance_evidence",
+                return_value=lan_record,
+            ),
+            _utc_stamp=patch.object(
+                validate_closeout,
+                "_utc_stamp",
+                return_value=(
+                    "2026-08-31T12:02:00.000000Z",
+                    "20260831T120200000000Z",
+                ),
+            ),
+        )
+        with self._stack(drift_patches):
+            with self.assertRaisesRegex(
+                validate_closeout.CloseoutValidationError,
+                "front-door evidence changed",
+            ):
+                validate_closeout.create_post_reboot_reproof(
+                    base_summary_path=base_summary,
+                    host_front_door_evidence_path=host_record.path,
+                    lan_front_door_evidence_path=lan_record.path,
+                    project_root=self.root,
+                    output_root=self.output_root,
+                )
+        self.assertFalse(
+            (
+                self.output_root
+                / (
+                    validate_closeout.STRICT_REPROOF_PREFIX
+                    + "20260831T120200000000Z-"
+                    + self.head[:12]
+                )
+            ).exists()
+        )
+        self.assertTrue(
+            any(
+                path.name.startswith(
+                    "."
+                    + validate_closeout.STRICT_REPROOF_PREFIX
+                    + "20260831T120200000000Z-"
+                )
+                for path in self.output_root.glob(".*.failed-*")
+            )
+        )
 
     def test_deployment_probe_requires_true_lightrag_and_one_process_identity(self) -> None:
         test_home = self.root / "passwd-home"
@@ -905,6 +1496,13 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                 "file_count": 185,
                 "process_pid": 1234,
                 "process_start_ticks": 9876,
+            },
+            "config": {
+                "search_quota_audit": {
+                    **self.shared_quota(),
+                    "required": True,
+                    "status_counts": {"available": 2},
+                }
             },
         }
         python_identity = self.python_runtime(home=test_home)
@@ -1433,6 +2031,16 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
                 "_worker_process_snapshot",
                 return_value=worker_snapshot,
             ),
+            patch.object(
+                validate_closeout,
+                "_host_boot_state",
+                return_value={
+                    "boot_id": "11111111-1111-4111-8111-111111111111",
+                    "machine_id_sha256": "3" * 64,
+                    "uptime_seconds": 10_000.0,
+                    "linger": True,
+                },
+            ),
         ):
             new = validate_closeout._deployment_state(
                 mutable_project, self.git_state()
@@ -1663,11 +2271,40 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         self.assertEqual(new.main_pid, 1234)
         self.assertEqual(new.process_start_ticks, 9876)
         self.assertEqual(new.listener_scope, "loopback_only")
+        self.assertEqual(new.backend_port, 8001)
+        self.assertTrue(new.host_boot["linger"])
+        self.assertEqual(new.shared_quota["state_revision"], 7)
+        self.assertEqual(new.shared_quota["copies"]["primary"]["mode"], "0600")
         self.assertEqual(new.source_head, self.head)
         self.assertEqual(new.lightrag_manifest_sha256, "b" * 64)
         self.assertEqual(new.python_runtime, python_identity)
         self.assertEqual(new.worker_process["pid"], worker_pid)
         self.assertEqual(new.worker_process["parent_pid"], 1234)
+        fixed_host_values = {
+            validate_closeout.BOOT_ID_PATH: (
+                "11111111-1111-4111-8111-111111111111"
+            ),
+            validate_closeout.MACHINE_ID_PATH: "a" * 32,
+            validate_closeout.UPTIME_PATH: "123.45 67.89",
+        }
+        with (
+            patch.object(
+                validate_closeout,
+                "_read_fixed_ascii",
+                side_effect=lambda path, maximum_bytes: fixed_host_values[path],
+            ),
+            patch.object(validate_closeout, "_linger_enabled", return_value=True),
+        ):
+            boot_state = validate_closeout._host_boot_state()
+        self.assertEqual(boot_state["uptime_seconds"], 123.45)
+        self.assertEqual(len(boot_state["machine_id_sha256"]), 64)
+        self.assertNotEqual(boot_state["machine_id_sha256"], "a" * 32)
+        with self.assertRaisesRegex(
+            validate_closeout.CloseoutValidationError, "Linger=yes"
+        ):
+            validate_closeout._validate_host_boot_public(
+                {**boot_state, "linger": False}, context="test host boot"
+            )
         base_health["runtime"]["lightrag_store_verification"][
             "manifest_sha256"
         ] = None

@@ -180,7 +180,7 @@ the installed predecessor and must not be copied into a new render; the bounded
 direct fallback is `172.22.13.0/24`. The successor immutable-source/runtime
 unit, process closeout proof, and append-only deployment-reproof workflow are
 specified later in this section. The immutable v3 closeout proves only the
-predecessor; no successor v4 closeout exists before merge and deployment.
+predecessor; no successor closeout exists before merge and deployment.
 
 The audited production user unit is
 `~/.config/systemd/user/where-papers-go.service`. It is `enabled`, `active`,
@@ -1005,10 +1005,10 @@ schema-2 request contains only its fixed identity, expected 40-hex HEAD, fixed
 eight fixed aggregate artifacts. Paths, hashes, sizes and mode-`0444`
 requirements remain pinned in tracked code; the request cannot self-report
 tests, deployment state, provider calls, group names or output fields. A
-schema-5 base summary is published under
-`benchmark_artifacts/final_delivery_validation_v4_<UTC>-<HEAD>/`. Historical
-v2/v3 directories remain byte-for-byte preserved and do not block the successor
-format.
+schema-6 base summary is published under
+`benchmark_artifacts/final_delivery_validation_v5_<UTC>-<HEAD>/`. Historical
+v2/v3/v4 directories remain byte-for-byte preserved and do not block the
+successor format.
 
 The tracked runner now emits schema 2. In addition to the complete test-ID
 fingerprint, it reports only the skipped-ID count/fingerprint and the fixed
@@ -1076,9 +1076,10 @@ before accepting a completed worker result. The ignored frozen model venv
 remains only the isolated 6/6 test interpreter, never the service launcher.
 
 Closeout deployment validation is read-only and discovers host/port from the
-selected non-secret `/proc/<MainPID>/environ` fields. V4 rejects wildcard
-listeners: the application must be loopback-only behind the authenticated TLS
-proxy. It binds the systemd MainPID and InvocationID, race-resistant `/proc`
+selected non-secret `/proc/<MainPID>/environ` fields. The successor rejects
+wildcard listeners: the application must be loopback-only behind the
+authenticated TLS proxy. It binds the systemd MainPID and InvocationID,
+race-resistant `/proc`
 start/executable/cwd/argv/environment evidence, current Git HEAD/tree and source
 release, independently revalidates the complete Python runtime and tracked
 selected-wheel lock, verifies the worker PPid/PID/start/executable/argv/cwd/
@@ -1101,10 +1102,17 @@ but a later authorized restart or redeployment of the same HEAD is proved
 without rewriting it by running
 `python -m scripts.validate_closeout --post-deployment-from BASE/summary.json`.
 This creates an independent, append-only
-`final_delivery_deployment_reproof_v2_<UTC>-<HEAD>/` schema-2 record bound to
+`final_delivery_deployment_reproof_v3_<UTC>-<HEAD>/` schema-3 record bound to
 the base summary hash and the newly observed deployment identity. The validator
 itself does not restart the service, execute formal-500/human evaluation, or
 request a live Search/LLM/embedding workflow.
+
+The not-yet-deployed strict candidate is separate from that generic record. It
+publishes a schema-1
+`final_delivery_administrator_attested_lan_front_door_reproof_v1_<UTC>-<HEAD>/`
+with its own administrator-attested artifact type, current-boot/source/challenge
+bindings and explicit unsigned-administrator threat boundary; it is not an
+independent remote measurement or a claim that the successor has been deployed.
 
 The 2026-08-30 private-generation predecessor subsequently passed an authorized
 host unit restart and forced-process-termination recovery with `ready=true`,

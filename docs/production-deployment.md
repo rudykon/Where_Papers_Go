@@ -670,13 +670,18 @@ invocation is not an acceptance check.
 
 ## Primary HTTPS/auth reverse proxy (administrator step)
 
-The supported primary topology is Nginx HTTPS/Basic Auth on `:443` proxying to
-the loopback-only application on `127.0.0.1:8001`. The rendered configuration
-contains the private backend Bearer and is therefore root-owned mode `0600`.
-Nginx is not a Python dependency. Administrator installation of Nginx and
-`htpasswd`, working DNS, a trusted certificate chain and matching key, and
-host-firewall rules are prerequisites. The firewall exposes only the intended
-HTTP/HTTPS front door and never backend port 8001.
+The supported primary topology is Nginx HTTPS/Basic Auth on `:443`, an Nginx
+authenticated-user gate bound only to `127.0.0.1:18002`, and the loopback-only
+application on `127.0.0.1:8001`. The renderer rejects a privileged gate port or
+one above 65535, and rejects 80, 443, the legacy public port 8765, or the
+backend port. The rendered
+configuration contains the private backend Bearer and is therefore root-owned
+mode `0600`. Nginx is not a Python dependency. Administrator installation of
+Nginx and `htpasswd`, working DNS, a trusted certificate chain and matching key,
+and host-firewall rules are prerequisites. The firewall exposes only the
+intended HTTP/HTTPS front door and never backend port 8001 or authenticated gate
+port 18002. The latter must remain a loopback listener, not merely depend on a
+firewall rule.
 
 First identify the real Nginx worker account (Ubuntu packages normally use
 `www-data`). Create a bcrypt password file interactively; make its directory
@@ -727,6 +732,7 @@ python -m scripts.manage_deployment render-nginx \
   --tls-certificate /etc/nginx/wpg/fullchain.pem \
   --tls-certificate-key /etc/nginx/wpg/privkey.pem \
   --htpasswd /etc/nginx/wpg/htpasswd \
+  --authenticated-gate-port 18002 \
   --backend-api-token-file /home/wangrj/.config/where-papers-go/backend.token
 python -m scripts.manage_deployment render-nginx \
   --output ~/.local/state/where-papers-go/nginx/where-papers-go.conf.candidate \
@@ -734,6 +740,7 @@ python -m scripts.manage_deployment render-nginx \
   --tls-certificate /etc/nginx/wpg/fullchain.pem \
   --tls-certificate-key /etc/nginx/wpg/privkey.pem \
   --htpasswd /etc/nginx/wpg/htpasswd \
+  --authenticated-gate-port 18002 \
   --backend-api-token-file /home/wangrj/.config/where-papers-go/backend.token \
   --defer-privileged-input-validation --apply
 ```
@@ -855,17 +862,65 @@ WPG_NGINX_BIN=/usr/sbin/nginx \
 ```
 
 The checked-in proxy applies Basic Auth to every HTTPS path, including minimal
-and detailed health. It limits Search requests by direct client address, caps
-each address at two concurrent Search requests with HTTP 429 on saturation,
-uses an exact 200,000-byte body ceiling, and bounds header, body and keepalive
-idle time. Its JSON access record includes the authenticated username but never
-the Authorization value or request body.
+and detailed health. A server-level direct-client-IP authentication-attempt
+bucket therefore covers every HTTPS URI, including paths that would otherwise
+return 404: `30r/m` with burst 20 and a 16-request concurrency cap. This permits
+the UI's small initial asset fan-out while placing a finite bound on password
+verification from one address; authenticated requests also count toward this
+defence-in-depth bucket.
+
+Both `/api/search` and `/api/search/stream` are additionally limited by direct
+client address and by the Basic Auth username: each Search dimension has its own
+`6r/m` request bucket with burst 2 and its own two-request concurrency cap, with
+HTTP 429 on any limit. The original Search address-zone names remain unchanged
+for configuration continuity. Nginx runs request and connection limiting in
+`PREACCESS`, before Basic Auth in `ACCESS`. Because location-level limit
+directives disable inheritance, the two exact public Search locations explicitly
+repeat the global authentication-attempt request and connection zones before
+adding the stricter Search address zones. Failed-password work on every HTTPS
+path is thus bounded by address, while failed authentication cannot consume a
+claimed user's authenticated Search bucket.
+
+After successful Basic Auth, the public location creates a new HTTP request to
+the loopback-only gate. It overwrites client-supplied internal headers with the
+validated `$remote_user`, original direct-client address, and a private token,
+and removes the Basic Authorization header. The gate disables access logging
+and, in `REWRITE`, returns 403 unless both the private token matches and the
+authenticated username is nonempty. Only then does its fresh request enter
+`PREACCESS`, where the user-keyed request and connection limits run, before it
+clears all three internal headers, installs the backend Bearer, and proxies to
+port 8001. A direct local call to port 18002 therefore cannot reach either the
+user bucket or backend without the private token.
+
+A real second HTTP request is required: standard Nginx records a passed limit
+on `r->main`, and the same module skips subsequent invocations during a
+same-request internal redirect. The phase assignments are documented in the
+official [Nginx development guide](https://nginx.org/en/docs/dev/development_guide.html#http_phases),
+and the status guard is visible in the open-source
+[`ngx_http_limit_req_module`](https://github.com/nginx/nginx/blob/master/src/http/modules/ngx_http_limit_req_module.c).
+Both `proxy_pass` directives omit a URI, preserving the original method, body,
+ordinary/streaming path, and query string across both hops. Both hops disable
+response buffering for streaming, retain the 905-second read timeout, use the
+exact 200,000-byte body ceiling, and bound header, body, send, and keepalive
+idle time. The public JSON access record includes the authenticated username but
+never Authorization, private internal headers, or request bodies; the internal
+gate writes no access record.
 
 After restart, confirm the selected backend port remains loopback-only and
 verify HTTP-to-HTTPS redirect, unauthenticated 401, authenticated UI plus both
-health responses, 413 body rejection, 429 request and concurrency limiting,
-streaming, and both audit logs. Verify the production certificate through a
-client trust store or explicit trusted CA; never use an insecure TLS bypass:
+health responses, 413 body rejection, both user- and address-keyed 429 request
+and concurrency limiting on the ordinary and streaming Search paths, streaming,
+and both audit logs. Same-address wrong-password attempts alternating between a
+health URI and a nonexistent URI must eventually reach HTTP 429 through the
+global authentication-attempt bucket. Same-address Search attempts with distinct
+claimed users must also reach HTTP 429 through the stricter Search IP bucket.
+Wrong-password attempts naming one real user from otherwise fresh distinct
+addresses must remain 401 and must not reduce that user's subsequent
+authenticated allowance. Confirm with
+`ss -ltnp` that both 18002 and 8001 listen only on `127.0.0.1`, and confirm from
+a separate LAN client that neither port is reachable. Verify the production
+certificate through a client trust store or explicit trusted CA; never use an
+insecure TLS bypass:
 
 ```bash
 curl --fail --cacert /absolute/path/to/trusted-ca.pem \
@@ -882,7 +937,7 @@ operations and must be recorded separately.
 
 The installed predecessor may remain on `0.0.0.0:8765` while Nginx, certificate,
 htpasswd, and firewall prerequisites are unavailable. It has no TLS or
-front-door Basic Auth and is not eligible for the successor v4 closeout. The
+front-door Basic Auth and is not eligible for the successor v5 closeout. The
 hardened production unit cannot be switched into this mode through
 `runtime.env`, because it consumes no `EnvironmentFile` and pins loopback/auth
 settings directly. Do not restart or present the successor as deployed until
@@ -1145,3 +1200,309 @@ Authenticated HTTPS client latency, error rate, certificate path, proxy limits,
 and any authorized real Search/LLM path require a separate production
 acceptance run. Do not trigger Search merely to make this monitor appear
 complete.
+
+## Strict post-reboot administrator attestation
+
+Create the successor base closeout before the maintenance-window reboot. Its
+schema-6 deployment record includes the backend port, boot UUID, a
+domain-separated SHA-256 of the machine identity (never the machine ID), host
+uptime, `loginctl` linger state, and the sanitized replicated Search-quota
+revision/capacity/copy hashes in addition to the service PID/start/invocation,
+loopback listener, immutable source/runtime, health, and six-file bindings.
+
+After a physical reboot, the service is ready, and the administrator has
+recorded the front-door checks below, publish a separate immutable attestation
+without replacing the base or an earlier same-HEAD reproof:
+
+```bash
+python -m scripts.validate_closeout \
+  --post-reboot-from benchmark_artifacts/final_delivery_validation_v5_BASE/summary.json \
+  --host-front-door-evidence /var/lib/where-papers-go/evidence/host-front-door.json \
+  --lan-front-door-evidence /var/lib/where-papers-go/evidence/lan-front-door.json
+```
+
+Replace `BASE` with the actual immutable base directory. The command requires
+the same clean commit/tree and machine, a changed boot UUID, service PID,
+process-start tick and systemd invocation ID, non-regressed shared quota, and
+the complete current loopback/source/runtime/six-file deployment contract. It
+publishes through a hidden `.building` directory followed by a no-overwrite
+atomic rename with status
+`administrator_attested_lan_front_door_complete` and kind
+`administrator_attested_lan_front_door`. This strict record has schema 1 and
+artifact type
+`where_papers_go_administrator_attested_lan_front_door_reproof`; it does not
+reuse the generic reproof schema or artifact type. The older same-boot
+deployment observation remains available as `--post-deployment-from` and now
+publishes `final_delivery_deployment_reproof_v3_*` with schema 3; it is not
+proof of reboot or of the front door. Existing generic v2 records are legacy.
+
+The two evidence files use exact schema version 1 and these mandatory groups:
+
+The same authenticated-gate port must appear in host Nginx, host firewall and
+LAN direct-connect evidence. It must be in `1024..65535`, differ from the
+backend port and ports 80/443/8765, listen only on loopback, and be denied from
+the LAN.
+
+- `host-front-door.json`: an administrator-owned host collector records the
+  current Git head/tree and boot/machine binding; the active and enabled Nginx
+  binary, main PID, systemd invocation, live executable hash, version, tracked
+  template/renderer hashes, server/upstream, the separate authenticated-gate
+  port with `loopback_only` listener scope, and reviewed-versus-active
+  configuration hashes; certificate hash, SAN/trust/validity and key-match
+  result; and the firewall manager, ruleset hash, ports 80/443 allowed, with
+  the backend, authenticated-gate and legacy port 8765 all denied externally.
+- `lan-front-door.json`: a collector running on a different host in the same
+  private IPv4 CIDR records current Git head/tree, deployment boot/machine
+  identity, the post-boot challenge and source/target identity. Its nested
+  `source.machine_id_sha256` is the LAN machine's `/etc/machine-id` hashed with
+  the same `where-papers-go-machine-id-v1\0` domain as the deployment host and
+  must differ from the deployment machine hash. It also records a trusted TLS
+  handshake to the same certificate; HTTP 301, unauthenticated 401,
+  authenticated UI/ready/detailed-health 200, and rate-limit 429 results;
+  failure to connect directly to the backend, authenticated gate and port
+  8765; and identical sanitized quota snapshots before/after with zero
+  Search/provider workflows.
+
+Start with this exact-key host JSON skeleton. Every `REPLACE_WITH_*` value must
+be replaced; do not add keys:
+
+```json
+{
+  "schema_version": 1,
+  "artifact_type": "where_papers_go_administrator_attested_host_front_door",
+  "recorded_at": "REPLACE_WITH_UTC_YYYY-MM-DDTHH:MM:SS.ffffffZ",
+  "source_head": "REPLACE_WITH_40_LOWER_HEX_HEAD",
+  "source_tree": "REPLACE_WITH_40_LOWER_HEX_TREE",
+  "boot_id": "REPLACE_WITH_CURRENT_BOOT_UUID",
+  "machine_id_sha256": "REPLACE_WITH_DEPLOYMENT_MACHINE_HASH",
+  "nginx": {
+    "active": true,
+    "enabled": true,
+    "binary_path": "/usr/sbin/nginx",
+    "binary_sha256": "REPLACE_WITH_64_LOWER_HEX_NGINX_BINARY_HASH",
+    "template_sha256": "REPLACE_WITH_64_LOWER_HEX_TRACKED_TEMPLATE_HASH",
+    "renderer_sha256": "REPLACE_WITH_64_LOWER_HEX_TRACKED_RENDERER_HASH",
+    "main_pid": 1,
+    "systemd_invocation_id": "REPLACE_WITH_32_LOWER_HEX_NGINX_INVOCATION",
+    "process_executable_sha256": "REPLACE_WITH_SAME_NGINX_BINARY_HASH",
+    "version": "nginx/1.0.0",
+    "server_name": "papers.invalid",
+    "upstream_port": 8001,
+    "authenticated_gate_port": 18002,
+    "listener_scope": "loopback_only",
+    "active_config_sha256": "REPLACE_WITH_64_LOWER_HEX_ACTIVE_CONFIG_HASH",
+    "rendered_config_sha256": "REPLACE_WITH_SAME_ACTIVE_CONFIG_HASH",
+    "configuration_tested": true,
+    "certificate_private_key_match": true
+  },
+  "tls": {
+    "server_name": "papers.invalid",
+    "certificate_sha256": "REPLACE_WITH_64_LOWER_HEX_CERTIFICATE_HASH",
+    "subject_alt_name_match": true,
+    "chain_trusted": true,
+    "currently_valid": true,
+    "not_before": "REPLACE_WITH_UTC_YYYY-MM-DDTHH:MM:SS.ffffffZ",
+    "not_after": "REPLACE_WITH_UTC_YYYY-MM-DDTHH:MM:SS.ffffffZ"
+  },
+  "firewall": {
+    "manager": "nftables",
+    "ruleset_sha256": "REPLACE_WITH_64_LOWER_HEX_RULESET_HASH",
+    "backend_port": 8001,
+    "backend_port_denied": true,
+    "authenticated_gate_port": 18002,
+    "authenticated_gate_port_denied": true,
+    "legacy_port_8765_denied": true,
+    "front_door_ports_allowed": [80, 443]
+  }
+}
+```
+
+Hash `/etc/machine-id` on each machine without copying its raw value into an
+artifact. Run this once on the deployment host and once on the LAN probe host;
+the two results must differ:
+
+```bash
+python -c 'import hashlib,pathlib; value=pathlib.Path("/etc/machine-id").read_text(encoding="ascii").strip(); assert len(value)==32 and all(c in "0123456789abcdef" for c in value); print(hashlib.sha256(b"where-papers-go-machine-id-v1\0"+value.encode("ascii")).hexdigest())'
+```
+
+Compute the domain-separated challenge only after the host JSON is final. Its
+ordered inputs are the base-summary SHA-256, current boot UUID, current systemd
+invocation ID, and the host JSON SHA-256, each NUL-terminated after the fixed
+`where-papers-go-postboot-lan-challenge-v1` domain. The LAN timestamp must be
+at or after the host timestamp. These bindings reject accidental reuse of a
+pre-reboot LAN record; they are not a remote signature.
+
+The following is a copyable challenge calculation. It prints the value to put
+in `postboot_challenge_sha256`; transmit that value and the host certificate
+hash to the other LAN machine, not credentials:
+
+```bash
+WPG_REPROOF_BASE=benchmark_artifacts/final_delivery_validation_v5_BASE/summary.json
+WPG_HOST_JSON=/absolute/staging/host-front-door.json
+WPG_BASE_SHA256=$(sha256sum "$WPG_REPROOF_BASE" | cut -d' ' -f1)
+WPG_BOOT_ID=$(tr -d '\n' </proc/sys/kernel/random/boot_id)
+WPG_INVOCATION_ID=$(systemctl --user show where-papers-go.service -p InvocationID --value)
+WPG_HOST_SHA256=$(sha256sum "$WPG_HOST_JSON" | cut -d' ' -f1)
+python - "$WPG_BASE_SHA256" "$WPG_BOOT_ID" "$WPG_INVOCATION_ID" "$WPG_HOST_SHA256" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+digest.update(b"where-papers-go-postboot-lan-challenge-v1\0")
+for value in sys.argv[1:]:
+    digest.update(value.encode("ascii"))
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+```
+
+On the other LAN machine, fill this complete exact-key LAN JSON skeleton after
+the host JSON and challenge exist. Both quota objects must be copied exactly
+from the sanitized current health quota and must remain identical:
+
+```json
+{
+  "schema_version": 1,
+  "artifact_type": "where_papers_go_administrator_attested_lan_front_door",
+  "recorded_at": "REPLACE_WITH_LATER_UTC_YYYY-MM-DDTHH:MM:SS.ffffffZ",
+  "source_head": "REPLACE_WITH_SAME_40_LOWER_HEX_HEAD",
+  "source_tree": "REPLACE_WITH_SAME_40_LOWER_HEX_TREE",
+  "boot_id": "REPLACE_WITH_DEPLOYMENT_BOOT_UUID",
+  "machine_id_sha256": "REPLACE_WITH_DEPLOYMENT_MACHINE_HASH",
+  "postboot_challenge_sha256": "REPLACE_WITH_64_LOWER_HEX_CHALLENGE",
+  "source": {
+    "machine_id_sha256": "REPLACE_WITH_DIFFERENT_LAN_MACHINE_HASH",
+    "ip": "REPLACE_WITH_PRIVATE_LAN_PROBE_IP",
+    "lan_cidr": "REPLACE_WITH_STRICT_PRIVATE_IPV4_CIDR"
+  },
+  "target": {
+    "server_name": "papers.invalid",
+    "ip": "REPLACE_WITH_PRIVATE_LAN_DEPLOYMENT_IP",
+    "backend_port": 8001
+  },
+  "tls": {
+    "server_name": "papers.invalid",
+    "certificate_sha256": "REPLACE_WITH_SAME_64_LOWER_HEX_CERTIFICATE_HASH",
+    "subject_alt_name_match": true,
+    "chain_trusted": true,
+    "currently_valid": true
+  },
+  "http": {
+    "redirect_status": 301,
+    "redirect_location": "https://papers.invalid/api/health/ready",
+    "unauthenticated_status": 401,
+    "authenticated_ui_status": 200,
+    "authenticated_ready_status": 200,
+    "authenticated_detailed_health_status": 200,
+    "ready_body": true,
+    "detailed_health_ready": true,
+    "rate_limited_status": 429
+  },
+  "direct_backend": {
+    "backend_port": 8001,
+    "backend_connect_succeeded": false,
+    "authenticated_gate_port": 18002,
+    "authenticated_gate_connect_succeeded": false,
+    "legacy_8765_connect_succeeded": false
+  },
+  "provider_guard": {
+    "provider_workflows_requested": 0,
+    "valid_search_requests_submitted": 0,
+    "quota_before": {
+      "ready": true,
+      "state_revision": 0,
+      "configuration_current": true,
+      "replicated_revision": true,
+      "used": 0,
+      "remaining": 1,
+      "total_capacity": 1,
+      "configured_keyset_sha256": "REPLACE_WITH_64_LOWER_HEX_KEYSET_HASH",
+      "copies": {
+        "primary": {
+          "present": true,
+          "valid": true,
+          "revision": 0,
+          "sha256": "REPLACE_WITH_64_LOWER_HEX_QUOTA_COPY_HASH",
+          "bytes": 1,
+          "mode": "0600"
+        },
+        "backup": {
+          "present": true,
+          "valid": true,
+          "revision": 0,
+          "sha256": "REPLACE_WITH_SAME_QUOTA_COPY_HASH",
+          "bytes": 1,
+          "mode": "0600"
+        }
+      }
+    },
+    "quota_after": {
+      "ready": true,
+      "state_revision": 0,
+      "configuration_current": true,
+      "replicated_revision": true,
+      "used": 0,
+      "remaining": 1,
+      "total_capacity": 1,
+      "configured_keyset_sha256": "REPLACE_WITH_SAME_64_LOWER_HEX_KEYSET_HASH",
+      "copies": {
+        "primary": {
+          "present": true,
+          "valid": true,
+          "revision": 0,
+          "sha256": "REPLACE_WITH_SAME_64_LOWER_HEX_QUOTA_COPY_HASH",
+          "bytes": 1,
+          "mode": "0600"
+        },
+        "backup": {
+          "present": true,
+          "valid": true,
+          "revision": 0,
+          "sha256": "REPLACE_WITH_SAME_QUOTA_COPY_HASH",
+          "bytes": 1,
+          "mode": "0600"
+        }
+      }
+    },
+    "quota_unchanged": true
+  }
+}
+```
+
+The required order is: finalize the host staging JSON and compute its SHA-256;
+compute the challenge; have the other LAN machine perform its checks and
+return the completed LAN JSON; verify neither file changed; only then install
+both under fresh, previously absent names as root-owned mode-`0444` files. For
+example:
+
+```bash
+WPG_EVIDENCE_DIR=/var/lib/where-papers-go/evidence
+WPG_HOST_STAGING=/absolute/staging/host-front-door.json
+WPG_LAN_STAGING=/absolute/staging/lan-front-door.json
+WPG_HOST_INSTALLED="$WPG_EVIDENCE_DIR/host-front-door-REPLACE_UTC.json"
+WPG_LAN_INSTALLED="$WPG_EVIDENCE_DIR/lan-front-door-REPLACE_UTC.json"
+sudo install -d -o root -g root -m 0755 "$WPG_EVIDENCE_DIR"
+sudo test ! -e "$WPG_HOST_INSTALLED"
+sudo test ! -e "$WPG_LAN_INSTALLED"
+sudo install -o root -g root -m 0444 "$WPG_HOST_STAGING" "$WPG_HOST_INSTALLED"
+sudo install -o root -g root -m 0444 "$WPG_LAN_STAGING" "$WPG_LAN_INSTALLED"
+sha256sum "$WPG_HOST_STAGING" "$WPG_HOST_INSTALLED"
+sha256sum "$WPG_LAN_STAGING" "$WPG_LAN_INSTALLED"
+```
+
+Each installed JSON must have a canonical absolute path with no symlink
+component, be a regular file with link count 1, and be at most 256 KiB. Both
+canonical UTC timestamps must be later than the base, not in the future, and
+no more than two hours old when the command publishes. Never
+put Basic Auth passwords, Bearer tokens, API keys, private keys, response
+bodies, full Nginx configuration, or other secrets in either file; record only
+the required status values and hashes.
+
+This validator observes and binds evidence; it does not grant the deployment
+authority needed to reboot, install/reload Nginx, alter certificates or
+firewall rules, or install root-owned evidence. Those remain the external host
+administrator's boundary. The LAN JSON must attest that its checks ran on the
+other LAN machine, not a loopback probe or the deployment host. Because neither
+JSON has a fixed collector or remote signature, root ownership, hashes and the
+challenge do not prove collector identity, measurement truth or independent
+origin; the published result deliberately remains an administrator attestation.

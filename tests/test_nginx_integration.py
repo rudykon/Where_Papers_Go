@@ -28,7 +28,12 @@ class _BackendHandler(BaseHTTPRequestHandler):
     proxy_authorization_seen: str | None = None
     forwarded_host_seen: str | None = None
     request_id_seen: str | None = None
+    authenticated_user_seen: str | None = None
+    internal_token_seen: str | None = None
+    internal_client_addr_seen: str | None = None
     post_requests_seen = 0
+    paths_seen: list[str] = []
+    request_bodies_seen: list[bytes] = []
     held_searches = 0
     held_searches_ready = threading.Event()
     release_held_searches = threading.Event()
@@ -43,6 +48,15 @@ class _BackendHandler(BaseHTTPRequestHandler):
         )
         type(self).forwarded_host_seen = self.headers.get("X-Forwarded-Host")
         type(self).request_id_seen = self.headers.get("X-Request-ID")
+        type(self).authenticated_user_seen = self.headers.get(
+            "X-WPG-Authenticated-User"
+        )
+        type(self).internal_token_seen = self.headers.get("X-WPG-Internal-Token")
+        type(self).internal_client_addr_seen = self.headers.get(
+            "X-WPG-Client-Addr"
+        )
+        with type(self).state_lock:
+            type(self).paths_seen.append(self.path)
 
     def _send_payload(self) -> None:
         body = json.dumps({"proxied": True}).encode("utf-8")
@@ -60,10 +74,11 @@ class _BackendHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib HTTP server API
         self._record_forwarded_headers()
         length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+        request_body = self.rfile.read(length)
         hold = self.headers.get("X-WPG-Test-Hold") == "1"
         with type(self).state_lock:
             type(self).post_requests_seen += 1
+            type(self).request_bodies_seen.append(request_body)
             if hold:
                 type(self).held_searches += 1
                 if type(self).held_searches >= 2:
@@ -93,15 +108,24 @@ class NginxIntegrationTests(TestCase):
     def test_nginx_syntax_tls_auth_and_proxy_redaction(self) -> None:
         template = manage_deployment.NGINX_TEMPLATE.read_text(encoding="utf-8")
         for required in (
+            "limit_req_zone $binary_remote_addr zone=wpg_auth_attempts:10m rate=30r/m;",
             "limit_req_zone $binary_remote_addr zone=wpg_search:10m rate=6r/m;",
+            "limit_req_zone $http_x_wpg_authenticated_user zone=wpg_search_user:10m rate=6r/m;",
+            "limit_conn_zone $binary_remote_addr zone=wpg_auth_connections:10m;",
             "limit_conn_zone $binary_remote_addr zone=wpg_search_connections:10m;",
+            "limit_conn_zone $http_x_wpg_authenticated_user zone=wpg_search_user_connections:10m;",
             '"remote_user":"$remote_user"',
             "auth_basic_user_file @@HTPASSWD@@;",
             "client_max_body_size 200000;",
             "client_header_timeout 15s;",
             "client_body_timeout 30s;",
             "keepalive_timeout 30s;",
+            "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+            "limit_req zone=wpg_search burst=2 nodelay;",
+            "limit_req zone=wpg_search_user burst=2 nodelay;",
+            "limit_conn wpg_auth_connections 16;",
             "limit_conn wpg_search_connections 2;",
+            "limit_conn wpg_search_user_connections 2;",
             "limit_conn_status 429;",
             "proxy_set_header Host @@SERVER_NAME@@;",
             'proxy_set_header Forwarded "";',
@@ -110,6 +134,89 @@ class NginxIntegrationTests(TestCase):
             'proxy_set_header Authorization "Bearer @@BACKEND_API_TOKEN@@";',
         ):
             self.assertIn(required, template)
+        tls_server_prefix = template.split("listen 443 ssl http2;", 1)[1].split(
+            "location = /api/search {", 1
+        )[0]
+        self.assertIn(
+            "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+            tls_server_prefix,
+        )
+        self.assertIn(
+            "limit_conn wpg_auth_connections 16;", tls_server_prefix
+        )
+        for path in ("/api/search", "/api/search/stream"):
+            outer_location = template.split(f"location = {path} {{", 1)[1].split(
+                "\n    }", 1
+            )[0]
+            self.assertIn('auth_basic "Where Papers Go";', outer_location)
+            self.assertIn("auth_basic_user_file @@HTPASSWD@@;", outer_location)
+            self.assertIn(
+                "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+                outer_location,
+            )
+            self.assertIn(
+                "limit_req zone=wpg_search burst=2 nodelay;", outer_location
+            )
+            self.assertIn(
+                "limit_conn wpg_auth_connections 16;", outer_location
+            )
+            self.assertIn(
+                "limit_conn wpg_search_connections 2;", outer_location
+            )
+            self.assertEqual(outer_location.count("limit_req zone="), 2)
+            self.assertEqual(outer_location.count("limit_conn "), 2)
+            self.assertNotIn("zone=wpg_search_user", outer_location)
+            self.assertIn("limit_req_status 429;", outer_location)
+            self.assertIn("limit_conn_status 429;", outer_location)
+            self.assertIn(
+                "proxy_pass http://where_papers_go_authenticated_gate;",
+                outer_location,
+            )
+            self.assertIn(
+                "proxy_set_header X-WPG-Authenticated-User $remote_user;",
+                outer_location,
+            )
+            self.assertIn(
+                'proxy_set_header X-WPG-Internal-Token "@@BACKEND_API_TOKEN@@";',
+                outer_location,
+            )
+            self.assertIn('proxy_set_header Authorization "";', outer_location)
+        internal_server = template.split(
+            "listen 127.0.0.1:@@AUTHENTICATED_GATE_PORT@@;", 1
+        )[1]
+        self.assertIn("access_log off;", internal_server)
+        internal_location = internal_server.split(
+            "location ~ ^/api/search(?:/stream)?$ {", 1
+        )[1].split("\n    }", 1)[0]
+        self.assertIn(
+            'if ($http_x_wpg_internal_token != "@@BACKEND_API_TOKEN@@") { return 403; }',
+            internal_location,
+        )
+        self.assertIn(
+            'if ($http_x_wpg_authenticated_user = "") { return 403; }',
+            internal_location,
+        )
+        self.assertEqual(internal_location.count("limit_req zone="), 1)
+        self.assertEqual(internal_location.count("limit_conn "), 1)
+        self.assertIn(
+            "limit_req zone=wpg_search_user burst=2 nodelay;", internal_location
+        )
+        self.assertIn(
+            "limit_conn wpg_search_user_connections 2;", internal_location
+        )
+        self.assertNotIn("zone=wpg_search burst", internal_location)
+        self.assertNotIn("limit_conn wpg_search_connections", internal_location)
+        self.assertIn("limit_req_status 429;", internal_location)
+        self.assertIn("limit_conn_status 429;", internal_location)
+        self.assertIn(
+            "proxy_pass http://where_papers_go_backend;", internal_location
+        )
+        for header in (
+            "X-WPG-Authenticated-User",
+            "X-WPG-Client-Addr",
+            "X-WPG-Internal-Token",
+        ):
+            self.assertIn(f'proxy_set_header {header} "";', internal_location)
 
         nginx = os.environ.get("WPG_NGINX_BIN")
         openssl = shutil.which("openssl")
@@ -119,7 +226,6 @@ class NginxIntegrationTests(TestCase):
             )
         if not openssl:
             self.skipTest("openssl is required to create an isolated test certificate")
-
         backend = ThreadingHTTPServer(("127.0.0.1", 0), _BackendHandler)
         backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
         backend_thread.start()
@@ -132,7 +238,12 @@ class NginxIntegrationTests(TestCase):
         _BackendHandler.proxy_authorization_seen = None
         _BackendHandler.forwarded_host_seen = None
         _BackendHandler.request_id_seen = None
+        _BackendHandler.authenticated_user_seen = None
+        _BackendHandler.internal_token_seen = None
+        _BackendHandler.internal_client_addr_seen = None
         _BackendHandler.post_requests_seen = 0
+        _BackendHandler.paths_seen = []
+        _BackendHandler.request_bodies_seen = []
         _BackendHandler.held_searches = 0
         _BackendHandler.held_searches_ready = threading.Event()
         _BackendHandler.release_held_searches = threading.Event()
@@ -173,15 +284,125 @@ class NginxIntegrationTests(TestCase):
                 text=True,
             ).stdout.strip()
             htpasswd = root / "htpasswd"
-            htpasswd.write_text(f"test-user:{password}\n", encoding="utf-8")
+            test_users = (
+                "test-user",
+                "ip-conn-1",
+                "ip-conn-2",
+                "ip-conn-3",
+                "user-conn",
+                "ip-rate-1",
+                "ip-rate-2",
+                "ip-rate-3",
+                "ip-rate-4",
+                "user-rate",
+            )
+            htpasswd.write_text(
+                "".join(f"{username}:{password}\n" for username in test_users),
+                encoding="utf-8",
+            )
             backend_api_token = "nginx-proxy-test-token-0123456789abcdef"
+            two_hop_body = b'{"two_hop_probe":"distinct-nonempty-body"}'
+
+            def basic_credential(
+                username: str, password_value: str = "test-password"
+            ) -> str:
+                encoded = base64.b64encode(
+                    f"{username}:{password_value}".encode("ascii")
+                ).decode("ascii")
+                return "Basic " + encoded
+
+            def post_search(
+                *,
+                port: int,
+                tls_context: ssl.SSLContext,
+                path: str,
+                username: str,
+                password_value: str = "test-password",
+                source_ip: str = "127.0.0.1",
+                hold: bool = False,
+                body: bytes = b"{}",
+                timeout: float = 5,
+            ) -> int:
+                connection = http.client.HTTPSConnection(
+                    "localhost",
+                    port,
+                    timeout=timeout,
+                    context=tls_context,
+                    source_address=(source_ip, 0),
+                )
+                headers = {
+                    "Authorization": basic_credential(username, password_value),
+                    "Content-Type": "application/json",
+                    "Host": "localhost",
+                    "X-WPG-Authenticated-User": "client-forged-user",
+                    "X-WPG-Client-Addr": "203.0.113.77",
+                    "X-WPG-Internal-Token": "client-forged-token",
+                }
+                if hold:
+                    headers["X-WPG-Test-Hold"] = "1"
+                try:
+                    connection.request("POST", path, body=body, headers=headers)
+                    response = connection.getresponse()
+                    try:
+                        response.read()
+                        return response.status
+                    finally:
+                        response.close()
+                finally:
+                    connection.close()
+
+            def get_path_status(
+                *,
+                port: int,
+                tls_context: ssl.SSLContext,
+                path: str,
+                username: str,
+                password_value: str,
+                source_ip: str,
+            ) -> int:
+                connection = http.client.HTTPSConnection(
+                    "localhost",
+                    port,
+                    timeout=5,
+                    context=tls_context,
+                    source_address=(source_ip, 0),
+                )
+                try:
+                    connection.request(
+                        "GET",
+                        path,
+                        headers={
+                            "Authorization": basic_credential(
+                                username, password_value
+                            ),
+                            "Host": "localhost",
+                        },
+                    )
+                    response = connection.getresponse()
+                    try:
+                        response.read()
+                        return response.status
+                    finally:
+                        response.close()
+                finally:
+                    connection.close()
 
             http_port = self._unused_port()
             https_port = self._unused_port()
+            while https_port == http_port:
+                https_port = self._unused_port()
+            authenticated_gate_port = self._unused_port()
+            while authenticated_gate_port in {
+                http_port,
+                https_port,
+                backend.server_address[1],
+            }:
+                authenticated_gate_port = self._unused_port()
             rendered = manage_deployment.render_template(
                 manage_deployment.NGINX_TEMPLATE,
                 {
                     "UPSTREAM_PORT": str(backend.server_address[1]),
+                    "AUTHENTICATED_GATE_PORT": str(authenticated_gate_port),
                     "SERVER_NAME": "localhost",
                     "TLS_CERTIFICATE": certificate,
                     "TLS_CERTIFICATE_KEY": private_key,
@@ -272,6 +493,34 @@ class NginxIntegrationTests(TestCase):
                 opener = urllib.request.build_opener(
                     urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context)
                 )
+                # The second listener is reachable only on loopback, but local
+                # reachability alone grants nothing: spoofed identity without
+                # the private handoff token fails in REWRITE before user limits.
+                gate_connection = http.client.HTTPConnection(
+                    "127.0.0.1", authenticated_gate_port, timeout=5
+                )
+                try:
+                    gate_connection.request(
+                        "POST",
+                        "/api/search",
+                        body=b"{}",
+                        headers={
+                            "Host": "wpg-authenticated-gate",
+                            "Content-Type": "application/json",
+                            "X-WPG-Authenticated-User": "user-rate",
+                            "X-WPG-Client-Addr": "203.0.113.77",
+                            "X-WPG-Internal-Token": "client-forged-token",
+                        },
+                    )
+                    gate_denied = gate_connection.getresponse()
+                    try:
+                        self.assertEqual(gate_denied.status, 403)
+                        gate_denied.read()
+                    finally:
+                        gate_denied.close()
+                finally:
+                    gate_connection.close()
+                self.assertEqual(_BackendHandler.post_requests_seen, 0)
                 protected_paths = (
                     "/",
                     "/api/health/live",
@@ -287,7 +536,7 @@ class NginxIntegrationTests(TestCase):
                     finally:
                         denied.exception.close()
 
-                credential = base64.b64encode(b"test-user:test-password").decode("ascii")
+                credential = basic_credential("test-user").removeprefix("Basic ")
                 wrong_credential = base64.b64encode(
                     b"test-user:wrong-password"
                 ).decode("ascii")
@@ -382,65 +631,131 @@ class NginxIntegrationTests(TestCase):
                     too_large.exception.close()
                 self.assertEqual(_BackendHandler.post_requests_seen, 0)
 
-                held_results: list[int | BaseException] = []
+                def exercise_connection_limit(
+                    *,
+                    path: str,
+                    held_clients: tuple[tuple[str, str], tuple[str, str]],
+                    rejected_client: tuple[str, str],
+                ) -> None:
+                    _BackendHandler.held_searches = 0
+                    _BackendHandler.held_searches_ready = threading.Event()
+                    _BackendHandler.release_held_searches = threading.Event()
+                    with _BackendHandler.state_lock:
+                        posts_before = _BackendHandler.post_requests_seen
+                    held_results: list[int | BaseException | None] = [None, None]
 
-                def held_search() -> None:
-                    held_opener = urllib.request.build_opener(
-                        urllib.request.ProxyHandler({}),
-                        urllib.request.HTTPSHandler(context=context),
-                    )
-                    held_request = urllib.request.Request(
-                        f"https://localhost:{https_port}/api/search",
-                        data=b"{}",
-                        headers={
-                            "Authorization": "Basic " + credential,
-                            "Content-Type": "application/json",
-                            "Host": "localhost",
-                            "X-WPG-Test-Hold": "1",
-                        },
-                        method="POST",
-                    )
-                    try:
-                        with held_opener.open(held_request, timeout=20) as response:
-                            response.read()
-                            held_results.append(response.status)
-                    except BaseException as exc:
-                        held_results.append(exc)
+                    def held_search(
+                        index: int, username: str, source_ip: str
+                    ) -> None:
+                        try:
+                            held_results[index] = post_search(
+                                port=https_port,
+                                tls_context=context,
+                                path=path,
+                                username=username,
+                                source_ip=source_ip,
+                                hold=True,
+                                body=(
+                                    two_hop_body
+                                    if path == "/api/search" and index == 0
+                                    else b"{}"
+                                ),
+                                timeout=20,
+                            )
+                        except BaseException as exc:
+                            held_results[index] = exc
 
-                held_threads = [
-                    threading.Thread(target=held_search, daemon=True)
-                    for _index in range(2)
-                ]
-                for thread in held_threads:
-                    thread.start()
-                try:
-                    self.assertTrue(
-                        _BackendHandler.held_searches_ready.wait(timeout=5),
-                        "two proxied Search requests did not reach the backend",
-                    )
-                    saturated = urllib.request.Request(
-                        f"https://localhost:{https_port}/api/search",
-                        data=b"{}",
-                        headers={
-                            "Authorization": "Basic " + credential,
-                            "Content-Type": "application/json",
-                            "Host": "localhost",
-                        },
-                        method="POST",
-                    )
-                    with self.assertRaises(urllib.error.HTTPError) as rejected:
-                        opener.open(saturated, timeout=5)
-                    try:
-                        self.assertEqual(rejected.exception.code, 429)
-                    finally:
-                        rejected.exception.close()
-                finally:
-                    _BackendHandler.release_held_searches.set()
+                    held_threads = [
+                        threading.Thread(
+                            target=held_search,
+                            args=(index, username, source_ip),
+                            daemon=True,
+                        )
+                        for index, (username, source_ip) in enumerate(held_clients)
+                    ]
                     for thread in held_threads:
-                        thread.join(timeout=10)
-                self.assertTrue(all(not thread.is_alive() for thread in held_threads))
-                self.assertEqual(held_results, [200, 200])
-                self.assertEqual(_BackendHandler.post_requests_seen, 2)
+                        thread.start()
+                    try:
+                        self.assertTrue(
+                            _BackendHandler.held_searches_ready.wait(timeout=5),
+                            "two proxied Search requests did not reach the backend",
+                        )
+                        rejected_username, rejected_source_ip = rejected_client
+                        self.assertEqual(
+                            post_search(
+                                port=https_port,
+                                tls_context=context,
+                                path=path,
+                                username=rejected_username,
+                                source_ip=rejected_source_ip,
+                            ),
+                            429,
+                        )
+                    finally:
+                        _BackendHandler.release_held_searches.set()
+                        for thread in held_threads:
+                            thread.join(timeout=10)
+                    self.assertTrue(
+                        all(not thread.is_alive() for thread in held_threads)
+                    )
+                    self.assertEqual(held_results, [200, 200])
+                    with _BackendHandler.state_lock:
+                        posts_after = _BackendHandler.post_requests_seen
+                    self.assertEqual(posts_after - posts_before, 2)
+
+                # Distinct valid users share one source address, so only the
+                # preserved address-keyed connection zone can reject the third.
+                exercise_connection_limit(
+                    path="/api/search",
+                    held_clients=(
+                        ("ip-conn-1", "127.0.0.1"),
+                        ("ip-conn-2", "127.0.0.1"),
+                    ),
+                    rejected_client=("ip-conn-3", "127.0.0.1"),
+                )
+                # One valid user connects from distinct loopback addresses, so
+                # only the new username-keyed zone can reject the third stream.
+                exercise_connection_limit(
+                    path="/api/search/stream",
+                    held_clients=(
+                        ("user-conn", "127.0.0.2"),
+                        ("user-conn", "127.0.0.3"),
+                    ),
+                    rejected_client=("user-conn", "127.0.0.4"),
+                )
+                connection_error_log = root / "proxy-error.log"
+                deadline = time.monotonic() + 5
+                connection_error_text = ""
+                while time.monotonic() < deadline:
+                    if connection_error_log.is_file():
+                        connection_error_text = connection_error_log.read_text(
+                            encoding="utf-8"
+                        )
+                    if all(
+                        f'zone "{zone}"' in connection_error_text
+                        for zone in (
+                            "wpg_search_connections",
+                            "wpg_search_user_connections",
+                        )
+                    ):
+                        break
+                    time.sleep(0.05)
+                self.assertIn(
+                    'zone "wpg_search_connections"', connection_error_text
+                )
+                self.assertIn(
+                    'zone "wpg_search_user_connections"', connection_error_text
+                )
+                self.assertEqual(_BackendHandler.post_requests_seen, 4)
+                with _BackendHandler.state_lock:
+                    bodies_seen = list(_BackendHandler.request_bodies_seen)
+                self.assertEqual(bodies_seen.count(two_hop_body), 1)
+                self.assertIsNone(_BackendHandler.authenticated_user_seen)
+                self.assertIsNone(_BackendHandler.internal_token_seen)
+                self.assertIsNone(_BackendHandler.internal_client_addr_seen)
+                self.assertNotEqual(
+                    _BackendHandler.forwarded_for_seen, "203.0.113.77"
+                )
             finally:
                 _BackendHandler.release_held_searches.set()
                 if process.poll() is None:
@@ -451,18 +766,26 @@ class NginxIntegrationTests(TestCase):
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
 
-            # Start a fresh master with the checked-in 6r/m, burst=2 request
-            # bucket. Serial requests cannot hit the concurrent-connection
-            # limit, so the fourth immediate request must be rejected by
-            # limit_req after the initial request plus two burst requests.
+            # Start a fresh master with both checked-in 6r/m, burst=2 request
+            # buckets. Serial requests cannot hit either connection limit.
             rate_root = root / "fixed-rate"
             rate_root.mkdir()
             rate_http_port = self._unused_port()
             rate_https_port = self._unused_port()
+            while rate_https_port == rate_http_port:
+                rate_https_port = self._unused_port()
+            rate_authenticated_gate_port = self._unused_port()
+            while rate_authenticated_gate_port in {
+                rate_http_port,
+                rate_https_port,
+                backend.server_address[1],
+            }:
+                rate_authenticated_gate_port = self._unused_port()
             rate_rendered = manage_deployment.render_template(
                 manage_deployment.NGINX_TEMPLATE,
                 {
                     "UPSTREAM_PORT": str(backend.server_address[1]),
+                    "AUTHENTICATED_GATE_PORT": str(rate_authenticated_gate_port),
                     "SERVER_NAME": "localhost",
                     "TLS_CERTIFICATE": certificate,
                     "TLS_CERTIFICATE_KEY": private_key,
@@ -472,12 +795,40 @@ class NginxIntegrationTests(TestCase):
             ).decode("utf-8")
             self.assertIn(
                 "limit_req_zone $binary_remote_addr "
+                "zone=wpg_auth_attempts:10m rate=30r/m;",
+                rate_rendered,
+            )
+            self.assertIn(
+                "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+                rate_rendered,
+            )
+            self.assertIn(
+                "limit_req_zone $binary_remote_addr "
                 "zone=wpg_search:10m rate=6r/m;",
                 rate_rendered,
             )
             self.assertIn(
                 "limit_req zone=wpg_search burst=2 nodelay;",
                 rate_rendered,
+            )
+            self.assertIn(
+                "limit_req_zone $http_x_wpg_authenticated_user "
+                "zone=wpg_search_user:10m rate=6r/m;",
+                rate_rendered,
+            )
+            self.assertIn(
+                "limit_req zone=wpg_search_user burst=2 nodelay;",
+                rate_rendered,
+            )
+            # Keep the checked-in Search buckets exact while shortening only
+            # the global all-path auth-attempt proof to seven requests.
+            rate_rendered = rate_rendered.replace(
+                "zone=wpg_auth_attempts:10m rate=30r/m;",
+                "zone=wpg_auth_attempts:10m rate=1r/m;",
+            )
+            rate_rendered = rate_rendered.replace(
+                "limit_req zone=wpg_auth_attempts burst=20 nodelay;",
+                "limit_req zone=wpg_auth_attempts burst=5 nodelay;",
             )
             rate_rendered = rate_rendered.replace(
                 "listen 80;", f"listen 127.0.0.1:{rate_http_port};"
@@ -564,46 +915,108 @@ class NginxIntegrationTests(TestCase):
                 rate_context = ssl.create_default_context(
                     cafile=str(certificate)
                 )
-                rate_opener = urllib.request.build_opener(
-                    urllib.request.ProxyHandler({}),
-                    urllib.request.HTTPSHandler(context=rate_context),
-                )
-                rate_url = (
-                    f"https://localhost:{rate_https_port}/api/search"
-                )
                 with _BackendHandler.state_lock:
                     posts_before_rate_test = _BackendHandler.post_requests_seen
-                rate_statuses: list[int] = []
-                for _index in range(4):
-                    rate_request = urllib.request.Request(
-                        rate_url,
-                        data=b"{}",
-                        headers={
-                            "Authorization": "Basic " + credential,
-                            "Content-Type": "application/json",
-                            "Host": "localhost",
-                        },
-                        method="POST",
+                # Health and a path that would otherwise be 404 share the
+                # server-level pre-authentication IP bucket. Wrong passwords
+                # never reach the backend and the seventh rapid attempt is 429.
+                auth_attempt_statuses = [
+                    get_path_status(
+                        port=rate_https_port,
+                        tls_context=rate_context,
+                        path=(
+                            "/api/health/ready"
+                            if index % 2
+                            else "/would-otherwise-be-404"
+                        ),
+                        username="test-user",
+                        password_value="wrong-password",
+                        source_ip="127.0.0.40",
                     )
-                    try:
-                        with rate_opener.open(
-                            rate_request, timeout=5
-                        ) as response:
-                            response.read()
-                            rate_statuses.append(response.status)
-                    except urllib.error.HTTPError as exc:
-                        try:
-                            exc.read()
-                            rate_statuses.append(exc.code)
-                        finally:
-                            exc.close()
-                self.assertEqual(rate_statuses, [200, 200, 200, 429])
+                    for index in range(7)
+                ]
+                self.assertEqual(auth_attempt_statuses, [401] * 6 + [429])
+                # Distinct claimed valid users with wrong passwords share one
+                # address. The outer IP bucket must cap Basic password work;
+                # the fourth request is rejected before authentication.
+                brute_force_statuses = [
+                    post_search(
+                        port=rate_https_port,
+                        tls_context=rate_context,
+                        path="/api/search",
+                        username=f"ip-rate-{index}",
+                        password_value="wrong-password",
+                        source_ip="127.0.0.30",
+                    )
+                    for index in range(1, 5)
+                ]
+                self.assertEqual(brute_force_statuses, [401, 401, 401, 429])
+                # Four distinct users share one address. Every username bucket
+                # is fresh, so the fourth ordinary Search proves the IP bucket.
+                ip_rate_statuses = [
+                    post_search(
+                        port=rate_https_port,
+                        tls_context=rate_context,
+                        path="/api/search",
+                        username=f"ip-rate-{index}",
+                    )
+                    for index in range(1, 5)
+                ]
+                self.assertEqual(ip_rate_statuses, [200, 200, 200, 429])
+                # Wrong passwords for a real username must finish in the outer
+                # ACCESS phase. Distinct IPs isolate this assertion from the IP
+                # bucket; none may reach or poison the internal user-rate bucket.
+                unauthenticated_statuses = [
+                    post_search(
+                        port=rate_https_port,
+                        tls_context=rate_context,
+                        path="/api/search/stream",
+                        username="user-rate",
+                        password_value="wrong-password",
+                        source_ip=f"127.0.0.{index}",
+                    )
+                    for index in range(20, 24)
+                ]
+                self.assertEqual(unauthenticated_statuses, [401, 401, 401, 401])
+                # One user then uses four fresh source addresses. Every address
+                # bucket is fresh, so the fourth stream proves the user bucket.
+                user_rate_statuses = [
+                    post_search(
+                        port=rate_https_port,
+                        tls_context=rate_context,
+                        path="/api/search/stream?handoff=preserved",
+                        username="user-rate",
+                        source_ip=f"127.0.0.{index}",
+                    )
+                    for index in range(10, 14)
+                ]
+                self.assertEqual(user_rate_statuses, [200, 200, 200, 429])
+                rate_statuses = (
+                    auth_attempt_statuses
+                    + brute_force_statuses
+                    + ip_rate_statuses
+                    + unauthenticated_statuses
+                    + user_rate_statuses
+                )
                 with _BackendHandler.state_lock:
                     posts_after_rate_test = _BackendHandler.post_requests_seen
                 self.assertEqual(
                     posts_after_rate_test - posts_before_rate_test,
+                    6,
+                )
+                with _BackendHandler.state_lock:
+                    proxied_paths = list(_BackendHandler.paths_seen)
+                self.assertIn("/api/search", proxied_paths)
+                self.assertIn("/api/search/stream", proxied_paths)
+                self.assertEqual(
+                    proxied_paths.count(
+                        "/api/search/stream?handoff=preserved"
+                    ),
                     3,
                 )
+                self.assertIsNone(_BackendHandler.authenticated_user_seen)
+                self.assertIsNone(_BackendHandler.internal_token_seen)
+                self.assertIsNone(_BackendHandler.internal_client_addr_seen)
 
                 deadline = time.monotonic() + 5
                 rate_records = []
@@ -625,16 +1038,20 @@ class NginxIntegrationTests(TestCase):
                         [record.get("status") for record in rate_records]
                         == rate_statuses
                         and "limiting requests" in rate_error_text
+                        and "zone \"wpg_auth_attempts\"" in rate_error_text
                         and "zone \"wpg_search\"" in rate_error_text
+                        and "zone \"wpg_search_user\"" in rate_error_text
                     ):
                         break
                     time.sleep(0.05)
                 self.assertEqual(
                     [record.get("status") for record in rate_records],
-                    [200, 200, 200, 429],
+                    rate_statuses,
                 )
                 self.assertIn("limiting requests", rate_error_text)
+                self.assertIn('zone "wpg_auth_attempts"', rate_error_text)
                 self.assertIn('zone "wpg_search"', rate_error_text)
+                self.assertIn('zone "wpg_search_user"', rate_error_text)
             finally:
                 if rate_process.poll() is None:
                     os.killpg(rate_process.pid, signal.SIGTERM)

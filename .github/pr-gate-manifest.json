@@ -169,11 +169,11 @@
       "sha256": "c1bcafef2f5b80198603a21e847f2a2f6ee6e0be3367321a77e0df61658cb538"
     },
     {
-      "bytes": 3817,
-      "git_blob_sha1": "2f067c089b1d6186edc29c6181aef27715ca62eb",
+      "bytes": 8238,
+      "git_blob_sha1": "ece25a109b056b3625b7497a669b2432da4ed004",
       "mode": "100644",
       "path": "deploy/nginx/where-papers-go.conf.in",
-      "sha256": "d401e17e11116e0b88f03ecc1e880ea6726f8308306b381e88fa859149fb61f9"
+      "sha256": "f9bb13ad734865fd12e75de95e494763ff4cef4546cf0ba2f1646dc59c43fd55"
     },
     {
       "bytes": 16037,
@@ -239,11 +239,11 @@
       "sha256": "6c1485a272a575e6dd280885f6a66045c71847d86fd42e051efb0f865f2385e9"
     },
     {
-      "bytes": 262036,
-      "git_blob_sha1": "43e169ae0d2359f0a0c2547ddd4681c6ba231fa1",
+      "bytes": 263163,
+      "git_blob_sha1": "ec864c6e2a7df81b88f7bdd239ff6b5b3a9e753a",
       "mode": "100644",
       "path": "scripts/manage_deployment.py",
-      "sha256": "89e0aba7a3bf955df9b18d3c818bdf8c5bc4107a52578e1da84d81d84a1c01e2"
+      "sha256": "869046d9693bc47875333379580b019179dd73c15a4b7304b01fc636ebb9bfe8"
     },
     {
       "bytes": 119792,
@@ -267,11 +267,11 @@
       "sha256": "f8e62c5db35dce200532b4b64dc3ac709e1ededc4a79a6185a2f30c768bdabd7"
     },
     {
-      "bytes": 155959,
-      "git_blob_sha1": "fe89a1055f0a9f2b4f06a0c323347c7a642ed28c",
+      "bytes": 206106,
+      "git_blob_sha1": "7525842bf55aabc52b878ae4027537191ea9f1ce",
       "mode": "100644",
       "path": "scripts/validate_closeout.py",
-      "sha256": "4edd6544177ce61b36054d53d6558197209047f2823e1337f69431d85ec0ce8b"
+      "sha256": "5af1b9cee8422936ade9554346ba88cb715f10a07fa9cf7fa0305848e2a24425"
     },
     {
       "bytes": 78802,
@@ -295,11 +295,11 @@
       "sha256": "a46eb6df9afdfe3e72047622abc80e187940b1327cd29e18572813aec90f17de"
     },
     {
-      "bytes": 161427,
-      "git_blob_sha1": "afb5f87344fa4ae1e4ff8036cf34bfb1ce935117",
+      "bytes": 166729,
+      "git_blob_sha1": "040a6fdf0314a0b8840eb29551a8a3c97842f5e8",
       "mode": "100644",
       "path": "tests/test_deployment.py",
-      "sha256": "b5c2fb299e236f46622e6fbc3962b0d6465d9d0aa3b423fe6140acf8b2af2c15"
+      "sha256": "13a3000208b6bf8b6a7f563f39b8862eb0d1bd20d1c8d252bfd5cc99276cea4f"
     },
     {
       "bytes": 3780,
@@ -393,11 +393,11 @@
       "sha256": "714963c00880bb2234e8b6ae0a1be6cafb14ebb97e3c067f1daad677b45860fe"
     },
     {
-      "bytes": 27984,
-      "git_blob_sha1": "a6300a809e660c157c4bf4bd24341c040fc3ae9c",
+      "bytes": 46959,
+      "git_blob_sha1": "987659b4785c6499be71e2b0e02657ceb5570783",
       "mode": "100644",
       "path": "tests/test_nginx_integration.py",
-      "sha256": "5f4b1994091fb70f9581060c0aa72e4d574d787aa0220ea1a41d884c71809730"
+      "sha256": "c5e6cc9c7d4a2426ba7967556c245de93267a81e4915f86d7e119ff1d32b9d66"
     },
     {
       "bytes": 8841,
@@ -533,11 +533,11 @@
       "sha256": "b66808337c48705d0234e2acd22977ada0a21731790da224a52ae5847beecdfe"
     },
     {
-      "bytes": 68362,
-      "git_blob_sha1": "855073e2636e0e64c17196bcd69701dff917480d",
+      "bytes": 93352,
+      "git_blob_sha1": "add711a8cf7326eba1c2c82b514b21381182b2ac",
       "mode": "100644",
       "path": "tests/test_validate_closeout.py",
-      "sha256": "95346731f6eaac368c199e9b9174bfd7bb05a38c4dfb8152ef62944efdeab087"
+      "sha256": "57b8d4ce9cf0ab787dc006ae808ba2c0deee9d17645ec14a6deb46ef9fe98b89"
     },
     {
       "bytes": 16764,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "62dd47f42fe5ee28ce04d0636849eb5f96d5a5133f3231dad0aec492323c4757"
+    "inventory_sha256": "0b6d0cdb5eafe8e1f2511cb39e74dcdd4d37c3265228150e4cf667b42675d945"
   },
   "tests": {
     "full": {
