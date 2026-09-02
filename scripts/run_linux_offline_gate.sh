@@ -128,6 +128,8 @@ fi
   --reuid=0 \
   --regid=0 \
   --clear-groups \
+  --inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
+  --ambient-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
   -- \
   /usr/bin/env -i \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -178,6 +180,18 @@ fi
     if [[ "$(/usr/bin/id -r -u):$(/usr/bin/id -u):$(/usr/bin/id -r -g):$(/usr/bin/id -g)" != \
           "0:0:0:0" ]]; then
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
+      exit 2
+    fi
+    setup_cap_eff=
+    while read -r key values; do
+      if [[ "$key" == CapEff: ]]; then
+        setup_cap_eff="$values"
+        break
+      fi
+    done </proc/self/status
+    if [[ ! "$setup_cap_eff" =~ ^[0-9a-fA-F]{16}$ ]] ||
+       (( (16#$setup_cap_eff & 16#2011c6) != 16#2011c6 )); then
+      echo "OS-level offline gate privileged setup shell lacks required capabilities" >&2
       exit 2
     fi
 

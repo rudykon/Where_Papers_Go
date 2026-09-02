@@ -587,6 +587,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "/usr/bin/sudo -n /usr/bin/setpriv",
             "--reuid=0",
             "--regid=0",
+            "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
+            "--ambient-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
+            "16#2011c6",
             "--propagation private",
             "/bin/bash --noprofile --norc -p",
             "--mount-proc",
@@ -610,6 +613,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "GITHUB_ENV+x",
             "OS-level offline gate retained propagating mounts",
             "OS-level offline gate privileged setup shell lacks aligned root IDs",
+            "OS-level offline gate privileged setup shell lacks required capabilities",
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
