@@ -199,6 +199,15 @@ fi
       exit 2
     fi
 
+    # Some hosted-runner kernels shed the effective root credential when the
+    # setuid mount helper is executed directly, even though this setup shell
+    # has aligned root IDs and CAP_SYS_ADMIN.  Invoke only the fixed system
+    # mount binary through sudo so the mount(2) caller is normalized too.  All
+    # sudo access is removed and tested after the namespace setup below.
+    privileged_mount() {
+      /usr/bin/sudo -n /usr/bin/mount "$@"
+    }
+
     # Drop the inherited checkout cwd before overmounting it.  Otherwise the
     # old mount remains reachable through the process's cwd despite the new
     # read-only bind at the same pathname.
@@ -206,13 +215,13 @@ fi
 
     readonly_bind() {
       local target="$1"
-      /usr/bin/mount --bind "$target" "$target"
-      /usr/bin/mount -o remount,bind,ro,nosuid,nodev,noexec "$target"
+      privileged_mount --bind "$target" "$target"
+      privileged_mount -o remount,bind,ro,nosuid,nodev,noexec "$target"
     }
     readonly_bind_exec() {
       local target="$1"
-      /usr/bin/mount --bind "$target" "$target"
-      /usr/bin/mount -o remount,bind,ro,nosuid,nodev "$target"
+      privileged_mount --bind "$target" "$target"
+      privileged_mount -o remount,bind,ro,nosuid,nodev "$target"
     }
     mask_directory() {
       local target="$1"
@@ -229,7 +238,7 @@ fi
         echo "OS-level offline gate rejects redirected socket directory: $target" >&2
         exit 2
       fi
-      /usr/bin/mount -t tmpfs \
+      privileged_mount -t tmpfs \
         -o rw,nosuid,nodev,noexec,mode=0700,size=1m \
         wpg-private "$target"
     }
@@ -238,13 +247,13 @@ fi
     # recursive MS_PRIVATE transition before this shell starts.  Repeating
     # that mount operation is rejected by some otherwise capable hosted
     # runners, so verify the resulting namespace below after privileges drop.
-    /usr/bin/mount -t tmpfs \
+    privileged_mount -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
       wpg-run /run
-    /usr/bin/mount -t tmpfs \
+    privileged_mount -t tmpfs \
       -o rw,nosuid,nodev,mode=1777,size=1g \
       wpg-tmp /tmp
-    /usr/bin/mount -t tmpfs \
+    privileged_mount -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
 
