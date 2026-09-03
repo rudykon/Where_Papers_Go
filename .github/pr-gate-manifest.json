@@ -253,11 +253,11 @@
       "sha256": "0507d409b50ec8fbe53359f147c26a05062e2e66febf6b6bd40c001965b20b41"
     },
     {
-      "bytes": 13886,
-      "git_blob_sha1": "4b64267eafb2db89a9c3e10c02d5e4d7020f7313",
+      "bytes": 13952,
+      "git_blob_sha1": "4175f5d973e8a01d1b692a72695de05f9ff77bb0",
       "mode": "100644",
       "path": "scripts/run_linux_offline_gate.sh",
-      "sha256": "c0b4644f35f894027d43abc43f1227cd00dd67de1df6ad9374c4a813b76b3d60"
+      "sha256": "427405232c762e1c43bfc1ac7673da5e9b19afd911bb673cf1aeda9ead9b837b"
     },
     {
       "bytes": 27925,
@@ -674,7 +674,7 @@
     "no_new_privs_required": true,
     "nonloopback_python_socket_attempts_allowed": 0,
     "os_isolation_path": "scripts/run_linux_offline_gate.sh",
-    "os_isolation_sha256": "c0b4644f35f894027d43abc43f1227cd00dd67de1df6ad9374c4a813b76b3d60",
+    "os_isolation_sha256": "427405232c762e1c43bfc1ac7673da5e9b19afd911bb673cf1aeda9ead9b837b",
     "os_isolation_token": "linux-sandbox-v3",
     "runner_command_files_writable": false,
     "runner_tool_cache_writable": false,
