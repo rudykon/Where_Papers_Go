@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ from where_paper_go.recommender import (
     rank_candidates_indexed,
     tokenize,
 )
+from scripts.build_graph import main as build_graph_main
 
 
 class FakeEmbeddingProvider:
@@ -243,6 +245,47 @@ class PropertyGraphTests(unittest.TestCase):
         self.assertTrue(cache_path.exists())
         self.assertTrue(vector_path_for_graph(self.graph_path).exists())
         self.assertFalse(any(self.data_dir.glob("*.sqlite*")))
+
+    def test_build_graph_cli_loads_packaged_embedding_module(self) -> None:
+        vector_path = self.data_dir / "shadow_vectors.json.gz"
+        result = SimpleNamespace(
+            entity_count=3,
+            unique_text_count=3,
+            embedded_text_count=0,
+            cached_text_count=3,
+            model="fake-multilingual-v1",
+            dimensions=8,
+        )
+        with (
+            patch(
+                "where_paper_go.embeddings.load_embedding_config",
+                return_value=object(),
+            ),
+            patch(
+                "where_paper_go.embeddings.OpenAICompatibleEmbeddingProvider",
+                return_value=FakeEmbeddingProvider(),
+            ),
+            patch(
+                "where_paper_go.embeddings.build_graph_vector_index",
+                return_value=result,
+            ) as build_vectors,
+        ):
+            status = build_graph_main(
+                [
+                    "--data-dir",
+                    str(self.data_dir),
+                    "--graph",
+                    str(self.graph_path),
+                    "--vector-file",
+                    str(vector_path),
+                    "--with-vectors",
+                    "--embedding-config",
+                    str(self.data_dir / "api.json"),
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        build_vectors.assert_called_once()
 
     def test_lightrag_custom_kg_export_is_referentially_complete(self) -> None:
         output = self.data_dir / "lightrag_custom_kg.json"

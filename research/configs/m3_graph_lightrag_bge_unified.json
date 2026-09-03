@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "fail_on_critical_leakage": true,
+  "output_dir": "../../benchmark_artifacts/m3_strong_baselines_20260827/graph_lightrag_bge_unified_v1",
+  "dataset": {
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
+    "query_fields": ["title", "abstract"],
+    "relevance_field": "gold_journal_id"
+  },
+  "corpus": {
+    "type": "jsonl",
+    "path": "../../benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl",
+    "id_field": "venue_id",
+    "text_fields": ["name"],
+    "snapshot_field": "snapshot_date"
+  },
+  "temporal_split": {
+    "start": "2026-01-01",
+    "train_end": "2026-03-31",
+    "validation_end": "2026-05-31",
+    "test_end": "2026-06-30"
+  },
+  "baselines": [
+    {
+      "name": "bm25_clean_pcl",
+      "type": "bm25",
+      "k1": 1.2,
+      "b": 0.75,
+      "use_prototypes": true
+    },
+    {
+      "name": "tfidf_clean_pcl",
+      "type": "tfidf",
+      "sublinear_tf": true,
+      "use_prototypes": true
+    }
+  ],
+  "imported_runs": [
+    {
+      "name": "bge_m3_prototype_max",
+      "type": "vector",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/bge_m3_prototype_max.jsonl.manifest.json",
+      "manifest_sha256": "18d06f2b85b0fddfbedc221bf9dd92de469dd05fc3ac8eb10fcff6100306c062",
+      "generation_config_sha256": "abd4bd08e9054f52a4204379d7325ee6a65fe702e03456cd0409f83434fb7a0c",
+      "provider_fingerprint": "1f2fc9c5a6e71e31e8fa33a740fae28deeb88903018536643686b7c4475f80d5"
+    },
+    {
+      "name": "property_graph_edge_bm25_rrf",
+      "type": "property_graph",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/property_graph_edge_bm25_rrf_v1.jsonl",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/property_graph_edge_bm25_rrf_v1.jsonl.manifest.json",
+      "manifest_sha256": "0c1eb45aaf623b6b8b00530e3c0c9330c766f88abf8f8a16434c7af82a2f16dc",
+      "generation_config_sha256": "c9e57f6ba099e7d7d497019d53aff6d06dc6151ae68778ee3726b5ab7b5b8ed8",
+      "implementation_revision": "property-graph-edge-bm25-rrf-v1@a230eb97e0c3d62dff2b82ddc991684e783d8291554693421542767d4d1c1ab5"
+    },
+    {
+      "name": "lightrag_mix_edge_rrf",
+      "type": "lightrag_mix",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/lightrag_mix_edge_rrf_v1.jsonl",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/lightrag_mix_edge_rrf_v1.jsonl.manifest.json",
+      "manifest_sha256": "46f6552743e08b8edb5ff38aaffe7686888cc20ed9e7b523464c18b96ea7b638",
+      "generation_config_sha256": "67bbd9bacc6ba58325e2328b49b3bee47a686d608fc23f821d1b1a9de4c6c9ee",
+      "implementation_revision": "lightrag-mix-edge-rrf-v1@a230eb97e0c3d62dff2b82ddc991684e783d8291554693421542767d4d1c1ab5"
+    }
+  ],
+  "fusions": [
+    {
+      "name": "rrf_bm25_bge",
+      "type": "rrf",
+      "sources": ["bm25_clean_pcl", "bge_m3_prototype_max"],
+      "rrf_k": 60
+    }
+  ],
+  "evaluation": {
+    "retrieval_depth": 100,
+    "cutoffs": [1, 3, 5, 10, 20, 50]
+  },
+  "statistics": {
+    "bootstrap_iterations": 2000,
+    "permutation_iterations": 2000,
+    "confidence": 0.95,
+    "seed": 20260828,
+    "comparisons": [
+      {
+        "left": "bm25_clean_pcl",
+        "right": "bge_m3_prototype_max",
+        "metric": "ndcg@10"
+      },
+      {
+        "left": "tfidf_clean_pcl",
+        "right": "bge_m3_prototype_max",
+        "metric": "ndcg@10"
+      },
+      {
+        "left": "property_graph_edge_bm25_rrf",
+        "right": "bge_m3_prototype_max",
+        "metric": "ndcg@10"
+      },
+      {
+        "left": "lightrag_mix_edge_rrf",
+        "right": "bge_m3_prototype_max",
+        "metric": "ndcg@10"
+      },
+      {
+        "left": "rrf_bm25_bge",
+        "right": "bge_m3_prototype_max",
+        "metric": "ndcg@10"
+      }
+    ]
+  }
+}

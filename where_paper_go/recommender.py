@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -28,12 +29,24 @@ from .paths import DATA_DIR, PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 DEFAULT_DATA_DIR = DATA_DIR
+API_CACHE_DIR_ENV = "WPG_API_CACHE_DIR"
+QUERY_EMBEDDING_CACHE_ENV = "WPG_QUERY_EMBEDDING_CACHE"
+LIGHTRAG_EMBEDDING_CACHE_ENV = "WPG_LIGHTRAG_EMBEDDING_CACHE"
 DATA_FILES = (
     "ccf_conferences_2026.csv",
     "th_cpl_partition_2019.csv",
     "cas_partition_2025.csv",
     "jcr_partition_2025.csv",
 )
+
+
+def _environment_path(name: str) -> Path | None:
+    """Return an optional cache binding without creating or touching it."""
+
+    value = os.environ.get(name, "").strip()
+    return Path(value) if value else None
+
+
 CURATED_SCOPE_FILE = "curated_venue_scopes.tsv"
 CURATED_SCOPE_VALID_STATUSES = {"draft", "in_review", "approved", "rejected", "superseded"}
 CURATED_SCOPE_ACTIVE_STATUSES = {"approved"}
@@ -2367,6 +2380,11 @@ def open_persistent_graph(
     freshness = inspect_graph(graph_path, data_dir, expected_digest=digest)
     rebuilt = force_rebuild or not freshness.fresh
     if rebuilt:
+        if os.environ.get("WPG_STRICT_GRAPH_READ_ONLY", "").strip() == "1":
+            raise RuntimeError(
+                "property graph is not fresh and strict read-only mode forbids rebuild: "
+                f"{freshness.reason}"
+            )
         records = load_records(data_dir)
         groups = group_records(records)
         build_graph(
@@ -2751,8 +2769,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--api-cache-dir",
         type=Path,
-        default=None,
-        help="LLM 查询规划、重排和 Search API 结果缓存目录。",
+        default=_environment_path(API_CACHE_DIR_ENV),
+        help=(
+            "LLM 查询规划、重排和 Search API 结果缓存目录；"
+            f"也可通过 {API_CACHE_DIR_ENV} 绑定。"
+        ),
     )
     parser.add_argument(
         "--api-candidate-limit",
@@ -2851,7 +2872,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-cache",
         type=Path,
         default=None,
-        help="embedding 缓存路径；图谱默认使用 gzip/JSON 文件。",
+        help=(
+            "已废弃的单缓存兼容选项；主题检索必须分别使用 "
+            "--query-embedding-cache 和 --lightrag-embedding-cache。"
+        ),
+    )
+    parser.add_argument(
+        "--query-embedding-cache",
+        type=Path,
+        default=_environment_path(QUERY_EMBEDDING_CACHE_ENV),
+        help=(
+            "仅写入查询向量的 gzip/JSON 缓存；"
+            f"也可通过 {QUERY_EMBEDDING_CACHE_ENV} 绑定。"
+        ),
+    )
+    parser.add_argument(
+        "--lightrag-embedding-cache",
+        type=Path,
+        default=_environment_path(LIGHTRAG_EMBEDDING_CACHE_ENV),
+        help=(
+            "仅写入 LightRAG 查询向量的 gzip/JSON 缓存；"
+            f"也可通过 {LIGHTRAG_EMBEDDING_CACHE_ENV} 绑定。"
+        ),
     )
     parser.add_argument(
         "--vector-limit",
@@ -2930,6 +2972,47 @@ def main(
     parser = build_parser()
     args = parser.parse_args(argv)
     topic_query_requested = bool(args.query or args.query_file)
+    if topic_query_requested and args.embedding_cache is not None:
+        parser.error(
+            "--embedding-cache 不能用于主题检索；请显式指定两个不同的 "
+            "--query-embedding-cache 和 --lightrag-embedding-cache"
+        )
+    from .embeddings import (
+        default_graph_embedding_cache_path,
+        default_query_embedding_cache_path,
+    )
+
+    effective_query_embedding_cache = (
+        args.query_embedding_cache
+        or default_query_embedding_cache_path(args.data_dir)
+    ).resolve()
+    effective_lightrag_embedding_cache = (
+        args.lightrag_embedding_cache
+        or default_graph_embedding_cache_path(args.data_dir)
+    ).resolve()
+    effective_api_cache_dir = (
+        args.api_cache_dir or args.data_dir / ".query_api_cache"
+    ).resolve()
+    if effective_query_embedding_cache == effective_lightrag_embedding_cache:
+        parser.error(
+            "--query-embedding-cache 和 --lightrag-embedding-cache "
+            "必须指向不同文件"
+        )
+    args.query_embedding_cache = effective_query_embedding_cache
+    args.lightrag_embedding_cache = effective_lightrag_embedding_cache
+    args.api_cache_dir = effective_api_cache_dir
+    if any(
+        cache_path == effective_api_cache_dir
+        or cache_path.is_relative_to(effective_api_cache_dir)
+        or effective_api_cache_dir.is_relative_to(cache_path)
+        for cache_path in (
+            effective_query_embedding_cache,
+            effective_lightrag_embedding_cache,
+        )
+    ):
+        parser.error(
+            "--api-cache-dir 必须与两个 embedding 缓存文件使用互不嵌套的路径"
+        )
     if (
         args.api_config is not None
         and args.embedding_config is not None
@@ -3134,7 +3217,7 @@ def main(
     api_plan = None
     api_warning = ""
     api_info: dict[str, object] = {"enabled": False}
-    api_cache_dir = args.api_cache_dir or args.data_dir / ".query_api_cache"
+    api_cache_dir = args.api_cache_dir
     if args.api_assisted_search:
         from .api_assistant import (
             ApiAssistantError,
@@ -3314,12 +3397,12 @@ def main(
                     "embedding 配置与现有向量索引不匹配；请使用同一配置重建向量"
                 )
             vector_provider_fingerprint = embedding_provider.fingerprint
-            query_embedding_cache_path = args.embedding_cache or (
+            query_embedding_cache_path = args.query_embedding_cache or (
                 default_query_embedding_cache_path(args.data_dir)
                 if using_graph_backend
                 else default_embedding_cache_path(args.data_dir)
             )
-            lightrag_embedding_cache_path = args.embedding_cache or (
+            lightrag_embedding_cache_path = args.lightrag_embedding_cache or (
                 default_graph_embedding_cache_path(args.data_dir)
                 if using_graph_backend
                 else default_embedding_cache_path(args.data_dir)

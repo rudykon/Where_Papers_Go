@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "artifact_type": "future_sealed_evaluation_post_access_namespace_repair_protocol",
+  "status": "frozen_after_first_label_access_before_metric_computation",
+  "offline_only": true,
+  "search_free": true,
+  "implementation": {
+    "path": "../sealed_namespace_repair.py",
+    "sha256": "7493949f069745ae4222832beaac5c0b441b58ce60427dc6bbc8140b23ca06b5",
+    "bytes": 74764
+  },
+  "code_bundle": [
+    {
+      "path": "../cli.py",
+      "repository_relative_path": "research/cli.py",
+      "sha256": "15b7baf0cad5933f79939f88a256ee8e7140ce2e882f27c259c50e405b3fb362",
+      "bytes": 81813
+    },
+    {
+      "path": "../data.py",
+      "repository_relative_path": "research/data.py",
+      "sha256": "f3e7139f29be58f081d46f53001210be11a6f20ac937193253f1c35de9cf56a6",
+      "bytes": 59299
+    },
+    {
+      "path": "../leakage.py",
+      "repository_relative_path": "research/leakage.py",
+      "sha256": "92f632f371808ee474caba17d4fe621a1fc2461c111f12e5762f7072710b462f",
+      "bytes": 24106
+    },
+    {
+      "path": "../metrics.py",
+      "repository_relative_path": "research/metrics.py",
+      "sha256": "0350e145ee5df1578d19394e7439ab56365f91657cfe1e971cf9817e50805a92",
+      "bytes": 4123
+    },
+    {
+      "path": "../reporting.py",
+      "repository_relative_path": "research/reporting.py",
+      "sha256": "b2bd2fcbd30ad34b04d8c51fd242622b1f4494762468ad67bf6133ec41b4a894",
+      "bytes": 8161
+    },
+    {
+      "path": "../sealed_namespace_repair.py",
+      "repository_relative_path": "research/sealed_namespace_repair.py",
+      "sha256": "7493949f069745ae4222832beaac5c0b441b58ce60427dc6bbc8140b23ca06b5",
+      "bytes": 74764
+    },
+    {
+      "path": "../statistics.py",
+      "repository_relative_path": "research/statistics.py",
+      "sha256": "dd9efe6299fb43bfe8ddf8d3853817829b2d2198b612cc63fd7c11addf95bf96",
+      "bytes": 6833
+    },
+    {
+      "path": "../types.py",
+      "repository_relative_path": "research/types.py",
+      "sha256": "2ebe7b3c8d15fe7f66f7735ee79bda86ffb98262d08f0a5ffadd67ef32c8878f",
+      "bytes": 2172
+    }
+  ],
+  "code_bundle_sha256": "59c10bf8811f85fac55c4cd0cad348aeb3d8581e7ed894f027ce8486aa706c18",
+  "original_evaluation": {
+    "config": {
+      "path": "future_sealed_evaluation_v1.json",
+      "sha256": "1aeb4727b641207dab5ee336f8566758f3260abbfa9a611b573d5c99f5af607f",
+      "bytes": 3171
+    },
+    "label_free_preflight": {
+      "path": "../../benchmark_artifacts/future_sealed_evaluation_202607_v1.preflight.json",
+      "sha256": "0780f06d426521e6d4ae32f6749c9542c7a08005e2a1bd115bd56bc52ba609a5",
+      "bytes": 2517
+    }
+  },
+  "first_attempt": {
+    "record": {
+      "path": "future_sealed_evaluation_first_attempt_v1.json",
+      "sha256": "cd42393f21f0ce07a0fe3c955925f349a63d02c440a36ffadab322e9f801161b",
+      "bytes": 3335,
+      "required_mode": "0444"
+    },
+    "label_access_audit": {
+      "path": "../../benchmark_artifacts/future_sealed_evaluation_202607_v1.label-access-20260830T054859.430913+0000.json",
+      "sha256": "85a0bab2daf23449026a016832de3daa1591f6fd03d2964e75f67b880e84e4a2",
+      "bytes": 877,
+      "required_mode": "0444"
+    }
+  },
+  "namespace_crosswalk": {
+    "source_namespace_sha256": "ffb1917b0c6753711c84cf6ff614fef1284156437412da1cc3ff96d986b9dae0",
+    "target_namespace_sha256": "cfd6a73d43e6b912efbedc2a5c335e7df3d4a05bc73bbe6024279268bb12b65c",
+    "mapping": {
+      "path": "../../benchmark_artifacts/future_sealed_namespace_repair_202607_v1/venue_id_mapping.jsonl",
+      "sha256": "c2001797828626141c8c6ae799a596853c016744690ef8fb320c9e883def1485",
+      "bytes": 2551049,
+      "record_count": 20087,
+      "required_mode": "0444"
+    },
+    "manifest": {
+      "path": "../../benchmark_artifacts/future_sealed_namespace_repair_202607_v1/manifest.json",
+      "sha256": "64456236a956ece0929bffc923b2f918a09c292fd3d35c1f2a9bd55eb2940d33",
+      "bytes": 4760,
+      "required_mode": "0444"
+    },
+    "expected": {
+      "source_count": 20087,
+      "target_count": 20087,
+      "mapped_count": 20087,
+      "distinct_target_count": 20087,
+      "identity_count": 20039,
+      "remapped_count": 48,
+      "unmapped_count": 0,
+      "ambiguous_count": 0,
+      "collision_count": 0
+    }
+  },
+  "frozen_change_boundary": {
+    "qrel_identifier_namespace_translation_only": true,
+    "queries_changed": false,
+    "query_order_changed": false,
+    "candidate_universe_changed": false,
+    "predictions_changed": false,
+    "methods_or_hyperparameters_changed": false,
+    "metrics_or_statistics_changed": false,
+    "denominator_changed": false,
+    "refit_after_first_access": false
+  },
+  "execution_boundary": {
+    "second_semantic_label_read_requires_new_explicit_user_authorization": true,
+    "global_one_shot_sentinel_before_label_read": true,
+    "retry_after_sentinel": false,
+    "search_calls": 0,
+    "llm_calls": 0,
+    "embedding_calls": 0,
+    "estimated_external_cost_usd": 0,
+    "pristine_single_pass_sealed_test": false
+  }
+}

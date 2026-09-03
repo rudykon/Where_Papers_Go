@@ -34,13 +34,17 @@ data/.embedding_cache.sqlite3
 data/.embedding_cache.sqlite3-*
 data/venue_graph.json.gz
 data/venue_graph_vectors.json.gz
+data/venue_graph_vectors.pre-redeploy-*.json.gz
 data/.embedding_cache.json.gz
 data/.query_embedding_cache.json.gz
 data/..embedding_cache.json.gz.*.tmp
 data/lightrag_custom_kg.json
 data/lightrag_storage/
 data/lightrag_storage.backup-*/
+data/lightrag_storage.pre-redeploy-*/
+data/lightrag_storage.redeploy-*/
 data/.lightrag_storage.building-*/
+data/.lightrag_storage.redeploy-*.building-*/
 data/*.cleanup-bak
 
 # Reproducible benchmark downloads and run outputs (may contain abstracts).

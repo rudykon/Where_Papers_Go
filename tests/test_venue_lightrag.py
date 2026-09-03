@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -16,6 +18,85 @@ from where_paper_go.lightrag import (
 
 
 class LightRAGRecallTests(unittest.TestCase):
+    def test_third_party_query_logs_are_suppressed_but_warnings_remain(self) -> None:
+        from lightrag import operate
+
+        sensitive_query = "PRIVATE-query-7e3d"
+        captured: list[logging.LogRecord] = []
+
+        class CaptureHandler(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        logger = logging.getLogger("lightrag")
+        self.assertIs(operate.logger, logger)
+        handler = CaptureHandler(level=logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            logger.setLevel(logging.DEBUG)
+            logger.propagate = True
+            venue_lightrag._configure_lightrag_logging()
+            operate.logger.debug("raw query: %s", sensitive_query)
+            operate.logger.info("Query nodes: %s", sensitive_query)
+            operate.logger.info("Query edges: %s", sensitive_query)
+            operate.logger.info("Naive query: %s", sensitive_query)
+            operate.logger.warning("LightRAG storage retry remains visible")
+        finally:
+            logger.removeHandler(handler)
+
+        messages = [record.getMessage() for record in captured]
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(handler.level, logging.WARNING)
+        self.assertFalse(logger.propagate)
+        self.assertNotIn(sensitive_query, "\n".join(messages))
+        self.assertEqual(messages, ["LightRAG storage retry remains visible"])
+
+    def test_custom_kg_import_keeps_event_loop_awake_and_finalizes(self) -> None:
+        heartbeat_seen = []
+
+        class FakeRag:
+            async def initialize_storages(self):
+                return None
+
+            async def ainsert_custom_kg(self, _custom_kg):
+                heartbeat_seen.extend(
+                    task.get_name() == "lightrag-import-heartbeat"
+                    for task in asyncio.all_tasks()
+                )
+
+            async def finalize_storages(self):
+                return None
+
+        class FakeAdapter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        adapter = FakeAdapter()
+        components = (
+            FakeRag(),
+            SimpleNamespace(fingerprint="provider"),
+            SimpleNamespace(model="llm"),
+            adapter,
+        )
+        with patch.object(
+            venue_lightrag, "_runtime_components", return_value=components
+        ):
+            result = asyncio.run(
+                venue_lightrag._import_async(
+                    {"chunks": [], "entities": [], "relationships": []},
+                    Path("workspace"),
+                    None,
+                    None,
+                )
+            )
+
+        self.assertEqual(result, ("provider", "llm"))
+        self.assertIn(True, heartbeat_seen)
+        self.assertTrue(adapter.closed)
+
     def test_structured_mix_result_maps_only_allowed_venue_ids(self) -> None:
         recall = recall_from_lightrag_data(
             {
@@ -75,12 +156,7 @@ class LightRAGRecallTests(unittest.TestCase):
             (working_dir / venue_lightrag.MANIFEST_FILE).write_text(
                 json.dumps(manifest), encoding="utf-8"
             )
-            for name in (
-                "graph_chunk_entity_relation.graphml",
-                "vdb_entities.json",
-                "vdb_relationships.json",
-                "vdb_chunks.json",
-            ):
+            for name in venue_lightrag.QUERY_STORAGE_FILES:
                 (working_dir / name).write_text("{}", encoding="utf-8")
             with patch.object(venue_lightrag, "VenueGraphIndex", FakeGraph):
                 self.assertEqual(

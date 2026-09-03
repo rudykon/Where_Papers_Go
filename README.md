@@ -50,7 +50,7 @@ Key product behavior:
 - CCF, TH-CPL, CAS, and JCR targets can be combined; multiple target tiers use **OR** semantics.
 - Topic retrieval strictly uses **LightRAG + exact vector retrieval + LLM + Search API**. It does not silently downgrade when one layer fails.
 - Search, vector, and LightRAG work are parallelized; LLM reranking uses two concurrent batches.
-- An **unvalidated SCOPE-Rank research scaffold** adapts recall-channel budgets from LLM ambiguity/cross-domain signals and live channel coverage; it is not yet an experimentally supported ranking method. The former fixed budget remains available as an explicit ablation.
+- A formal **offline SCOPE-Rank research implementation** now covers adaptive recall, train-only fusion, constraints, abstention, and provenance explanations. The learned full method is a statistically significant negative result on both exposed development and the qualified future evaluation below; it is not evidence that the product ranking is better. Fixed linear/RRF alternatives remain explicit ablations.
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
 
@@ -99,7 +99,7 @@ flowchart LR
     I --> V[Exact vector recall]
     I --> G[LightRAG mix recall]
     I --> S[Search API evidence]
-    V --> A[Unvalidated SCOPE-Rank scaffold]
+    V --> A[Experimental SCOPE-Rank research path]
     G --> A
     S --> A
     A --> M[Candidate fusion]
@@ -159,10 +159,33 @@ This creates the property graph, exact venue vectors, and the LightRAG `mix` kno
 ### 4. Start the web app
 
 ```bash
-where-paper-go-web --host 0.0.0.0 --port 8000
+where-paper-go-web --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/` locally, or `http://<server-ip>:8000/` over SSH/LAN. The interface supports Chinese/English switching, combined scope filters, persistent retrieval progress, streamed results, and evidence details.
+Open `http://127.0.0.1:8000/` locally. For a temporary trusted-LAN listener,
+explicitly replace the example subnet with the real LAN and keep loopback:
+
+```bash
+WPG_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,::1/128,192.168.1.0/24 \
+  where-paper-go-web --host 0.0.0.0 --port 8000
+```
+
+Requests from every other direct peer are dropped before a handler thread is
+created. The interface supports Chinese/English switching, combined scope
+filters, persistent retrieval progress, streamed results, and evidence details.
+
+For a restartable production service, strict readiness, HTTPS/auth proxy,
+request limiting/audit, shadow upgrade, and recoverable rollback, follow the
+[production deployment runbook](docs/production-deployment.md). A direct
+`0.0.0.0` listener is a trusted-LAN transition only, not an Internet-facing
+deployment.
+
+The audited host deployment as of 2026-08-30 is intentionally loopback-only at
+`http://127.0.0.1:8001/`. Its user-systemd unit is enabled and active and has
+passed explicit restart and forced-process-termination recovery checks. It is
+not currently exposed to the LAN or Internet: Nginx is not installed, and
+administrator TLS/auth proxy activation plus a literal host reboot remain
+manual gates.
 
 <details>
 <summary><strong>CLI examples</strong></summary>
@@ -210,7 +233,7 @@ Machine-readable output is available through `--format json` and `--format csv`.
 
 The reviewed fine-grained scope catalog covers all 58 CCF-A conferences, all 117 TH-CPL-A venues, and all 53 CAS Zone 1 computer-science journals. Overlapping venues reuse one reviewed scope record, so these counts should not be added as unique entities.
 
-The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). Those ignored research artifacts are distinct from the reviewed product scope overlay above; their PCL-derived profiles must pass the causal rebuild and frozen-run contract before they can support paper claims.
+The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). A separate causally clean research derivative now covers the same 20,087-candidate universe: every research record is bounded by the 2026-03-31 cutoff, all warm/few-shot venues have paper-backed prototypes, and the P0-C frozen-run/leakage gates passed on all 4,791 exposed development queries. The ignored acquisition and research artifacts remain distinct from the reviewed product scope overlay above; these results establish the offline experimental baseline, not a validated SCOPE-Rank gain.
 
 Source details and validation rules are documented in [`data/README.md`](data/README.md). Ranking names, third-party data, and source descriptions remain subject to their respective terms.
 
@@ -240,7 +263,22 @@ python3 -m research evaluate \
   --config research/configs/cached_crossref_baselines.json
 ```
 
-The checked-in configuration includes BM25, TF-IDF, RRF, and train-only learned linear fusion. Frozen vector, graph, or LightRAG runs can be imported through the same interface. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, required baselines, ablations, statistics, and claims boundary.
+The completed M3 engineering platform evaluates 11 lexical, dense, scientific-encoder, graph, LightRAG, cross-encoder, and hybrid methods through one interface. All methods share the 4,791-query development set, ordered 20,087-candidate universe, query order, metrics, and 55-pair statistical family. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, baselines, ablations, statistics, and claims boundary.
+
+P0-A through P0-C and the M3 strong-baseline engineering platform are complete. The accepted clean-PCL runs bind the 4,791-query development set, ordered 20,087-candidate universe, exact inputs, configurations, code state, environment, and per-run sidecars; the leakage gate has zero critical findings. M3 and SCOPE-Rank use that same Search-free exposed development set. The learned SCOPE-Rank full method is significantly worse than the strongest M3 baseline there; fixed linear/RRF fusion does not establish a significant gain. See the [complete negative-result freeze](docs/scope-rank-results.md).
+
+The machine infrastructure for a separate formal future 500-paper acquisition
+and full-denominator evaluator is complete, but no new live 500-paper
+Search/LLM run has been authorized or executed. Admission requires a newly
+acquired, owner-controlled mode-`0444` dataset and builder manifest plus the
+complete acquisition-evidence bundle. The legacy 500-paper files
+(`dataset.jsonl` SHA-256 `4c4d59dc...cbf65f1`, `manifest.json` SHA-256
+`99abb875...e0026c`) remain mode `0664` and lack that evidence, so the formal
+preflight rejects them; they cannot be relabeled as a formal evaluation.
+
+The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the evaluated LightRAG baseline and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic exact-namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described only as an **audited post-access namespace-repaired future evaluation**, not as clean confirmatory evidence that SCOPE-Rank works.
+
+The blinded expert-review tools and materials are complete for 250 queries, 6,129 deduplicated review items, and three expert assignments. They contain **zero real annotations**; agreement and expert-effectiveness conclusions remain unavailable until human reviewers perform the evaluation.
 
 <a id="repository-map"></a>
 ## Repository map

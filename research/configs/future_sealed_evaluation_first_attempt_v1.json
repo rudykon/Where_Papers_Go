@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "artifact_type": "sealed_evaluation_first_attempt_failure_record",
+  "status": "first_attempt_failed_closed_after_label_access_before_metrics",
+  "recorded_at": "2026-08-30T13:59:42+08:00",
+  "evidence_provenance": {
+    "failure_message_source": "operator_observed_terminal_output_not_persisted_stderr",
+    "label_access_source": "immutable_label_access_audit",
+    "artifact_integrity_source": "sha256_recalculated_after_failure"
+  },
+  "command": [
+    "/home/wangrj/miniconda3/bin/python",
+    "-m",
+    "research",
+    "evaluate-sealed-test",
+    "--config",
+    "research/configs/future_sealed_evaluation_v1.json"
+  ],
+  "environment_boundaries": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_DATASETS_OFFLINE": "1",
+    "search_calls": 0,
+    "llm_calls": 0,
+    "embedding_calls": 0,
+    "estimated_external_cost_usd": 0
+  },
+  "runtime": {
+    "git_commit": "82cf7b3708786b639b19b7e3dbcb6e603f954646",
+    "tracked_worktree_clean": true
+  },
+  "failure": {
+    "message": "sealed labels contain out-of-candidate gold venues",
+    "stage": "gold_candidate_namespace_membership_check",
+    "label_access_completed": true,
+    "metrics_computed": false,
+    "evaluation_output_published": false,
+    "failed_staging_directory_created": false,
+    "denominator_reduced": false
+  },
+  "artifacts": {
+    "evaluation_config": {
+      "path": "future_sealed_evaluation_v1.json",
+      "sha256": "1aeb4727b641207dab5ee336f8566758f3260abbfa9a611b573d5c99f5af607f"
+    },
+    "label_free_preflight": {
+      "path": "../../benchmark_artifacts/future_sealed_evaluation_202607_v1.preflight.json",
+      "sha256": "0780f06d426521e6d4ae32f6749c9542c7a08005e2a1bd115bd56bc52ba609a5"
+    },
+    "sealed_test_manifest": {
+      "path": "../../benchmark_artifacts/future_sealed_test_202607_v1/manifest.json",
+      "sha256": "b11de0a6bfce3869643a4c0dab38a0ac3d92913a0720d579c1cf850ab98d9650"
+    },
+    "prediction_commitment": {
+      "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/prediction_commitment.json",
+      "sha256": "8a2732e1626397d58f0be7bd9665aa98b79ddade13b1a294722640a5a39d875a"
+    },
+    "label_access_audit": {
+      "path": "../../benchmark_artifacts/future_sealed_evaluation_202607_v1.label-access-20260830T054859.430913+0000.json",
+      "sha256": "85a0bab2daf23449026a016832de3daa1591f6fd03d2964e75f67b880e84e4a2",
+      "required_mode": "0444"
+    },
+    "sealed_labels": {
+      "path": "../../benchmark_artifacts/future_sealed_test_202607_v1/labels.sealed.jsonl",
+      "sha256": "1de2664e11d8807cd6cd104924e04315edc5e645048b90ce8cfc7b26eff94bab",
+      "required_mode": "0600"
+    },
+    "frozen_candidate_profiles": {
+      "path": "../../benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl",
+      "sha256": "854c44f73a1b9113f9c0fe86f39cee394be84342fb3a6828e3991412c160e694",
+      "candidate_count": 20087
+    }
+  },
+  "preservation": {
+    "ordinary_evaluator_must_not_be_retried": true,
+    "label_access_audit_must_not_be_deleted_or_rewritten": true,
+    "original_output_directory_must_not_be_changed_to_bypass_gate": true,
+    "post_access_repair_requires_separate_frozen_protocol": true,
+    "pristine_single_pass_sealed_test": false
+  }
+}
