@@ -585,6 +585,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "/usr/bin/sudo -n /usr/bin/setpriv",
+            "/usr/bin/sudo -n /usr/bin/env -i",
             "--reuid=0",
             "--regid=0",
             "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
@@ -613,6 +614,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "GITHUB_ENV+x",
             "OS-level offline gate retained propagating mounts",
             "OS-level offline gate privileged setup shell lacks aligned root IDs",
+            'setup_uid_line" != "0 0 0 0"',
+            'setup_gid_line" != "0 0 0 0"',
             "OS-level offline gate privileged setup shell lacks required capabilities",
         ):
             self.assertIn(required_fragment, offline_wrapper)
