@@ -586,6 +586,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "/usr/bin/unshare",
             "/usr/bin/sudo -n /usr/bin/setpriv",
             "/usr/bin/sudo -n /usr/bin/env -i",
+            "/usr/bin/sudo -n /usr/bin/mount",
             "--reuid=0",
             "--regid=0",
             "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
