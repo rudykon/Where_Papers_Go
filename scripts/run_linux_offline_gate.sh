@@ -131,41 +131,37 @@ fi
   --inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
   --ambient-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
   -- \
-  /usr/bin/env -i \
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  LANG=C.UTF-8 \
-  LC_ALL=C.UTF-8 \
-  HOME=/nonexistent \
-  TMPDIR=/tmp \
-  USER="$caller_user" \
-  LOGNAME="$caller_user" \
-  SHELL=/bin/bash \
-  XDG_CONFIG_HOME=/nonexistent \
-  XDG_CACHE_HOME=/nonexistent \
-  XDG_DATA_HOME=/nonexistent \
-  HF_HUB_OFFLINE=1 \
-  TRANSFORMERS_OFFLINE=1 \
-  HF_DATASETS_OFFLINE=1 \
-  PYTHONDONTWRITEBYTECODE=1 \
-  WPG_PR_OS_OFFLINE_ACTIVE=linux-sandbox-v3 \
-  WPG_PR_HOST_NETNS_ID="$host_netns_id" \
-  WPG_PR_CALLER_UID="$caller_uid" \
-  WPG_PR_CALLER_GID="$caller_gid" \
-  WPG_PR_CALLER_HOME="$caller_home" \
-  WPG_PR_SANDBOX_ROOT="$project_root" \
-  WPG_PR_RUNNER_COMMANDS_DIR="$runner_commands_dir" \
-  WPG_PR_RUNNER_TOOL_CACHE="$runner_tool_cache" \
   /usr/bin/unshare \
     --mount \
     --net \
     --ipc \
     --uts \
-    --pid \
-    --fork \
-    --kill-child=KILL \
-    --mount-proc \
     --propagation private \
     -- \
+  /usr/bin/sudo -n /usr/bin/env -i \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME=/nonexistent \
+    TMPDIR=/tmp \
+    USER="$caller_user" \
+    LOGNAME="$caller_user" \
+    SHELL=/bin/bash \
+    XDG_CONFIG_HOME=/nonexistent \
+    XDG_CACHE_HOME=/nonexistent \
+    XDG_DATA_HOME=/nonexistent \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    WPG_PR_OS_OFFLINE_ACTIVE=linux-sandbox-v3 \
+    WPG_PR_HOST_NETNS_ID="$host_netns_id" \
+    WPG_PR_CALLER_UID="$caller_uid" \
+    WPG_PR_CALLER_GID="$caller_gid" \
+    WPG_PR_CALLER_HOME="$caller_home" \
+    WPG_PR_SANDBOX_ROOT="$project_root" \
+    WPG_PR_RUNNER_COMMANDS_DIR="$runner_commands_dir" \
+    WPG_PR_RUNNER_TOOL_CACHE="$runner_tool_cache" \
   /bin/bash --noprofile --norc -p -Eeuo pipefail -c '
     # Metadata is carried by the explicit env -i block above.  Keep every
     # positional parameter reserved for the target command across both
@@ -177,8 +173,15 @@ fi
     caller_home="${WPG_PR_CALLER_HOME:?}"
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
-    if [[ "$(/usr/bin/id -r -u):$(/usr/bin/id -u):$(/usr/bin/id -r -g):$(/usr/bin/id -g)" != \
-          "0:0:0:0" ]]; then
+    setup_uid_line=
+    setup_gid_line=
+    while read -r key values; do
+      case "$key" in
+        Uid:) setup_uid_line="$values" ;;
+        Gid:) setup_gid_line="$values" ;;
+      esac
+    done </proc/self/status
+    if [[ "$setup_uid_line" != "0 0 0 0" || "$setup_gid_line" != "0 0 0 0" ]]; then
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
@@ -271,7 +274,17 @@ fi
     [[ -z "$(/usr/sbin/ip -4 route show table main)" ]]
     [[ -z "$(/usr/sbin/ip -6 route show table main)" ]]
 
-    exec /usr/bin/setpriv \
+    # Create the PID namespace only after sudo has normalized every root
+    # credential field.  The forked child below is therefore PID 1 rather
+    # than a sudo monitor process.
+    exec /usr/bin/unshare \
+      --pid \
+      --fork \
+      --kill-child=KILL \
+      --mount-proc \
+      --propagation unchanged \
+      -- \
+      /usr/bin/setpriv \
       --reuid="$caller_uid" \
       --regid="$caller_gid" \
       --clear-groups \
