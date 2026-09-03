@@ -181,7 +181,8 @@ fi
         Gid:) setup_gid_line="$values" ;;
       esac
     done </proc/self/status
-    if [[ "$setup_uid_line" != "0 0 0 0" || "$setup_gid_line" != "0 0 0 0" ]]; then
+    if [[ ! "$setup_uid_line" =~ ^0[[:space:]]+0[[:space:]]+0[[:space:]]+0$ ]] ||
+       [[ ! "$setup_gid_line" =~ ^0[[:space:]]+0[[:space:]]+0[[:space:]]+0$ ]]; then
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
@@ -327,8 +328,10 @@ fi
           esac
         done </proc/self/status
 
-        [[ "$uid_line" == "$caller_uid $caller_uid $caller_uid $caller_uid" ]]
-        [[ "$gid_line" == "$caller_gid $caller_gid $caller_gid $caller_gid" ]]
+        uid_pattern="^${caller_uid}[[:space:]]+${caller_uid}[[:space:]]+${caller_uid}[[:space:]]+${caller_uid}$"
+        gid_pattern="^${caller_gid}[[:space:]]+${caller_gid}[[:space:]]+${caller_gid}[[:space:]]+${caller_gid}$"
+        [[ "$uid_line" =~ $uid_pattern ]]
+        [[ "$gid_line" =~ $gid_pattern ]]
         [[ -z "$groups_line" ]]
         [[ "$no_new_privs" == 1 ]]
         [[ "$pid_line" == 1 ]]
