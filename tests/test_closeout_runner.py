@@ -614,8 +614,10 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "GITHUB_ENV+x",
             "OS-level offline gate retained propagating mounts",
             "OS-level offline gate privileged setup shell lacks aligned root IDs",
-            'setup_uid_line" != "0 0 0 0"',
-            'setup_gid_line" != "0 0 0 0"',
+            'setup_uid_line" =~ ^0[[:space:]]+0[[:space:]]+0[[:space:]]+0$',
+            'setup_gid_line" =~ ^0[[:space:]]+0[[:space:]]+0[[:space:]]+0$',
+            '[[ "$uid_line" =~ $uid_pattern ]]',
+            '[[ "$gid_line" =~ $gid_pattern ]]',
             "OS-level offline gate privileged setup shell lacks required capabilities",
         ):
             self.assertIn(required_fragment, offline_wrapper)
