@@ -32,7 +32,7 @@ from urllib.parse import unquote, urlsplit
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_CLOSEOUT_TESTS_PATH = PROJECT_ROOT / "scripts" / "run_closeout_tests.py"
 RUN_CLOSEOUT_TESTS_SHA256 = (
-    "f8e62c5db35dce200532b4b64dc3ac709e1ededc4a79a6185a2f30c768bdabd7"
+    "75b13545097135cd1a2f263574f86a36727dfa030c74a2c7b0041c733ea25cad"
 )
 
 
@@ -1138,6 +1138,82 @@ def _load_report(path: Path) -> dict[str, Any]:
     return value
 
 
+def _parse_test_diagnostic(payload: bytes) -> dict[str, Any]:
+    if (
+        not isinstance(payload, bytes)
+        or not payload
+        or len(payload) > 4096
+        or not payload.startswith(run_closeout_tests.DIAGNOSTIC_PREFIX)
+    ):
+        raise PrGateError("fixed runner diagnostic framing is invalid")
+    encoded = payload[len(run_closeout_tests.DIAGNOSTIC_PREFIX) :]
+    try:
+        value = json.loads(
+            encoded.decode("ascii"),
+            object_pairs_hook=_duplicate_rejecting_object,
+        )
+    except PrGateError:
+        raise
+    except (UnicodeError, ValueError) as exc:
+        raise PrGateError("fixed runner diagnostic is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise PrGateError("fixed runner diagnostic must be an object")
+    if set(value) != run_closeout_tests.DIAGNOSTIC_KEYS:
+        raise PrGateError("fixed runner diagnostic has unexpected keys")
+    if (
+        type(value.get("schema_version")) is not int
+        or value["schema_version"]
+        != run_closeout_tests.DIAGNOSTIC_SCHEMA_VERSION
+        or value.get("artifact_type")
+        != run_closeout_tests.DIAGNOSTIC_ARTIFACT_TYPE
+    ):
+        raise PrGateError("fixed runner diagnostic identity is invalid")
+    if type(value.get("integrity_valid")) is not bool:
+        raise PrGateError("fixed runner diagnostic integrity result is invalid")
+    for count_field, digest_field, empty_digest in (
+        (
+            "integrity_issue_count",
+            "integrity_issue_sha256",
+            run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
+        ),
+        (
+            "nonpassing_test_id_count",
+            "nonpassing_test_id_sha256",
+            run_closeout_tests.EMPTY_NONPASSING_TEST_ID_SHA256,
+        ),
+    ):
+        count = value.get(count_field)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise PrGateError("fixed runner diagnostic count is invalid")
+        digest = value.get(digest_field)
+        if not isinstance(digest, str) or HEX_SHA256.fullmatch(digest) is None:
+            raise PrGateError("fixed runner diagnostic digest is invalid")
+        if (count == 0) != (digest == empty_digest):
+            raise PrGateError(
+                "fixed runner diagnostic count/digest is inconsistent"
+            )
+    if value["integrity_valid"] != (value["integrity_issue_count"] == 0):
+        raise PrGateError("fixed runner diagnostic integrity fields disagree")
+    if payload != run_closeout_tests.DIAGNOSTIC_PREFIX + _canonical_json(value):
+        raise PrGateError("fixed runner diagnostic is not canonical")
+    return value
+
+
+def _test_diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
+    return (
+        "runner diagnostic: integrity_valid="
+        + str(diagnostic["integrity_valid"]).lower()
+        + ", integrity_issue_count="
+        + str(diagnostic["integrity_issue_count"])
+        + ", integrity_issue_sha256="
+        + str(diagnostic["integrity_issue_sha256"])
+        + ", nonpassing_test_id_count="
+        + str(diagnostic["nonpassing_test_id_count"])
+        + ", nonpassing_test_id_sha256="
+        + str(diagnostic["nonpassing_test_id_sha256"])
+    )
+
+
 def _model_requirements_sha256() -> str:
     path = PROJECT_ROOT / ".github" / "pr-model-requirements.txt"
     try:
@@ -1816,14 +1892,34 @@ def _run_test_gate(
             env=_guarded_child_environment(os.fspath(audit)),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=1800,
             check=False,
         )
-        result = _validate_test_report(_load_report(report), suite=suite)
-        _verify_empty_audit(audit, initial)
-        if completed.returncode != 0:
-            raise PrGateError(f"fixed {suite} runner returned failure")
+        captured_stderr = completed.stderr
+        if not isinstance(captured_stderr, bytes):
+            captured_stderr = b""
+        try:
+            result = _validate_test_report(_load_report(report), suite=suite)
+            _verify_empty_audit(audit, initial)
+            if completed.returncode != 0:
+                raise PrGateError(f"fixed {suite} runner returned failure")
+        except (OSError, PrGateError) as exc:
+            if isinstance(exc, PrGateError):
+                failure = str(exc)
+            else:
+                failure = f"fixed {suite} runner report is unavailable"
+            try:
+                diagnostic = _parse_test_diagnostic(captured_stderr)
+            except PrGateError:
+                diagnostic_summary = "runner diagnostic unavailable or invalid"
+            else:
+                diagnostic_summary = _test_diagnostic_summary(diagnostic)
+            raise PrGateError(f"{failure}; {diagnostic_summary}") from None
+        if captured_stderr:
+            raise PrGateError(
+                f"fixed {suite} runner emitted unexpected diagnostic output"
+            )
         return {
             "artifact_type": "where_papers_go_pr_test_gate",
             "status": "passed",

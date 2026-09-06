@@ -49,6 +49,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         def run_synthetic(
             suite_name: str,
             rows: tuple[tuple[str, str | None, bool], ...],
+            *,
+            diagnostic: dict[str, object] | None = None,
         ) -> dict[str, object]:
             suite = unittest.TestSuite(
                 SyntheticCase(identifier, reason, subtest=subtest)
@@ -58,7 +60,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
                 run_closeout_tests, "_load_suite", return_value=suite
             ):
                 return run_closeout_tests._run_suite(
-                    suite_name, _HealthyGuard()
+                    suite_name,
+                    _HealthyGuard(),
+                    diagnostic=diagnostic,
                 )
 
         allowed_parent_id = (
@@ -115,10 +119,12 @@ class CloseoutRunnerContractTests(unittest.TestCase):
                 {
                     run_closeout_tests.ID_HASH_DOMAIN,
                     run_closeout_tests.SKIPPED_TEST_ID_HASH_DOMAIN,
+                    run_closeout_tests.NONPASSING_TEST_ID_HASH_DOMAIN,
+                    run_closeout_tests.INTEGRITY_ISSUE_HASH_DOMAIN,
                     run_closeout_tests.SKIP_ALLOWLIST_HASH_DOMAIN,
                 }
             ),
-            3,
+            5,
         )
         for field in (
             "failures",
@@ -133,6 +139,14 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertTrue(encoded.endswith(b"\n"))
         self.assertNotIn(allowed_parent_id.encode("ascii"), encoded)
         self.assertNotIn(allowed_prefix_reason.encode("ascii"), encoded)
+        self.assertEqual(
+            run_closeout_tests.EMPTY_NONPASSING_TEST_ID_SHA256,
+            "b36fdedfd2f0f153184cdfa603ba5a8cd5bb0aa889cb8054b510342ea82e6531",
+        )
+        self.assertEqual(
+            run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
+            "ad52643676c0b0344a556b1e801ae65839d5f3b5097b7f40b7e536a1b85a27cb",
+        )
 
         expected_allowlist = {
             run_closeout_tests.LOCAL_RUNTIME_SCIENTIFIC_TEST_ID: (
@@ -227,6 +241,87 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             model_pass_report["skip_allowlist_sha256"],
             full_allowlist_digest,
         )
+
+        class SyntheticFailureCase(unittest.TestCase):
+            def id(self) -> str:
+                return "synthetic.failure"
+
+            def runTest(self) -> None:
+                self.fail("synthetic hidden failure details")
+
+        with patch.object(
+            run_closeout_tests,
+            "_load_suite",
+            return_value=unittest.TestSuite((SyntheticFailureCase(),)),
+        ):
+            failure_diagnostic = run_closeout_tests._empty_diagnostic()
+            failure_report = run_closeout_tests._run_suite(
+                "full",
+                _HealthyGuard(),
+                diagnostic=failure_diagnostic,
+            )
+        self.assertEqual(failure_report["failures"], 1)
+        self.assertIs(failure_diagnostic["integrity_valid"], True)
+        self.assertEqual(failure_diagnostic["integrity_issue_count"], 0)
+        self.assertEqual(
+            failure_diagnostic["integrity_issue_sha256"],
+            run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
+        )
+        self.assertEqual(failure_diagnostic["nonpassing_test_id_count"], 1)
+        self.assertEqual(
+            failure_diagnostic["nonpassing_test_id_sha256"],
+            "fbd3a800dba3be1637cf36a1ab472f18fa49b3ad3fa49de16797b0ed7e77cd2f",
+        )
+        failure_encoded = run_closeout_tests._encode_report(failure_report)
+        diagnostic_encoded = run_closeout_tests._encode_diagnostic(
+            failure_diagnostic
+        )
+        for encoded in (failure_encoded, diagnostic_encoded):
+            self.assertNotIn(b"synthetic.failure", encoded)
+            self.assertNotIn(b"synthetic hidden failure details", encoded)
+        parsed_diagnostic = validate_pr_gates._parse_test_diagnostic(
+            diagnostic_encoded
+        )
+        self.assertEqual(parsed_diagnostic, failure_diagnostic)
+        empty_diagnostic = run_closeout_tests._empty_diagnostic()
+        self.assertEqual(
+            validate_pr_gates._parse_test_diagnostic(
+                run_closeout_tests._encode_diagnostic(empty_diagnostic)
+            ),
+            empty_diagnostic,
+        )
+        self.assertRegex(
+            validate_pr_gates._test_diagnostic_summary(parsed_diagnostic),
+            r"integrity_valid=true, integrity_issue_count=0, "
+            r"integrity_issue_sha256=[0-9a-f]{64}, "
+            r"nonpassing_test_id_count=1, "
+            r"nonpassing_test_id_sha256=fbd3a800",
+        )
+        inconsistent_diagnostic = dict(failure_diagnostic)
+        inconsistent_diagnostic["nonpassing_test_id_count"] = 0
+        integrity_inconsistent_diagnostic = dict(failure_diagnostic)
+        integrity_inconsistent_diagnostic["integrity_valid"] = False
+        noncanonical_diagnostic = run_closeout_tests.DIAGNOSTIC_PREFIX + (
+            json.dumps(failure_diagnostic, sort_keys=True) + "\n"
+        ).encode("ascii")
+        for malformed_diagnostic in (
+            b"unexpected output\n" + diagnostic_encoded,
+            diagnostic_encoded + b"unexpected output\n",
+            noncanonical_diagnostic,
+            run_closeout_tests._encode_diagnostic(inconsistent_diagnostic),
+            run_closeout_tests._encode_diagnostic(
+                integrity_inconsistent_diagnostic
+            ),
+        ):
+            with self.subTest(malformed_diagnostic=malformed_diagnostic[:32]):
+                with self.assertRaises(validate_pr_gates.PrGateError):
+                    validate_pr_gates._parse_test_diagnostic(
+                        malformed_diagnostic
+                    )
+        with self.assertRaisesRegex(validate_pr_gates.PrGateError, "failures=1"):
+            validate_pr_gates._validate_test_report(
+                failure_report, suite="full"
+            )
 
         fixed_full_report = dict(report)
         fixed_full_report.update(
@@ -346,13 +441,29 @@ class CloseoutRunnerContractTests(unittest.TestCase):
                 identifier=identifier,
                 subtest=subtest,
             ):
+                invalid_diagnostic = run_closeout_tests._empty_diagnostic()
                 invalid_report = run_synthetic(
-                    suite_name, ((identifier, reason, subtest),)
+                    suite_name,
+                    ((identifier, reason, subtest),),
+                    diagnostic=invalid_diagnostic,
                 )
                 self.assertEqual(invalid_report["total"], 1)
                 self.assertEqual(invalid_report["passed"], 0)
                 self.assertEqual(invalid_report["skipped"], 0)
                 self.assertEqual(invalid_report["errors"], 1)
+                self.assertIs(invalid_diagnostic["integrity_valid"], False)
+                self.assertEqual(
+                    invalid_diagnostic["integrity_issue_count"], 1
+                )
+                self.assertEqual(
+                    invalid_diagnostic["integrity_issue_sha256"],
+                    run_closeout_tests._integrity_issue_digest(
+                        ("skip_policy",)
+                    ),
+                )
+                self.assertEqual(
+                    invalid_diagnostic["nonpassing_test_id_count"], 0
+                )
                 self.assertEqual(
                     invalid_report["skipped_test_id_count"], 1
                 )
@@ -389,13 +500,25 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "_load_suite",
             return_value=fixture_suite,
         ):
+            fixture_diagnostic = run_closeout_tests._empty_diagnostic()
             fixture_report = run_closeout_tests._run_suite(
-                "full", _HealthyGuard()
+                "full",
+                _HealthyGuard(),
+                diagnostic=fixture_diagnostic,
             )
         self.assertEqual(fixture_report["total"], 2)
         self.assertEqual(fixture_report["passed"], 1)
         self.assertEqual(fixture_report["skipped"], 0)
         self.assertEqual(fixture_report["errors"], 1)
+        self.assertIs(fixture_diagnostic["integrity_valid"], False)
+        self.assertEqual(fixture_diagnostic["integrity_issue_count"], 3)
+        self.assertEqual(
+            fixture_diagnostic["integrity_issue_sha256"],
+            run_closeout_tests._integrity_issue_digest(
+                ("executed_ids", "fixture_outcomes", "skip_policy")
+            ),
+        )
+        self.assertEqual(fixture_diagnostic["nonpassing_test_id_count"], 0)
         self.assertEqual(fixture_report["skipped_test_id_count"], 0)
 
     def test_output_creation_is_private_and_never_overwrites(self) -> None:
