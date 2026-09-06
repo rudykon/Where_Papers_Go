@@ -30,9 +30,9 @@ fi
 
 gate_outer_stage=tool-validation
 for required in \
-  /usr/bin/chmod /usr/bin/cmp /usr/bin/cp /usr/bin/find \
+  /usr/bin/find \
   /usr/bin/getent /usr/bin/id /usr/bin/mount /usr/bin/readlink \
-  /usr/bin/rm /usr/bin/setpriv /usr/bin/stat /usr/bin/sudo \
+  /usr/bin/setpriv /usr/bin/stat /usr/bin/sudo \
   /usr/bin/uname /usr/bin/unshare /usr/sbin/ip; do
   if [[ ! -x "$required" ]]; then
     echo "OS-level offline gate is missing $required" >&2
@@ -248,11 +248,17 @@ gate_outer_stage=root-sandbox-entry
     done
     echo "OS-level offline gate root stage root-capabilities complete" >&2
 
-    # Current hosted-runner kernels can reject the setuid mount helper even
-    # with aligned root IDs and CAP_SYS_ADMIN.  Use sudo once to replace /tmp
-    # with a private filesystem, then copy the trusted helper there without
-    # its setuid bit.  Ambient capabilities now survive that ordinary exec.
-    # No sudo monitor remains in this namespace when /run is replaced below.
+    # The system mount executable is setuid on hosted runners.  A direct exec
+    # therefore clears ambient capabilities before mount(2), despite the
+    # aligned root IDs above.  no_new_privs makes that setuid bit ineffective,
+    # so the explicitly bounded ambient capabilities survive the exec without
+    # leaving a nested sudo monitor inside this namespace.
+    gate_stage=root-mount-helper
+    mount_helper() {
+      /usr/bin/setpriv --no-new-privs -- /usr/bin/mount "$@"
+    }
+    declare -F mount_helper >/dev/null
+    echo "OS-level offline gate root stage root-mount-helper complete" >&2
 
     # Drop the inherited checkout cwd before overmounting it.  Otherwise the
     # old mount remains reachable through the process's cwd despite the new
@@ -260,30 +266,20 @@ gate_outer_stage=root-sandbox-entry
     cd /
 
     gate_stage=root-private-tmp
-    /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
+    mount_helper -t tmpfs \
       -o rw,nosuid,nodev,mode=1777,size=1g \
       wpg-tmp /tmp
     echo "OS-level offline gate root stage root-private-tmp complete" >&2
 
-    gate_stage=root-mount-helper
-    mount_helper=/tmp/.wpg-offline-gate-mount
-    /usr/bin/cp -- /usr/bin/mount "$mount_helper"
-    /usr/bin/chmod 0700 "$mount_helper"
-    /usr/bin/cmp --silent -- /usr/bin/mount "$mount_helper"
-    [[ -f "$mount_helper" && ! -L "$mount_helper" && \
-       -x "$mount_helper" && \
-       "$(/usr/bin/stat -Lc "%u:%g:%a" "$mount_helper")" == 0:0:700 ]]
-    echo "OS-level offline gate root stage root-mount-helper complete" >&2
-
     readonly_bind() {
       local target="$1"
-      "$mount_helper" --bind "$target" "$target"
-      "$mount_helper" -o remount,bind,ro,nosuid,nodev,noexec "$target"
+      mount_helper --bind "$target" "$target"
+      mount_helper -o remount,bind,ro,nosuid,nodev,noexec "$target"
     }
     readonly_bind_exec() {
       local target="$1"
-      "$mount_helper" --bind "$target" "$target"
-      "$mount_helper" -o remount,bind,ro,nosuid,nodev "$target"
+      mount_helper --bind "$target" "$target"
+      mount_helper -o remount,bind,ro,nosuid,nodev "$target"
     }
     mask_directory() {
       local target="$1"
@@ -300,7 +296,7 @@ gate_outer_stage=root-sandbox-entry
         echo "OS-level offline gate rejects redirected socket directory: $target" >&2
         exit 2
       fi
-      "$mount_helper" -t tmpfs \
+      mount_helper -t tmpfs \
         -o rw,nosuid,nodev,noexec,mode=0700,size=1m \
         wpg-private "$target"
     }
@@ -310,7 +306,7 @@ gate_outer_stage=root-sandbox-entry
     # that mount operation is rejected by some otherwise capable hosted
     # runners, so verify the resulting namespace below after privileges drop.
     gate_stage=root-private-mounts
-    "$mount_helper" -t tmpfs \
+    mount_helper -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
     echo "OS-level offline gate root stage root-private-mounts complete" >&2
@@ -337,15 +333,13 @@ gate_outer_stage=root-sandbox-entry
     fi
     echo "OS-level offline gate root stage root-readonly-mounts complete" >&2
 
-    # Replace /run last, after the one short-lived sudo invocation and all
-    # other mounts have returned.  The outer sudo monitor is outside this
-    # mount namespace, so runner cleanup remains reachable.
+    # Replace /run last, after all other mount commands have returned.  The
+    # sole outer sudo monitor is outside this mount namespace, so runner
+    # cleanup remains reachable.
     gate_stage=root-private-run
-    "$mount_helper" -t tmpfs \
+    mount_helper -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
       wpg-run /run
-    /usr/bin/rm -- "$mount_helper"
-    [[ ! -e "$mount_helper" && ! -L "$mount_helper" ]]
     echo "OS-level offline gate root stage root-private-run complete" >&2
     cd -- "$project_root"
 

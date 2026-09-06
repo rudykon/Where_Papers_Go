@@ -585,10 +585,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "/usr/bin/sudo -n /usr/bin/setpriv",
-            "/usr/bin/sudo -n /usr/bin/mount",
-            "mount_helper=/tmp/.wpg-offline-gate-mount",
-            '"$mount_helper" --bind "$target" "$target"',
-            "/usr/bin/rm -- \"$mount_helper\"",
+            "mount_helper() {",
+            '/usr/bin/setpriv --no-new-privs -- /usr/bin/mount "$@"',
+            'mount_helper --bind "$target" "$target"',
             "--reuid=0",
             "--regid=0",
             "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
@@ -639,6 +638,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
+        self.assertNotIn("/usr/bin/sudo -n /usr/bin/mount", offline_wrapper)
+        self.assertNotIn(".wpg-offline-gate-mount", offline_wrapper)
         self.assertEqual(offline_wrapper.count("--reuid=0"), 1)
         self.assertEqual(offline_wrapper.count("--regid=0"), 1)
         for local_name, environment_name in (
