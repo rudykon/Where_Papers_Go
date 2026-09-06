@@ -344,6 +344,8 @@ gate_outer_stage=root-sandbox-entry
     [[ -z "$(/usr/sbin/ip -4 route show table main)" ]]
     [[ -z "$(/usr/sbin/ip -6 route show table main)" ]]
 
+    echo "OS-level offline gate root setup complete" >&2
+
     # Create the PID namespace only after the short-lived inner sudo has
     # exited.  The forked child below is therefore PID 1 rather than a sudo
     # monitor process.
@@ -366,6 +368,8 @@ gate_outer_stage=root-sandbox-entry
       --pdeathsig=KILL \
       -- \
       /bin/bash --noprofile --norc -Eeuo pipefail -c '\''
+        echo "OS-level offline gate entered unprivileged checks" >&2
+
         caller_uid="${WPG_PR_CALLER_UID:?}"
         caller_gid="${WPG_PR_CALLER_GID:?}"
         project_root="${WPG_PR_SANDBOX_ROOT:?}"
