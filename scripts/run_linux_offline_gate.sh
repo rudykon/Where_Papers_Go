@@ -3,10 +3,22 @@
 
 set -Eeuo pipefail
 
+gate_outer_stage=argument-validation
+report_outer_exit() {
+  local rc="$?"
+  trap - EXIT
+  if (( rc != 0 )); then
+    echo "OS-level offline gate outer wrapper failed during $gate_outer_stage (status $rc)" >&2
+  fi
+  exit "$rc"
+}
+trap report_outer_exit EXIT
+
 if [[ $# -eq 0 ]]; then
   echo "usage: run_linux_offline_gate.sh COMMAND [ARG ...]" >&2
   exit 2
 fi
+gate_outer_stage=platform-validation
 if [[ "$(/usr/bin/uname -s)" != "Linux" ]]; then
   echo "OS-level offline gates require Linux" >&2
   exit 2
@@ -16,6 +28,7 @@ if [[ "$(/usr/bin/id -u)" -eq 0 ]]; then
   exit 2
 fi
 
+gate_outer_stage=tool-validation
 for required in \
   /usr/bin/chmod /usr/bin/cmp /usr/bin/cp /usr/bin/find \
   /usr/bin/getent /usr/bin/id /usr/bin/mount /usr/bin/readlink \
@@ -26,11 +39,13 @@ for required in \
     exit 2
   fi
 done
+gate_outer_stage=sudo-validation
 if ! /usr/bin/sudo -n /usr/bin/true; then
   echo "OS-level offline gate requires non-interactive sudo" >&2
   exit 2
 fi
 
+gate_outer_stage=repository-validation
 script_path="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}")"
 project_root="$(/usr/bin/readlink -f -- "$(/usr/bin/dirname -- "$script_path")/..")"
 if [[ ! -d "$project_root/.git" || ! -f "$project_root/.github/pr-gate-manifest.json" ]]; then
@@ -44,6 +59,7 @@ case "$project_root/" in
     ;;
 esac
 
+gate_outer_stage=command-validation
 command_name="$1"
 shift
 case "$command_name" in
@@ -71,6 +87,7 @@ case "$command_path/" in
     ;;
 esac
 
+gate_outer_stage=caller-validation
 caller_uid="$(/usr/bin/id -u)"
 caller_gid="$(/usr/bin/id -g)"
 passwd_record="$(/usr/bin/getent passwd "$caller_uid")"
@@ -91,6 +108,7 @@ if [[ ! "$host_netns_id" =~ ^[0-9]+:[0-9]+$ ]]; then
   exit 2
 fi
 
+gate_outer_stage=runner-path-validation
 runner_commands_dir=/nonexistent
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
   candidate="${RUNNER_TEMP%/}/_runner_file_commands"
@@ -125,6 +143,7 @@ elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   exit 2
 fi
 
+gate_outer_stage=root-sandbox-entry
 /usr/bin/sudo -n /usr/bin/setpriv \
   --reuid=0 \
   --regid=0 \
@@ -182,12 +201,15 @@ fi
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
     gate_stage=root-identity
-    report_setup_error() {
+    report_setup_exit() {
       local rc="$?"
-      echo "OS-level offline gate root setup failed during $gate_stage (status $rc)" >&2
+      trap - EXIT
+      if (( rc != 0 )); then
+        echo "OS-level offline gate root setup failed during $gate_stage (status $rc)" >&2
+      fi
       exit "$rc"
     }
-    trap report_setup_error ERR
+    trap report_setup_exit EXIT
 
     setup_uid_line=
     setup_gid_line=
@@ -359,12 +381,15 @@ fi
         runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
         gate_stage=unprivileged-identity
-        report_unprivileged_error() {
+        report_unprivileged_exit() {
           local rc="$?"
-          echo "OS-level offline gate unprivileged checks failed during $gate_stage (status $rc)" >&2
+          trap - EXIT
+          if (( rc != 0 )); then
+            echo "OS-level offline gate unprivileged checks failed during $gate_stage (status $rc)" >&2
+          fi
           exit "$rc"
         }
-        trap report_unprivileged_error ERR
+        trap report_unprivileged_exit EXIT
 
         uid_line=
         gid_line=

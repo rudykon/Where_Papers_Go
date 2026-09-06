@@ -625,6 +625,10 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             '"$setup_cap_bnd" "$setup_cap_amb"',
             "root setup failed during $gate_stage",
             "unprivileged checks failed during $gate_stage",
+            "outer wrapper failed during $gate_outer_stage",
+            "trap report_outer_exit EXIT",
+            "trap report_setup_exit EXIT",
+            "trap report_unprivileged_exit EXIT",
             "gate_stage=unprivileged-mount-verification",
         ):
             self.assertIn(required_fragment, offline_wrapper)
