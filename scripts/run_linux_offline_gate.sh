@@ -269,7 +269,7 @@ gate_outer_stage=root-sandbox-entry
 
     gate_stage=root-private-tmp
     "${mount_command[@]}" -t tmpfs \
-      -o rw,nosuid,nodev,mode=1777,size=1g \
+      -o rw,nosuid,nodev,mode=1777,size=2g \
       wpg-tmp /tmp
     echo "OS-level offline gate root stage root-private-tmp complete" >&2
 

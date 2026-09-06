@@ -724,7 +724,7 @@ NoNewPrivs:\t1
             )
         )
         project_root = os.fspath(validate_pr_gates.PROJECT_ROOT)
-        caller_home = os.fspath(validate_pr_gates.PROJECT_ROOT.parents[1])
+        caller_home = "/home/sandbox-caller"
         runner_tool_cache = "/opt/hostedtoolcache"
         mountinfo = "\n".join(
             (

@@ -1623,7 +1623,7 @@ def _raw_socket_creation_is_blocked() -> bool:
     return False
 
 
-def _sandbox_attestation() -> bool:
+def _sandbox_attestation_failure() -> str | None:
     host_netns_id = os.environ.get(OS_HOST_NETNS_ENV, "")
     uid_text = os.environ.get(OS_CALLER_UID_ENV, "")
     gid_text = os.environ.get(OS_CALLER_GID_ENV, "")
@@ -1642,42 +1642,51 @@ def _sandbox_attestation() -> bool:
         or not runner_commands_dir.startswith("/")
         or not runner_tool_cache.startswith("/")
     ):
-        return False
+        return "metadata"
     uid = int(uid_text)
     gid = int(gid_text)
     if uid == 0 or gid == 0:
-        return False
+        return "caller_identity"
     try:
         current_namespace = os.stat("/proc/self/ns/net")
         status_text = Path("/proc/self/status").read_text(encoding="ascii")
         mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
         interfaces = set(os.listdir("/sys/class/net"))
     except (OSError, UnicodeError):
-        return False
+        return "proc_metadata"
     current_netns_id = f"{current_namespace.st_dev}:{current_namespace.st_ino}"
+    if current_netns_id == host_netns_id:
+        return "network_namespace"
     if (
-        current_netns_id == host_netns_id
-        or os.getpid() != 1
+        os.getpid() != 1
         or os.getuid() != uid
         or os.geteuid() != uid
         or os.getgid() != gid
         or os.getegid() != gid
         or os.getgroups()
-        or Path.cwd().resolve() != PROJECT_ROOT
-        or os.access(".", os.W_OK)
-        or os.access(PROJECT_ROOT, os.W_OK)
-        or interfaces != {"lo"}
-        or not _sandbox_status_is_unprivileged(status_text, uid, gid)
-        or not _sandbox_mounts_are_private(
-            mountinfo_text,
-            project_root=project_root,
-            caller_home=caller_home,
-            runner_commands_dir=runner_commands_dir,
-            runner_tool_cache=runner_tool_cache,
-        )
-        or not _raw_socket_creation_is_blocked()
     ):
-        return False
+        return "process_identity"
+    try:
+        if Path.cwd().resolve() != PROJECT_ROOT:
+            return "working_directory"
+    except OSError:
+        return "working_directory"
+    if os.access(".", os.W_OK) or os.access(PROJECT_ROOT, os.W_OK):
+        return "checkout_writable"
+    if interfaces != {"lo"}:
+        return "network_interfaces"
+    if not _sandbox_status_is_unprivileged(status_text, uid, gid):
+        return "process_privileges"
+    if not _sandbox_mounts_are_private(
+        mountinfo_text,
+        project_root=project_root,
+        caller_home=caller_home,
+        runner_commands_dir=runner_commands_dir,
+        runner_tool_cache=runner_tool_cache,
+    ):
+        return "mount_policy"
+    if not _raw_socket_creation_is_blocked():
+        return "raw_socket"
     for name in (
         "GITHUB_ENV",
         "GITHUB_PATH",
@@ -1693,7 +1702,7 @@ def _sandbox_attestation() -> bool:
         "GITHUB_TOKEN",
     ):
         if name in os.environ:
-            return False
+            return "forbidden_environment"
     for path in (
         "/run/docker.sock",
         "/var/run/docker.sock",
@@ -1704,11 +1713,11 @@ def _sandbox_attestation() -> bool:
     ):
         try:
             if stat.S_ISSOCK(os.stat(path, follow_symlinks=False).st_mode):
-                return False
+                return "host_socket"
         except FileNotFoundError:
             pass
         except OSError:
-            return False
+            return "host_socket_probe"
     try:
         sudo_probe = subprocess.run(
             ["/usr/bin/sudo", "-n", "/usr/bin/true"],
@@ -1720,17 +1729,28 @@ def _sandbox_attestation() -> bool:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return sudo_probe.returncode != 0
+        return "sudo_probe"
+    if sudo_probe.returncode == 0:
+        return "sudo_privilege"
+    return None
+
+
+def _sandbox_attestation() -> bool:
+    return _sandbox_attestation_failure() is None
 
 
 def _os_network_isolation_active(*, required: bool) -> bool:
-    active = (
-        os.environ.get(OS_OFFLINE_ENV) == OS_OFFLINE_TOKEN
-        and _sandbox_attestation()
-    )
+    token_active = os.environ.get(OS_OFFLINE_ENV) == OS_OFFLINE_TOKEN
+    active = token_active and _sandbox_attestation()
     if required and not active:
-        raise PrGateError("required OS-level offline sandbox isolation is inactive")
+        reason = (
+            "activation_token"
+            if not token_active
+            else (_sandbox_attestation_failure() or "attestation")
+        )
+        raise PrGateError(
+            "required OS-level offline sandbox isolation is inactive: " + reason
+        )
     return active
 
 

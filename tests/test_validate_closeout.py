@@ -25,13 +25,40 @@ class AggregateCloseoutValidationTests(unittest.TestCase):
         for name, relative in validate_closeout.REQUIRED_ARTIFACTS.items():
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(
-                (validate_closeout.PROJECT_ROOT / relative).read_bytes()
+            path.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "synthetic_closeout_unit_fixture",
+                        "name": name,
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
             )
             path.chmod(0o444)
             self.artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.pinned_artifact_patches = (
+            patch.object(
+                validate_closeout,
+                "PINNED_ARTIFACT_SHA256",
+                dict(self.artifact_hashes),
+            ),
+            patch.object(
+                validate_closeout,
+                "PINNED_ARTIFACT_BYTES",
+                {
+                    name: (self.root / relative).stat().st_size
+                    for name, relative in validate_closeout.REQUIRED_ARTIFACTS.items()
+                },
+            ),
+        )
+        for pinned_patch in self.pinned_artifact_patches:
+            pinned_patch.start()
 
     def tearDown(self) -> None:
+        for pinned_patch in reversed(self.pinned_artifact_patches):
+            pinned_patch.stop()
         self.temporary.cleanup()
 
     def request(self) -> dict[str, object]:
