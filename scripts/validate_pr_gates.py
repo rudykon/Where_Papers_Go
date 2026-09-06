@@ -166,6 +166,7 @@ MODEL_RUNTIME_MODULES = tuple(MODEL_RUNTIME_VERSIONS)
 OS_OFFLINE_ENV = "WPG_PR_OS_OFFLINE_ACTIVE"
 OS_OFFLINE_TOKEN = "linux-sandbox-v3"
 OS_HOST_NETNS_ENV = "WPG_PR_HOST_NETNS_ID"
+OS_HOST_PIDNS_ENV = "WPG_PR_HOST_PIDNS_ID"
 OS_CALLER_UID_ENV = "WPG_PR_CALLER_UID"
 OS_CALLER_GID_ENV = "WPG_PR_CALLER_GID"
 OS_CALLER_HOME_ENV = "WPG_PR_CALLER_HOME"
@@ -1446,6 +1447,7 @@ def _guarded_child_environment(audit_path: str) -> dict[str, str]:
     for name in (
         OS_OFFLINE_ENV,
         OS_HOST_NETNS_ENV,
+        OS_HOST_PIDNS_ENV,
         OS_CALLER_UID_ENV,
         OS_CALLER_GID_ENV,
         OS_CALLER_HOME_ENV,
@@ -1530,7 +1532,13 @@ def _runtime_preflight(suite: str) -> dict[str, Any]:
     }
 
 
-def _sandbox_status_is_unprivileged(status_text: str, uid: int, gid: int) -> bool:
+def _sandbox_status_is_unprivileged(
+    status_text: str,
+    uid: int,
+    gid: int,
+    *,
+    expected_pid: int = 1,
+) -> bool:
     fields: dict[str, list[str]] = {}
     for line in status_text.splitlines():
         key, separator, value = line.partition(":")
@@ -1538,7 +1546,7 @@ def _sandbox_status_is_unprivileged(status_text: str, uid: int, gid: int) -> boo
             fields[key] = value.split()
     expected_capability = ["0000000000000000"]
     return (
-        fields.get("Pid") == ["1"]
+        fields.get("Pid") == [str(expected_pid)]
         and fields.get("Uid") == [str(uid)] * 4
         and fields.get("Gid") == [str(gid)] * 4
         and fields.get("Groups") == []
@@ -1625,6 +1633,7 @@ def _raw_socket_creation_is_blocked() -> bool:
 
 def _sandbox_attestation_failure() -> str | None:
     host_netns_id = os.environ.get(OS_HOST_NETNS_ENV, "")
+    host_pidns_id = os.environ.get(OS_HOST_PIDNS_ENV, "")
     uid_text = os.environ.get(OS_CALLER_UID_ENV, "")
     gid_text = os.environ.get(OS_CALLER_GID_ENV, "")
     caller_home = os.environ.get(OS_CALLER_HOME_ENV, "")
@@ -1633,6 +1642,7 @@ def _sandbox_attestation_failure() -> str | None:
     runner_tool_cache = os.environ.get(OS_RUNNER_TOOL_CACHE_ENV, "")
     if (
         re.fullmatch(r"[0-9]+:[0-9]+", host_netns_id) is None
+        or re.fullmatch(r"[0-9]+:[0-9]+", host_pidns_id) is None
         or not uid_text.isascii()
         or not uid_text.isdecimal()
         or not gid_text.isascii()
@@ -1649,16 +1659,26 @@ def _sandbox_attestation_failure() -> str | None:
         return "caller_identity"
     try:
         current_namespace = os.stat("/proc/self/ns/net")
+        current_pid_namespace = os.stat("/proc/self/ns/pid")
+        init_pid_namespace = os.stat("/proc/1/ns/pid")
         status_text = Path("/proc/self/status").read_text(encoding="ascii")
+        init_status_text = Path("/proc/1/status").read_text(encoding="ascii")
         mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
         interfaces = {name for _index, name in socket.if_nameindex()}
     except (OSError, UnicodeError):
         return "proc_metadata"
     current_netns_id = f"{current_namespace.st_dev}:{current_namespace.st_ino}"
+    current_pidns_id = (
+        f"{current_pid_namespace.st_dev}:{current_pid_namespace.st_ino}"
+    )
+    init_pidns_id = f"{init_pid_namespace.st_dev}:{init_pid_namespace.st_ino}"
     if current_netns_id == host_netns_id:
         return "network_namespace"
+    if current_pidns_id == host_pidns_id or init_pidns_id != current_pidns_id:
+        return "pid_namespace"
+    current_pid = os.getpid()
     if (
-        os.getpid() != 1
+        current_pid < 1
         or os.getuid() != uid
         or os.geteuid() != uid
         or os.getgid() != gid
@@ -1675,8 +1695,14 @@ def _sandbox_attestation_failure() -> str | None:
         return "checkout_writable"
     if interfaces != {"lo"}:
         return "network_interfaces"
-    if not _sandbox_status_is_unprivileged(status_text, uid, gid):
+    if not _sandbox_status_is_unprivileged(
+        status_text, uid, gid, expected_pid=current_pid
+    ):
         return "process_privileges"
+    if not _sandbox_status_is_unprivileged(
+        init_status_text, uid, gid, expected_pid=1
+    ):
+        return "pid_namespace_init"
     if not _sandbox_mounts_are_private(
         mountinfo_text,
         project_root=project_root,
