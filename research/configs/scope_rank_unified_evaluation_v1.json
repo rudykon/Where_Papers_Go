@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "fail_on_critical_leakage": true,
+  "evaluation_status": "exposed_development_not_sealed",
+  "output_dir": "../../benchmark_artifacts/scope_rank_20260828/unified_evaluation_v1",
+  "dataset": {
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
+    "query_fields": ["title", "abstract"],
+    "relevance_field": "gold_journal_id"
+  },
+  "corpus": {
+    "type": "jsonl",
+    "path": "../../benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl",
+    "id_field": "venue_id",
+    "text_fields": ["name"],
+    "snapshot_field": "snapshot_date"
+  },
+  "temporal_split": {
+    "start": "2026-01-01",
+    "train_end": "2026-03-31",
+    "validation_end": "2026-05-31",
+    "test_end": "2026-06-30"
+  },
+  "baselines": [],
+  "imported_runs": [
+    {
+      "name": "m3_lightrag_strongest",
+      "type": "lightrag_mix",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/lightrag_mix_edge_rrf.jsonl",
+      "run_sha256": "de52907850a4447a1b4a56d8896ffaaa800fcaefd01f20b6890362c2ca78de03",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/lightrag_mix_edge_rrf.jsonl.manifest.json",
+      "manifest_sha256": "3ebe9e0db53bc9d201622e78089eddc76cd2b18933c9748dd246f0ead4edc474",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "implementation_revision": "lightrag-mix-edge-rrf-v1@a230eb97e0c3d62dff2b82ddc991684e783d8291554693421542767d4d1c1ab5"
+    },
+    {
+      "name": "scope_rank_full",
+      "type": "scope_rank",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_full.jsonl",
+      "run_sha256": "2d4c97122ab268248e321ec194323ee44c4e3435d0c3a4ae2829234003d7828f",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_full.jsonl.manifest.json",
+      "manifest_sha256": "a02666f721324eb6d4def1cdee6aeb24d769699395828cf8b15dce27f5a9e52a",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_bm25",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_bm25.jsonl",
+      "run_sha256": "e8bb4e206e5b96a94b4f9176c0e339959e1109cb3048f633c13d06285f1d267b",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_bm25.jsonl.manifest.json",
+      "manifest_sha256": "8e6e27fdd85d97687cf24c6eb0eb679e373e772b1b16c18872c0e09776ce4397",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_dense",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_dense.jsonl",
+      "run_sha256": "6b302393fbfaab49a52509a18b93c2555ad963d9f12e28cbb1d2d6a8b8b4481d",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_dense.jsonl.manifest.json",
+      "manifest_sha256": "4b308e5c94abf7d39aa153f040890a520ad6f5924cf3aea90b0053b5734c2323",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_graph",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_graph.jsonl",
+      "run_sha256": "3dabc8e0cb54079830b1235b67f76f461fc16ea9a73920be8077176ce15e3a8a",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_graph.jsonl.manifest.json",
+      "manifest_sha256": "3b7407e30e47a16c562b72fd0da68edb1dcbf5c91f59240bdcfe50fcd2d71ed5",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_lightrag",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_lightrag.jsonl",
+      "run_sha256": "2e8b4b93494e9f83b17a5fcb5ae7ee0f018f9b3f5f722e7137915fe38caee1ce",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_lightrag.jsonl.manifest.json",
+      "manifest_sha256": "c242effd9c4086613c8fbe27d8783081ee09ee8ef31d980887958f72a275239e",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_subject_routing",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_subject_routing.jsonl",
+      "run_sha256": "985ded6a1b621b862ecfaaff455ae232f2915f69a34963746afb9796797f52fd",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_subject_routing.jsonl.manifest.json",
+      "manifest_sha256": "d58b778d9693a91e91b21a858be68cbb25c91aba579d7ce7e8eb96ab92207e27",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_fixed_budget",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_fixed_budget.jsonl",
+      "run_sha256": "8939fd0ff8a610366828b0523a14212521dc1d38113a029e2a43bca25539953c",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_fixed_budget.jsonl.manifest.json",
+      "manifest_sha256": "3b14b3e9b3b27263182947f72a3ed070152b9528d776f6f18eda2ba9e6e1729f",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_missingness",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_missingness.jsonl",
+      "run_sha256": "498d3c97065f8c9a1e78be4481199a2e3ad3447cd1873eb0dc80f264a6666e06",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_missingness.jsonl.manifest.json",
+      "manifest_sha256": "c0ca285c05ee01ae62ab6b272bef6edda6959e9bfcbf427c8ea12bcaf892d1e9",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_calibration",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_calibration.jsonl",
+      "run_sha256": "2d4c97122ab268248e321ec194323ee44c4e3435d0c3a4ae2829234003d7828f",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_calibration.jsonl.manifest.json",
+      "manifest_sha256": "db8aa4ed9a5eee2a1da28ed618a3124b92b2da4c4ef2a5e27e6bae3415b70203",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_ablate_constraint_features",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_constraint_features.jsonl",
+      "run_sha256": "5226fe7a6b7bf342e83cdde786203eefd072ceb57406bb761bb41a9818cf520c",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_ablate_constraint_features.jsonl.manifest.json",
+      "manifest_sha256": "7002c0b1107db3c03aadb44bf342a74868fb88a04ceeac4914550f502640b0ba",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_replace_rrf",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_replace_rrf.jsonl",
+      "run_sha256": "1bbe5c3ae8eaf8e10f61e538378ed499e64b95fb61f444e405e9e5c1d897647d",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_replace_rrf.jsonl.manifest.json",
+      "manifest_sha256": "723ae82e751f1e24779fc8e54862ec0a44afaee882fab47f1f53b20f48e0cc30",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    },
+    {
+      "name": "scope_rank_replace_linear",
+      "type": "scope_rank_ablation",
+      "corpus_view": "prototypes",
+      "path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_replace_linear.jsonl",
+      "run_sha256": "80d10d957159e9cfcd1efa84b03baaad33bde20b48697389eef70dd9b9b7e0eb",
+      "manifest_path": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/scope_rank_replace_linear.jsonl.manifest.json",
+      "manifest_sha256": "b7e226d3675162676e345880e71471019363d1ef29f5471a60fedce6613f5693",
+      "generation_config_sha256": "3efa7a2e105df72a9f26e54e22db41da19f0841baf0998cc83746ee89e8b04f2",
+      "implementation_revision": "scope-rank-suite-v1@6b0f5f1f50228771633edfbab66bfb90f49bad2e2eb718b47f915ed359f72d9b"
+    }
+  ],
+  "fusions": [],
+  "evaluation": {
+    "retrieval_depth": 100,
+    "cutoffs": [1, 3, 5, 10, 20, 50]
+  },
+  "statistics": {
+    "bootstrap_iterations": 2000,
+    "permutation_iterations": 2000,
+    "confidence": 0.95,
+    "seed": 20260828,
+    "comparison_family": {
+      "type": "all_methods_unordered_pairs",
+      "metric": "ndcg@10",
+      "method_order": [
+        "m3_lightrag_strongest",
+        "scope_rank_full",
+        "scope_rank_ablate_bm25",
+        "scope_rank_ablate_dense",
+        "scope_rank_ablate_graph",
+        "scope_rank_ablate_lightrag",
+        "scope_rank_ablate_subject_routing",
+        "scope_rank_ablate_fixed_budget",
+        "scope_rank_ablate_missingness",
+        "scope_rank_ablate_calibration",
+        "scope_rank_ablate_constraint_features",
+        "scope_rank_replace_rrf",
+        "scope_rank_replace_linear"
+      ]
+    }
+  }
+}

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import itertools
 import math
-import random
 from statistics import fmean
 from typing import Any, Mapping
+
+import numpy as np
 
 
 def _paired_differences(
@@ -53,12 +54,16 @@ def paired_bootstrap_ci(
     if not 0 < confidence < 1:
         raise ValueError("confidence must be between zero and one")
     query_ids, differences = _paired_differences(left, right, metric)
-    generator = random.Random(seed)
+    generator = np.random.default_rng(seed)
     count = len(differences)
-    samples = [
-        fmean(differences[generator.randrange(count)] for _ in range(count))
-        for _ in range(iterations)
-    ]
+    values = np.asarray(differences, dtype=np.float64)
+    samples: list[float] = []
+    # Bound peak memory while keeping the expensive resampling in native code.
+    batch_size = min(256, iterations)
+    for offset in range(0, iterations, batch_size):
+        size = min(batch_size, iterations - offset)
+        indices = generator.integers(0, count, size=(size, count))
+        samples.extend(values[indices].mean(axis=1).tolist())
     alpha = 1.0 - confidence
     observed = fmean(differences)
     return {
@@ -104,14 +109,18 @@ def paired_permutation_test(
         p_value = extreme / total
         mode = "exact"
     else:
-        generator = random.Random(seed)
+        generator = np.random.default_rng(seed)
+        values = np.asarray(differences, dtype=np.float64)
         extreme = 0
-        for _ in range(iterations):
-            statistic = abs(
-                fmean(value if generator.random() < 0.5 else -value for value in differences)
+        batch_size = min(256, iterations)
+        for offset in range(0, iterations, batch_size):
+            size = min(batch_size, iterations - offset)
+            signs = generator.integers(
+                0, 2, size=(size, len(values)), dtype=np.int8
             )
-            if statistic + tolerance >= observed:
-                extreme += 1
+            signs = signs * 2 - 1
+            statistics = np.abs(signs @ values / len(values))
+            extreme += int(np.count_nonzero(statistics + tolerance >= observed))
         # Add-one correction prevents a zero Monte Carlo p-value.
         p_value = (extreme + 1) / (iterations + 1)
         total = iterations
@@ -124,4 +133,53 @@ def paired_permutation_test(
         "mode": mode,
         "permutations": total,
         "seed": seed,
+    }
+
+
+def adjust_p_values(
+    p_values: Mapping[str, float],
+) -> dict[str, dict[str, float]]:
+    """Apply Holm family-wise and Benjamini-Hochberg FDR corrections.
+
+    The mapping keys are stable comparison identities.  Both procedures are
+    computed over the complete supplied family and returned in input order.
+    """
+
+    if not p_values:
+        raise ValueError("multiple-comparison correction requires p-values")
+    checked: list[tuple[str, float, int]] = []
+    for index, (raw_name, raw_value) in enumerate(p_values.items()):
+        name = str(raw_name).strip()
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid p-value for {name!r}") from exc
+        if not name or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"invalid p-value for {name!r}")
+        checked.append((name, value, index))
+    if len({name for name, _value, _index in checked}) != len(checked):
+        raise ValueError("multiple-comparison identities must be unique")
+
+    ordered = sorted(checked, key=lambda item: (item[1], item[2], item[0]))
+    count = len(ordered)
+    holm: dict[str, float] = {}
+    running_holm = 0.0
+    for rank, (name, value, _index) in enumerate(ordered, 1):
+        running_holm = max(running_holm, (count - rank + 1) * value)
+        holm[name] = min(1.0, running_holm)
+
+    benjamini_hochberg: dict[str, float] = {}
+    running_bh = 1.0
+    for rank in range(count, 0, -1):
+        name, value, _index = ordered[rank - 1]
+        running_bh = min(running_bh, value * count / rank)
+        benjamini_hochberg[name] = min(1.0, running_bh)
+
+    return {
+        name: {
+            "raw_two_sided_p_value": value,
+            "holm_family_wise_p_value": holm[name],
+            "benjamini_hochberg_fdr_p_value": benjamini_hochberg[name],
+        }
+        for name, value, _index in checked
     }

@@ -4,11 +4,30 @@
 
 ## 启动
 
+仅限本机开发时可直接运行：
+
 ```bash
 python3 -m where_paper_go.web_app --host 127.0.0.1 --port 8000
 ```
 
-打开 <http://127.0.0.1:8000/>。如果需要局域网访问，可以将 `--host` 改为 `0.0.0.0`，但建议在反向代理、访问控制和 HTTPS 后使用。
+打开 <http://127.0.0.1:8000/>。生产主拓扑不直接暴露这个 Python 服务：
+
+```text
+局域网/外部客户端 -> Nginx :443 (HTTPS + Basic Auth)
+                     -> 127.0.0.1:8001 (Where Papers Go)
+```
+
+此时生产 `render-systemd` 会把 `127.0.0.1:8001`、仅 loopback 的
+直连/受信代理 CIDR、强制 Bearer 认证及 passwd-home 下固定的
+`.config/where-papers-go/backend.token` 直接写入审阅后的 unit；unit 不读取
+可在重启前被修改的 `EnvironmentFile`。Nginx 必须覆盖客户端传入的转发头，
+并把外部 Basic Auth 头替换为同一个私有后端 Bearer；应用在信任
+转发身份前必须验证它，未持有密钥的本机用户也无法绕过前置认证。
+
+旧的直连 LAN 前任版本可能仍为 `0.0.0.0:8765`；它没有 TLS 或前置
+Basic Auth，不属于新版 closeout 可接受的生产状态。Nginx、受信证书、
+htpasswd 和防火墙未就绪时保留前任版本，不要通过修改环境文件把新版
+unit 降级为 wildcard listener。
 
 ## 页面结构
 
@@ -25,9 +44,11 @@ python3 -m where_paper_go.web_app --host 127.0.0.1 --port 8000
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/api/health` | 检查图谱、向量、LightRAG 清单和 API 配置 |
+| GET | `/api/health/live` | 只报告 Web 进程是否存活，不代表检索已就绪 |
+| GET | `/api/health/ready` | 最小 readiness；响应严格只含 `status`、`ready`，未就绪返回 503 |
+| GET | `/api/health` | 详细 readiness；检查图谱、向量、LightRAG、不可变 Python/system ABI、精确 worker 进程与 API 配置 |
 | GET | `/api/options` | 返回等级、分类、类型和数据规模筛选项 |
-| POST | `/api/search` | 调用现有强制检索 CLI 并返回 JSON 结果 |
+| POST | `/api/search` | 仅接受 `application/json`，调用现有强制检索 CLI 并返回 JSON 结果 |
 
 `POST /api/search` 请求示例：
 
@@ -67,4 +88,14 @@ where_paper_go/static/app.js     # 筛选、请求、进度、卡片和详情抽
 - 语言切换会更新页面 `lang`、标题、可访问名称和数字格式；用户已输入的主题、筛选状态和当前结果不会因切换而丢失。
 - Roboto 通过 Google Fonts 加载；网络不可用时会自动回退到 Noto Sans、苹方或微软雅黑，不影响使用。
 
-前端不保存 API key，也不直接读取 CSV。生产部署时建议让 `where_paper_go.web_app` 只监听回环地址，由 Nginx/Caddy 负责 HTTPS、登录和访问日志；同时为每个用户增加请求限流和审计记录。
+前端不保存 API key，也不直接读取 CSV。生产部署时应让
+`where_paper_go.web_app` 只监听 `127.0.0.1:8001`，由 Nginx 负责 HTTPS、登录、
+按客户端限流和访问日志。仓库的 Nginx 模板对包括两个 health 路径在内的
+全部 HTTPS 路径继承全局 Basic Auth；最小 readiness 用来减少响应暴露，
+不是绕过认证的公开接口。详细 `/api/health` 只应经已认证代理或本机回环访问。
+
+详细健康证明中的 `checks.python_runtime_identity` 和
+`checks.worker_process_identity` 也必须为 true；worker 证明只输出
+PID、start ticks、哈希、版本/ABI 和验证布尔值，不泄露源码或 runtime 路径。
+
+仓库现已提供可渲染的 user-systemd 单元、Nginx TLS/鉴权/限流配置、结构化审计、严格 readiness 和可恢复原子替换工具。Nginx 集成测试只在显式设置 `WPG_NGINX_BIN` 时执行；未设置时是前置条件缺口导致的 skip，不是通过。完整启停、升级、回滚、受信证书验证、LAN 边界和管理员待执行步骤见 [生产部署手册](production-deployment.md)。

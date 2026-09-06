@@ -14,6 +14,8 @@ from research.data import (
     ResearchDataError,
     build_run_binding,
     canonical_json_sha256,
+    exclude_query_identities_from_prototypes,
+    load_evidence_concat_corpus,
     load_recent_journal_dataset,
     load_score_run,
     sha256_file,
@@ -24,7 +26,11 @@ from research.fusion import LearnedLinearFusion, rrf_fuse
 from research.leakage import audit_leakage, identity_unsafe_query_ids
 from research.metrics import evaluate_run
 from research.reporting import build_query_strata, summarize_strata
-from research.statistics import paired_bootstrap_ci, paired_permutation_test
+from research.statistics import (
+    adjust_p_values,
+    paired_bootstrap_ci,
+    paired_permutation_test,
+)
 from research.types import Query, ScoredDocument, VenueDocument
 
 
@@ -79,6 +85,119 @@ class LexicalBaselineTests(unittest.TestCase):
         ]
         baseline = TfidfBaseline(use_prototypes=True).fit(corpus)
         self.assertAlmostEqual(baseline._idf["common"], math.log(4 / 3) + 1)
+
+    def test_evidence_concat_excludes_validation_identity_without_rewriting_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profiles = root / "profiles.jsonl"
+            evidence = root / "evidence.jsonl"
+            _write_jsonl(
+                profiles,
+                [
+                    {
+                        "venue_id": "v1",
+                        "name": "Venue One",
+                        "snapshot_date": "2026-01-31",
+                        "metadata": {"subject": "computer science"},
+                    },
+                    {
+                        "venue_id": "v2",
+                        "name": "Venue Two",
+                        "snapshot_date": "2026-01-31",
+                        "metadata": {},
+                    },
+                ],
+            )
+            _write_jsonl(
+                evidence,
+                [
+                    {
+                        "kind": "paper",
+                        "venue_id": "v1",
+                        "doi": "10.1/safe",
+                        "title": "Safe historical paper title",
+                        "abstract": "safe evidence",
+                    },
+                    {
+                        "kind": "paper",
+                        "venue_id": "v1",
+                        "doi": "10.1/leaked",
+                        "title": "Distinctive validation paper identity title",
+                        "abstract": "must not enter the active view",
+                    },
+                    {
+                        "kind": "paper",
+                        "venue_id": "v2",
+                        "doi": "10.1/citing",
+                        "title": "A follow-up paper",
+                        "abstract": (
+                            "Prior work titled Distinctive validation paper "
+                            "identity title must also be excluded"
+                        ),
+                    },
+                ],
+            )
+            corpus, report = load_evidence_concat_corpus(
+                profiles,
+                evidence,
+                excluded_queries=(
+                    Query(
+                        "doi:10.1/leaked",
+                        "query",
+                        "2026-02-01",
+                        title="Distinctive validation paper identity title",
+                        doi="10.1/leaked",
+                    ),
+                ),
+            )
+        self.assertEqual(len(corpus), 2)
+        self.assertIn("Safe historical paper title", corpus[0].text)
+        self.assertNotIn("Distinctive validation paper identity title", corpus[0].text)
+        self.assertNotIn("Distinctive validation paper identity title", corpus[1].text)
+        self.assertEqual(report["excluded_count"], 2)
+        self.assertEqual(report["matched_query_ids"], ["doi:10.1/leaked"])
+
+    def test_prototype_identity_exclusion_drops_the_whole_citing_unit(self) -> None:
+        corpus, report = exclude_query_identities_from_prototypes(
+            [
+                VenueDocument(
+                    "v1",
+                    "fallback",
+                    metadata={
+                        "prototypes": [
+                            {
+                                "text": "safe prototype",
+                                "source_ids": ["paper:v1:doi:10.1/safe"],
+                            },
+                            {
+                                "text": "contaminated prototype",
+                                "source_ids": ["paper:v1:doi:10.1/leaked"],
+                            },
+                            {
+                                "text": (
+                                    "A cluster citing Distinctive validation paper "
+                                    "identity title in its evidence text"
+                                ),
+                                "source_ids": ["paper:v1:doi:10.1/citing"],
+                            },
+                        ]
+                    },
+                )
+            ],
+            excluded_queries=(
+                Query(
+                    "doi:10.1/leaked",
+                    "query",
+                    "2026-02-01",
+                    title="Distinctive validation paper identity title",
+                    doi="10.1/leaked",
+                ),
+            ),
+        )
+        prototypes = corpus[0].metadata["prototypes"]
+        self.assertEqual([item["text"] for item in prototypes], ["safe prototype"])
+        self.assertEqual(report["excluded_count"], 2)
+        self.assertEqual(report["affected_venue_count"], 1)
 
     def test_imported_score_formats(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -151,6 +270,64 @@ class LexicalBaselineTests(unittest.TestCase):
 
 
 class FrozenRunContractTests(unittest.TestCase):
+    def test_frozen_run_binding_includes_every_active_corpus_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "dataset.jsonl"
+            profiles = root / "profiles.jsonl"
+            evidence = root / "evidence.jsonl"
+            other_evidence = root / "other-evidence.jsonl"
+            path = root / "run.jsonl"
+            dataset.write_text("dataset\n", encoding="utf-8")
+            profiles.write_text("profiles\n", encoding="utf-8")
+            evidence.write_text("evidence\n", encoding="utf-8")
+            other_evidence.write_text("changed evidence\n", encoding="utf-8")
+            configuration = {"builder": "multi-input-test"}
+            binding = build_run_binding(
+                dataset_path=dataset,
+                profiles_path=profiles,
+                query_ids=("q1",),
+                candidate_ids=("v1",),
+                configuration=configuration,
+                additional_input_paths=(evidence,),
+            )
+            write_run(
+                path,
+                {"q1": [ScoredDocument("v1", 1.0)]},
+                binding=binding,
+                query_ids=("q1",),
+                candidate_ids=("v1",),
+                top_k=1,
+                method={
+                    "name": "bound",
+                    "kind": "test",
+                    "implementation_revision": "test@1",
+                },
+                command=("python", "-m", "research", "test"),
+                working_directory=root,
+            )
+            manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+            mismatched_binding = build_run_binding(
+                dataset_path=dataset,
+                profiles_path=profiles,
+                query_ids=("q1",),
+                candidate_ids=("v1",),
+                configuration=configuration,
+                additional_input_paths=(other_evidence,),
+            )
+            with self.assertRaisesRegex(ResearchDataError, "additional_inputs"):
+                load_score_run(
+                    path,
+                    expected_query_ids=("q1",),
+                    candidate_ids=("v1",),
+                    expected_binding=mismatched_binding,
+                    expected_manifest_sha256=sha256_file(manifest_path),
+                    expected_configuration_sha256=canonical_json_sha256(
+                        configuration
+                    ),
+                    expected_method_identity={"implementation_revision": "test@1"},
+                )
+
     def test_frozen_run_contract_rejects_incomplete_or_invalid_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -344,6 +521,22 @@ class FusionMetricAndStatisticsTests(unittest.TestCase):
         )
         self.assertGreaterEqual(permutation["two_sided_p_value"], 0.0)
         self.assertLessEqual(permutation["two_sided_p_value"], 1.0)
+
+    def test_multiple_comparison_corrections_cover_the_complete_family(self) -> None:
+        adjusted = adjust_p_values(
+            {"first": 0.01, "second": 0.04, "third": 0.03, "fourth": 0.20}
+        )
+        self.assertEqual(list(adjusted), ["first", "second", "third", "fourth"])
+        self.assertAlmostEqual(adjusted["first"]["holm_family_wise_p_value"], 0.04)
+        self.assertAlmostEqual(adjusted["third"]["holm_family_wise_p_value"], 0.09)
+        self.assertAlmostEqual(
+            adjusted["first"]["benjamini_hochberg_fdr_p_value"], 0.04
+        )
+        self.assertAlmostEqual(
+            adjusted["second"]["benjamini_hochberg_fdr_p_value"], 0.05333333333333334
+        )
+        with self.assertRaises(ValueError):
+            adjust_p_values({"bad": float("nan")})
 
 
 class StratifiedReportingTests(unittest.TestCase):
@@ -698,7 +891,11 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
                 "statistics": {
                     "bootstrap_iterations": 100,
                     "permutation_iterations": 100,
-                    "comparisons": [{"left": "rrf", "right": "bm25", "metric": "hit@1"}],
+                    "comparison_family": {
+                        "type": "all_methods_unordered_pairs",
+                        "method_order": ["bm25", "tfidf", "rrf", "learned"],
+                        "metric": "hit@1",
+                    },
                 },
             }
             config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -738,6 +935,16 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             self.assertEqual(report["identity_safe_test"]["full_query_count"], 1)
             self.assertEqual(report["methods"]["bm25"]["identity_safe"]["query_count"], 1)
             self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(set(report["method_execution"]), set(report["methods"]))
+            self.assertEqual(
+                report["method_execution"]["bm25"]["external_api_calls"], 0
+            )
+            self.assertTrue(report["method_execution"]["learned"]["search_free"])
+            self.assertEqual(len(report["paired_comparisons"]), 6)
+            self.assertEqual(
+                report["multiple_comparison_policy"]["frozen_method_order"],
+                ["bm25", "tfidf", "rrf", "learned"],
+            )
             self.assertEqual(report["frozen_run_contract"]["query_count"], 3)
             self.assertEqual(
                 report["frozen_run_contract"]["candidate_universe_count"], 2
@@ -766,6 +973,7 @@ class TemporalDataAndLeakageTests(unittest.TestCase):
             )
             self.assertIn("dependencies", manifest["runtime"])
             self.assertIn("hardware", manifest["runtime"])
+            self.assertIn("execution", manifest["methods"]["bm25"])
 
 
 class CachedCorpusBuilderTests(unittest.TestCase):

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from itertools import combinations
 import json
 from pathlib import Path
 import shlex
 import sys
 import threading
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 from .baselines import BM25Baseline, ImportedRunBaseline, TfidfBaseline
@@ -19,6 +21,9 @@ from .data import (
     build_data_manifest,
     build_run_binding,
     canonical_json_sha256,
+    exclude_query_identities_from_prototypes,
+    load_blind_query_dataset,
+    load_evidence_concat_corpus,
     load_jcr_corpus,
     load_jsonl_corpus,
     load_recent_journal_dataset,
@@ -29,6 +34,7 @@ from .data import (
     write_run,
 )
 from .fusion import LearnedLinearFusion, rrf_fuse
+from .graph_runs import build_lightrag_mix_run, build_property_graph_run
 from .historical_builder import (
     CachedJsonClient,
     CollectionPolicy,
@@ -42,10 +48,33 @@ from .historical_builder import (
 )
 from .leakage import audit_leakage, identity_unsafe_query_ids
 from .metrics import evaluate_run, stratified_metrics
+from .model_assets import materialize_model_assets
+from .model_runs import LocalScientificEncoderProvider, build_scientific_encoder_run
 from .pcl_retry import PCLRetryPolicy
-from .prototype_vectors import build_prototype_vector_run, pcl_embedding_provider
+from .prototype_vectors import (
+    build_prototype_vector_run,
+    pcl_embedding_provider,
+    plan_prototype_vector_cache,
+)
 from .reporting import STRATIFICATION_POLICY, build_query_strata, summarize_strata
-from .statistics import paired_bootstrap_ci, paired_permutation_test
+from .reranker_runs import LocalBGECrossEncoderProvider, build_cross_encoder_run
+from .statistics import adjust_p_values, paired_bootstrap_ci, paired_permutation_test
+from .scope_rank_runs import build_scope_rank_suite
+from .scope_rank_inference import build_frozen_scope_predictions
+from .scope_rank_selective import evaluate_scope_rank_selective
+from .sealed_test import build_sealed_test, plan_sealed_test
+from .sealed_sources import build_sealed_lexical_run, build_sealed_reference_binding
+from .sealed_evaluation import evaluate_sealed_test
+from .sealed_preflight import preflight_sealed_evaluation
+from .sealed_namespace_repair import (
+    evaluate_post_access_namespace_repair,
+    namespace_repair_readiness,
+)
+from .expert_review import (
+    build_conflict_report,
+    build_expert_review_package,
+    export_expert_review,
+)
 from .types import Run
 
 
@@ -53,6 +82,15 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ResearchDataError(f"configuration field {name!r} must be an object")
     return value
+
+
+def _load_cli_query_bundle(
+    args: argparse.Namespace,
+    *,
+    query_fields: Sequence[str] = ("title", "abstract"),
+):
+    loader = load_blind_query_dataset if args.blind_dataset else load_recent_journal_dataset
+    return loader(args.dataset, query_fields=tuple(query_fields))
 
 
 def _resolve(config_path: Path, value: Any) -> Path:
@@ -140,7 +178,28 @@ def evaluate_config(
         start=str(split_config["start"]) if split_config.get("start") else None,
     )
 
+    query_by_id = {query.query_id: query for query in bundle.queries}
+
+    def exclusion_queries(field: str) -> tuple[Any, ...]:
+        raw_splits = corpus_config.get(field)
+        if not isinstance(raw_splits, list) or not raw_splits:
+            raise ResearchDataError(f"corpus.{field} must be a non-empty list")
+        allowed = {"validation", "test"}
+        names = tuple(str(value) for value in raw_splits)
+        unknown = set(names) - allowed
+        if unknown:
+            raise ResearchDataError(
+                f"corpus.{field} may contain only validation/test; "
+                f"unknown={sorted(unknown)}"
+            )
+        query_ids = tuple(
+            query_id for name in names for query_id in getattr(split, name)
+        )
+        return tuple(query_by_id[query_id] for query_id in query_ids)
+
     corpus_type = str(corpus_config.get("type") or "jsonl")
+    corpus_additional_inputs: list[Path] = []
+    corpus_exclusion: dict[str, Any] | None = None
     if corpus_type == "jcr_csv":
         corpus = load_jcr_corpus(
             corpus_path,
@@ -156,8 +215,31 @@ def evaluate_config(
             snapshot_field=str(corpus_config.get("snapshot_field") or "snapshot_date"),
             default_snapshot_date=str(corpus_config.get("snapshot_date") or ""),
         )
+        if corpus_config.get("prototype_identity_exclusion_splits") is not None:
+            corpus, corpus_exclusion = exclude_query_identities_from_prototypes(
+                corpus,
+                excluded_queries=exclusion_queries(
+                    "prototype_identity_exclusion_splits"
+                ),
+            )
+    elif corpus_type == "evidence_jsonl":
+        evidence_path = _resolve(config_path, corpus_config.get("evidence_path"))
+        corpus, corpus_exclusion = load_evidence_concat_corpus(
+            corpus_path,
+            evidence_path,
+            excluded_queries=exclusion_queries("identity_exclusion_splits"),
+            id_field=str(corpus_config.get("id_field") or "venue_id"),
+            snapshot_field=str(
+                corpus_config.get("snapshot_field") or "snapshot_date"
+            ),
+        )
+        corpus_additional_inputs.append(evidence_path)
     else:
         raise ResearchDataError(f"unsupported corpus type: {corpus_type!r}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if corpus_exclusion is not None:
+        _write_json(output_dir / "corpus_exclusion_audit.json", corpus_exclusion)
 
     corpus_views: set[str] = set()
     for baseline_config in config.get("baselines", ()):
@@ -185,7 +267,6 @@ def evaluate_config(
         split,
         corpus_views=tuple(sorted(corpus_views)),
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "leakage_audit.json", leakage)
     if config.get("fail_on_critical_leakage", True) and not leakage["passed"]:
         raise ResearchDataError(
@@ -211,12 +292,14 @@ def evaluate_config(
         candidate_ids=candidate_ids,
         configuration=config,
         configuration_path=config_path,
+        additional_input_paths=tuple(corpus_additional_inputs),
     )
     implementation_revision = _implementation_revision(runtime)
 
     runs: dict[str, Run] = {}
     method_metadata: dict[str, Any] = {}
     method_identities: dict[str, dict[str, Any]] = {}
+    method_execution: dict[str, dict[str, Any]] = {}
     for baseline_config in config.get("baselines", ()):
         baseline_config = _mapping(baseline_config, "baselines[]")
         kind = str(baseline_config.get("type") or "")
@@ -238,8 +321,22 @@ def evaluate_config(
             )
         else:
             raise ResearchDataError(f"unsupported baseline type: {kind!r}")
+        started = perf_counter()
         runs[name] = baseline.fit(corpus).run(queries, top_k=retrieval_depth)
-        method_metadata[name] = dict(baseline_config)
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        execution = {
+            "mode": "local_offline_fit_and_score",
+            "query_count": len(queries),
+            "total_ms": elapsed_ms,
+            "mean_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls": 0,
+            "estimated_external_cost_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+        }
+        method_metadata[name] = {**dict(baseline_config), "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": kind,
@@ -248,7 +345,7 @@ def evaluate_config(
             "configuration_sha256": canonical_json_sha256(baseline_config),
         }
 
-    additional_inputs: list[Path] = []
+    additional_inputs: list[Path] = list(corpus_additional_inputs)
     for imported_config in config.get("imported_runs", ()):
         imported_config = _mapping(imported_config, "imported_runs[]")
         name = str(imported_config.get("name") or "").strip()
@@ -278,6 +375,7 @@ def evaluate_config(
                 f"imported run {name!r} requires manifest_sha256, "
                 "generation_config_sha256, and an exact method identity"
             )
+        started = perf_counter()
         imported = load_score_run(
             path,
             expected_query_ids=ordered_query_ids,
@@ -291,8 +389,41 @@ def evaluate_config(
         )
         adapter = ImportedRunBaseline(imported, name=name)
         runs[name] = adapter.fit(corpus).run(queries, top_k=retrieval_depth)
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ResearchDataError(
+                f"cannot read verified imported manifest: {manifest_path}"
+            ) from exc
+        if not isinstance(source_manifest, Mapping):
+            raise ResearchDataError(
+                f"verified imported manifest is not an object: {manifest_path}"
+            )
+        source_execution = source_manifest.get("execution")
+        source_coverage = source_manifest.get("coverage")
+        execution = {
+            "mode": "validated_import_of_frozen_run",
+            "query_count": len(queries),
+            "validation_and_load_total_ms": elapsed_ms,
+            "mean_validation_and_load_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls_during_evaluation": 0,
+            "estimated_external_cost_during_evaluation_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+            "source_execution": (
+                dict(source_execution)
+                if isinstance(source_execution, Mapping)
+                else None
+            ),
+            "source_coverage": (
+                dict(source_coverage) if isinstance(source_coverage, Mapping) else None
+            ),
+        }
         additional_inputs.extend((path, manifest_path))
-        method_metadata[name] = dict(imported_config)
+        method_metadata[name] = {**dict(imported_config), "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": str(imported_config.get("type") or "imported"),
@@ -313,6 +444,7 @@ def evaluate_config(
         if not source_names or missing:
             raise ResearchDataError(f"fusion {name!r} has missing sources: {missing}")
         source_runs = {source: runs[source] for source in source_names}
+        started = perf_counter()
         if kind == "rrf":
             runs[name] = rrf_fuse(
                 source_runs,
@@ -339,6 +471,20 @@ def evaluate_config(
             }
         else:
             raise ResearchDataError(f"unsupported fusion type: {kind!r}")
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        execution = {
+            "mode": "local_offline_fusion",
+            "query_count": len(queries),
+            "total_ms": elapsed_ms,
+            "mean_ms_per_query": elapsed_ms / len(queries),
+            "failed_query_count": 0,
+            "external_api_calls": 0,
+            "estimated_external_cost_usd": 0.0,
+            "offline_only": True,
+            "search_free": True,
+        }
+        method_metadata[name] = {**method_metadata[name], "execution": execution}
+        method_execution[name] = execution
         method_identities[name] = {
             "name": name,
             "kind": kind,
@@ -440,9 +586,59 @@ def evaluate_config(
         )
         evaluations[name] = result
 
-    comparisons: list[dict[str, Any]] = []
     statistics_config = _mapping(config.get("statistics", {}), "statistics")
-    for comparison in statistics_config.get("comparisons", ()):
+    explicit_comparisons = statistics_config.get("comparisons", ())
+    family_value = statistics_config.get("comparison_family")
+    comparison_family_description = "explicit configured comparisons"
+    comparison_method_order: list[str] | None = None
+    if family_value is not None:
+        if explicit_comparisons:
+            raise ResearchDataError(
+                "statistics may not define both comparisons and comparison_family"
+            )
+        family_config = _mapping(family_value, "statistics.comparison_family")
+        family_type = str(family_config.get("type") or "")
+        if family_type != "all_methods_unordered_pairs":
+            raise ResearchDataError(
+                f"unsupported statistics comparison family: {family_type!r}"
+            )
+        raw_method_order = family_config.get("method_order")
+        if not isinstance(raw_method_order, list):
+            raise ResearchDataError(
+                "statistics.comparison_family.method_order must be an array"
+            )
+        comparison_method_order = [str(value) for value in raw_method_order]
+        if (
+            len(comparison_method_order) < 2
+            or len(set(comparison_method_order)) != len(comparison_method_order)
+        ):
+            raise ResearchDataError(
+                "all-method comparison family requires at least two unique methods"
+            )
+        unknown = sorted(set(comparison_method_order) - set(evaluations))
+        missing = sorted(set(evaluations) - set(comparison_method_order))
+        if unknown or missing:
+            raise ResearchDataError(
+                "all-method comparison family must exactly cover evaluated methods: "
+                f"unknown={unknown}, missing={missing}"
+            )
+        family_metric = str(family_config.get("metric") or "ndcg@10")
+        comparison_specs: Sequence[Mapping[str, Any]] = tuple(
+            {"left": left, "right": right, "metric": family_metric}
+            for left, right in combinations(comparison_method_order, 2)
+        )
+        comparison_family_description = (
+            "all unordered pairs over the frozen evaluated-method order"
+        )
+    else:
+        if not isinstance(explicit_comparisons, Sequence) or isinstance(
+            explicit_comparisons, (str, bytes)
+        ):
+            raise ResearchDataError("statistics.comparisons must be an array")
+        comparison_specs = explicit_comparisons
+
+    comparisons: list[dict[str, Any]] = []
+    for comparison_index, comparison in enumerate(comparison_specs):
         comparison = _mapping(comparison, "statistics.comparisons[]")
         left, right = str(comparison.get("left") or ""), str(comparison.get("right") or "")
         metric = str(comparison.get("metric") or "ndcg@10")
@@ -452,8 +648,10 @@ def evaluate_config(
         permutation_iterations = int(statistics_config.get("permutation_iterations", 10_000))
         seed = int(statistics_config.get("seed", 20260814))
         comparison_result = {
+                "comparison_id": f"comparison-{comparison_index + 1}",
                 "left": left,
                 "right": right,
+                "metric": metric,
                 "bootstrap": paired_bootstrap_ci(
                     evaluations[left]["per_query"],
                     evaluations[right]["per_query"],
@@ -487,6 +685,46 @@ def evaluate_config(
                 seed=seed,
             )
         comparisons.append(comparison_result)
+
+    multiple_comparison_policy: dict[str, Any] = {
+        "family": comparison_family_description,
+        "methods": ["holm_family_wise", "benjamini_hochberg_fdr"],
+        "comparison_count": len(comparisons),
+        "applied": bool(comparisons),
+        **(
+            {"frozen_method_order": comparison_method_order}
+            if comparison_method_order is not None
+            else {}
+        ),
+    }
+    if comparisons:
+        primary_adjustments = adjust_p_values(
+            {
+                str(result["comparison_id"]): float(
+                    result["permutation"]["two_sided_p_value"]
+                )
+                for result in comparisons
+            }
+        )
+        safe_adjustments = (
+            adjust_p_values(
+                {
+                    str(result["comparison_id"]): float(
+                        result["identity_safe_permutation"]["two_sided_p_value"]
+                    )
+                    for result in comparisons
+                }
+            )
+            if identity_safe_test_ids
+            else None
+        )
+        for result in comparisons:
+            comparison_id = str(result["comparison_id"])
+            result["multiple_comparison"] = primary_adjustments[comparison_id]
+            if safe_adjustments is not None:
+                result["identity_safe_multiple_comparison"] = safe_adjustments[
+                    comparison_id
+                ]
 
     report = {
         "schema_version": 2,
@@ -525,7 +763,9 @@ def evaluate_config(
             "excluded_query_ids": sorted(identity_unsafe_ids),
         },
         "methods": evaluations,
+        "method_execution": method_execution,
         "paired_comparisons": comparisons,
+        "multiple_comparison_policy": multiple_comparison_policy,
     }
     metrics_path = output_dir / "metrics.json"
     leakage_path = output_dir / "leakage_audit.json"
@@ -542,6 +782,13 @@ def evaluate_config(
             "bytes": leakage_path.stat().st_size,
         },
     }
+    if corpus_exclusion is not None:
+        exclusion_path = output_dir / "corpus_exclusion_audit.json"
+        outputs["corpus_exclusion_audit"] = {
+            "path": str(exclusion_path.resolve()),
+            "sha256": sha256_file(exclusion_path),
+            "bytes": exclusion_path.stat().st_size,
+        }
     manifest = build_data_manifest(
         config_path=config_path,
         dataset_path=dataset_path,
@@ -701,6 +948,7 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--api-config", type=Path, required=True)
     prototype_run.add_argument("--dataset", type=Path, required=True)
     prototype_run.add_argument("--profiles", type=Path, required=True)
+    prototype_run.add_argument("--reference-manifest", type=Path, required=True)
     prototype_run.add_argument("--output", type=Path, required=True)
     prototype_run.add_argument("--cache", type=Path, required=True)
     prototype_run.add_argument("--query-fields", nargs="+", default=("title", "abstract"))
@@ -708,6 +956,156 @@ def _parser() -> argparse.ArgumentParser:
     prototype_run.add_argument("--query-batch-size", type=int, default=16)
     prototype_run.add_argument("--prototype-chunk-size", type=int, default=4096)
     prototype_run.add_argument("--ignore-prototype-weights", action="store_true")
+    prototype_run.add_argument(
+        "--cache-only",
+        action="store_true",
+        help=(
+            "fail closed unless every prepared text already exists in the cache; "
+            "never call the embedding API"
+        ),
+    )
+    prototype_run.add_argument(
+        "--blind-dataset",
+        action="store_true",
+        help="Require the closed, physically label-free sealed-query schema.",
+    )
+    prototype_run.add_argument(
+        "--authorization-reference",
+        default="",
+        help="Required when any prepared text is missing from the embedding cache.",
+    )
+    prototype_run.add_argument(
+        "--max-new-embeddings",
+        type=int,
+        default=None,
+        help="Hard cap on newly transmitted prepared texts.",
+    )
+    prototype_run.add_argument(
+        "--estimated-external-cost-usd",
+        type=float,
+        default=None,
+        help="Required non-negative bound when network embedding is needed.",
+    )
+
+    prototype_plan = subparsers.add_parser(
+        "plan-prototype-vector-cache",
+        help="report exact prototype/query embedding cache coverage without network",
+    )
+    prototype_plan.add_argument("--api-config", type=Path, required=True)
+    prototype_plan.add_argument("--dataset", type=Path, required=True)
+    prototype_plan.add_argument("--profiles", type=Path, required=True)
+    prototype_plan.add_argument("--cache", type=Path, required=True)
+    prototype_plan.add_argument("--blind-dataset", action="store_true")
+    prototype_plan.add_argument(
+        "--estimated-external-cost-usd", type=float, required=True
+    )
+
+    graph_run = subparsers.add_parser(
+        "build-property-graph-run",
+        help="freeze an offline score run over real prototype-to-evidence edges",
+    )
+    graph_run.add_argument("--dataset", type=Path, required=True)
+    graph_run.add_argument("--profiles", type=Path, required=True)
+    graph_run.add_argument("--prototypes", type=Path, required=True)
+    graph_run.add_argument("--evidence", type=Path, required=True)
+    graph_run.add_argument("--corpus-manifest", type=Path, required=True)
+    graph_run.add_argument("--reference-manifest", type=Path, required=True)
+    graph_run.add_argument("--output", type=Path, required=True)
+    graph_run.add_argument("--cutoff", default="2026-03-31")
+    graph_run.add_argument(
+        "--query-fields", nargs="+", default=("title", "abstract")
+    )
+    graph_run.add_argument("--top-k", type=int, default=100)
+    graph_run.add_argument("--candidate-pool", type=int, default=1000)
+    graph_run.add_argument("--rrf-k", type=int, default=60)
+    graph_run.add_argument("--prototype-weight", type=float, default=1.0)
+    graph_run.add_argument("--evidence-weight", type=float, default=1.0)
+    graph_run.add_argument("--edge-support-weight", type=float, default=0.15)
+    graph_run.add_argument("--bm25-k1", type=float, default=1.2)
+    graph_run.add_argument("--bm25-b", type=float, default=0.75)
+    graph_run.add_argument("--blind-dataset", action="store_true")
+
+    lightrag_run = subparsers.add_parser(
+        "build-lightrag-mix-run",
+        help="freeze LightRAG mix scores from graph-local and dense-global runs",
+    )
+    lightrag_run.add_argument("--dataset", type=Path, required=True)
+    lightrag_run.add_argument("--profiles", type=Path, required=True)
+    lightrag_run.add_argument("--reference-manifest", type=Path, required=True)
+    lightrag_run.add_argument("--property-graph-run", type=Path, required=True)
+    lightrag_run.add_argument("--vector-run", type=Path, required=True)
+    lightrag_run.add_argument("--output", type=Path, required=True)
+    lightrag_run.add_argument(
+        "--query-fields", nargs="+", default=("title", "abstract")
+    )
+    lightrag_run.add_argument("--top-k", type=int, default=100)
+    lightrag_run.add_argument("--rrf-k", type=int, default=60)
+    lightrag_run.add_argument("--local-weight", type=float, default=1.0)
+    lightrag_run.add_argument("--global-weight", type=float, default=1.0)
+    lightrag_run.add_argument("--blind-dataset", action="store_true")
+
+    model_assets = subparsers.add_parser(
+        "materialize-model-assets",
+        help="dry-run and optionally atomically publish pinned HF model assets",
+    )
+    model_assets.add_argument("--config", type=Path, required=True)
+    model_assets.add_argument("--output-root", type=Path, required=True)
+    model_assets.add_argument("--hf-cli", default="hf")
+    model_assets.add_argument("--asset", action="append", default=[])
+    model_assets.add_argument("--max-workers", type=int, default=4)
+    model_assets.add_argument("--dry-run-timeout-seconds", type=float, default=120.0)
+    model_assets.add_argument("--download-timeout-seconds", type=float, default=21600.0)
+    model_assets.add_argument("--execute", action="store_true")
+    model_assets.add_argument("--authorization-reference", default="")
+
+    scientific_run = subparsers.add_parser(
+        "build-scientific-encoder-run",
+        help="freeze a pinned local SPECTER2 or SciNCL prototype score run",
+    )
+    scientific_run.add_argument(
+        "--protocol", choices=("specter2", "scincl"), required=True
+    )
+    scientific_run.add_argument("--model-dir", type=Path, required=True)
+    scientific_run.add_argument("--model-repo", required=True)
+    scientific_run.add_argument("--model-revision", required=True)
+    scientific_run.add_argument("--adapter-dir", type=Path)
+    scientific_run.add_argument("--adapter-repo", default="")
+    scientific_run.add_argument("--adapter-revision", default="")
+    scientific_run.add_argument("--dataset", type=Path, required=True)
+    scientific_run.add_argument("--profiles", type=Path, required=True)
+    scientific_run.add_argument("--reference-manifest", type=Path, required=True)
+    scientific_run.add_argument("--output", type=Path, required=True)
+    scientific_run.add_argument("--cache", type=Path, required=True)
+    scientific_run.add_argument("--device", default="cuda:0")
+    scientific_run.add_argument("--embedding-batch-size", type=int, default=32)
+    scientific_run.add_argument("--max-length", type=int, default=512)
+    scientific_run.add_argument("--top-k", type=int, default=100)
+    scientific_run.add_argument("--query-batch-size", type=int, default=16)
+    scientific_run.add_argument("--prototype-chunk-size", type=int, default=4096)
+    scientific_run.add_argument("--ignore-prototype-weights", action="store_true")
+    scientific_run.add_argument("--no-fp16", action="store_true")
+    scientific_run.add_argument("--blind-dataset", action="store_true")
+
+    cross_run = subparsers.add_parser(
+        "build-cross-encoder-run",
+        help="rerank a frozen first-stage run with a pinned local cross-encoder",
+    )
+    cross_run.add_argument("--model-dir", type=Path, required=True)
+    cross_run.add_argument("--model-repo", required=True)
+    cross_run.add_argument("--model-revision", required=True)
+    cross_run.add_argument("--dataset", type=Path, required=True)
+    cross_run.add_argument("--profiles", type=Path, required=True)
+    cross_run.add_argument("--reference-manifest", type=Path, required=True)
+    cross_run.add_argument("--first-stage-run", type=Path, required=True)
+    cross_run.add_argument("--output", type=Path, required=True)
+    cross_run.add_argument("--cache", type=Path, required=True)
+    cross_run.add_argument("--device", default="cuda:0")
+    cross_run.add_argument("--batch-size", type=int, default=32)
+    cross_run.add_argument("--max-length", type=int, default=512)
+    cross_run.add_argument("--candidate-pool", type=int, default=100)
+    cross_run.add_argument("--top-k", type=int, default=100)
+    cross_run.add_argument("--no-fp16", action="store_true")
+    cross_run.add_argument("--blind-dataset", action="store_true")
 
     clean = subparsers.add_parser(
         "rebuild-clean-corpus",
@@ -732,6 +1130,116 @@ def _parser() -> argparse.ArgumentParser:
     clean.add_argument("--pcl-retries", type=int, default=2)
     clean.add_argument("--pcl-backoff-base", type=float, default=2.0)
     clean.add_argument("--pcl-backoff-max", type=float, default=30.0)
+
+    scope_rank = subparsers.add_parser(
+        "build-scope-rank-suite",
+        help="freeze train-only SCOPE-Rank and every named offline ablation",
+    )
+    scope_rank.add_argument("--config", type=Path, required=True)
+
+    scope_selective = subparsers.add_parser(
+        "evaluate-scope-rank-selective",
+        help="evaluate frozen SCOPE-Rank accept/abstain decisions without refitting",
+    )
+    scope_selective.add_argument("--config", type=Path, required=True)
+
+    sealed_plan = subparsers.add_parser(
+        "plan-sealed-test",
+        help="verify the freeze and print a zero-network future-test acquisition plan",
+    )
+    sealed_plan.add_argument("--config", type=Path, required=True)
+
+    sealed_build = subparsers.add_parser(
+        "build-sealed-test",
+        help="acquire a bounded future set and atomically publish a restricted label vault",
+    )
+    sealed_build.add_argument("--config", type=Path, required=True)
+
+    sealed_predict = subparsers.add_parser(
+        "build-frozen-scope-predictions",
+        help="apply frozen train-only SCOPE-Rank models to physically label-free queries",
+    )
+    sealed_predict.add_argument("--config", type=Path, required=True)
+
+    sealed_binding = subparsers.add_parser(
+        "build-sealed-reference-binding",
+        help="freeze blind-query order and the unchanged candidate universe",
+    )
+    sealed_binding.add_argument("--dataset", type=Path, required=True)
+    sealed_binding.add_argument("--profiles", type=Path, required=True)
+    sealed_binding.add_argument("--output", type=Path, required=True)
+    sealed_binding.add_argument("--profile-cutoff", default="2026-03-31")
+
+    sealed_lexical = subparsers.add_parser(
+        "build-sealed-lexical-run",
+        help="build a label-blind BM25 or TF-IDF future-query score run",
+    )
+    sealed_lexical.add_argument("--dataset", type=Path, required=True)
+    sealed_lexical.add_argument("--profiles", type=Path, required=True)
+    sealed_lexical.add_argument("--reference-manifest", type=Path, required=True)
+    sealed_lexical.add_argument("--output", type=Path, required=True)
+    sealed_lexical.add_argument("--name", required=True)
+    sealed_lexical.add_argument("--type", choices=("bm25", "tfidf"), required=True)
+    sealed_lexical.add_argument("--top-k", type=int, default=100)
+    sealed_lexical.add_argument("--bm25-k1", type=float, default=1.2)
+    sealed_lexical.add_argument("--bm25-b", type=float, default=0.75)
+    sealed_lexical.add_argument("--no-sublinear-tf", action="store_true")
+    sealed_lexical.add_argument("--no-prototypes", action="store_true")
+
+    sealed_preflight = subparsers.add_parser(
+        "preflight-sealed-evaluation",
+        help="verify every label-free condition before the one-time unseal",
+    )
+    sealed_preflight.add_argument("--config", type=Path, required=True)
+    sealed_preflight.add_argument("--output", type=Path)
+
+    sealed_evaluate = subparsers.add_parser(
+        "evaluate-sealed-test",
+        help="verify pre-label prediction hashes, then unseal and evaluate once",
+    )
+    sealed_evaluate.add_argument("--config", type=Path, required=True)
+
+    sealed_repair_preflight = subparsers.add_parser(
+        "preflight-sealed-namespace-repair",
+        help=(
+            "verify the post-access exact-ID repair without parsing labels or "
+            "creating the one-shot repair sentinel"
+        ),
+    )
+    sealed_repair_preflight.add_argument("--config", type=Path, required=True)
+    sealed_repair_preflight.add_argument("--output", type=Path)
+
+    sealed_repair = subparsers.add_parser(
+        "evaluate-sealed-namespace-repair",
+        help=(
+            "run one explicitly authorized post-access exact-ID repair without "
+            "changing frozen predictions, candidates, methods, or statistics"
+        ),
+    )
+    sealed_repair.add_argument("--config", type=Path, required=True)
+    sealed_repair.add_argument("--authorization-record", type=Path, required=True)
+
+    expert_package = subparsers.add_parser(
+        "build-expert-review-package",
+        help="merge, deduplicate, blind, and randomize committed Top-K results",
+    )
+    expert_package.add_argument("--config", type=Path, required=True)
+
+    expert_conflicts = subparsers.add_parser(
+        "expert-review-conflicts",
+        help="audit complete three-rater items and list blinded disagreements",
+    )
+    expert_conflicts.add_argument("--package-dir", type=Path, required=True)
+    expert_conflicts.add_argument("--state-dir", type=Path, required=True)
+    expert_conflicts.add_argument("--output", type=Path)
+
+    expert_export = subparsers.add_parser(
+        "export-expert-review",
+        help="export complete real anonymous annotations and Fleiss kappa",
+    )
+    expert_export.add_argument("--package-dir", type=Path, required=True)
+    expert_export.add_argument("--state-dir", type=Path, required=True)
+    expert_export.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
@@ -909,12 +1417,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
-        else:
-            bundle = load_recent_journal_dataset(
-                args.dataset,
-                query_fields=tuple(args.query_fields),
-            )
+        elif args.command == "build-prototype-vector-run":
+            bundle = _load_cli_query_bundle(args)
             provider = pcl_embedding_provider(args.api_config)
+            last_progress_bucket = -1
+
+            def report_embedding_progress(processed: int, total: int) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed // 1024
+                if processed != total and bucket == last_progress_bucket:
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "embedding_progress": {
+                                "processed": processed,
+                                "total": total,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
             manifest = build_prototype_vector_run(
                 provider=provider,
                 bundle=bundle,
@@ -927,9 +1454,427 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prototype_chunk_size=args.prototype_chunk_size,
                 apply_prototype_weights=not args.ignore_prototype_weights,
                 query_fields=tuple(args.query_fields),
+                reference_manifest_path=args.reference_manifest,
+                embedding_progress=report_embedding_progress,
+                cache_only=args.cache_only,
+                external_authorization_reference=args.authorization_reference,
+                max_new_embeddings=args.max_new_embeddings,
+                estimated_external_cost_usd=args.estimated_external_cost_usd,
                 generation_command=recorded_command,
             )
             print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "plan-prototype-vector-cache":
+            bundle = _load_cli_query_bundle(args)
+            provider = pcl_embedding_provider(args.api_config)
+            plan = plan_prototype_vector_cache(
+                provider=provider,
+                bundle=bundle,
+                profiles_path=args.profiles,
+                cache_path=args.cache,
+                estimated_external_cost_usd=args.estimated_external_cost_usd,
+            )
+            print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-scope-rank-suite":
+            manifest = build_scope_rank_suite(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "evaluate-scope-rank-selective":
+            manifest = evaluate_scope_rank_selective(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "plan-sealed-test":
+            print(
+                json.dumps(
+                    plan_sealed_test(args.config),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-sealed-test":
+            manifest = build_sealed_test(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "dataset": {
+                            "record_count": manifest["dataset"]["record_count"],
+                            "blind_queries": manifest["dataset"]["blind_queries"],
+                            "sealed_labels_sha256": manifest["dataset"]["sealed_labels"]["sha256"],
+                        },
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-frozen-scope-predictions":
+            manifest = build_frozen_scope_predictions(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "prediction_commitment": manifest["prediction_commitment"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-sealed-reference-binding":
+            bundle = load_blind_query_dataset(args.dataset)
+            manifest = build_sealed_reference_binding(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                output_path=args.output,
+                profile_cutoff=args.profile_cutoff,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-sealed-lexical-run":
+            bundle = load_blind_query_dataset(args.dataset)
+            manifest = build_sealed_lexical_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                output_path=args.output,
+                method_name=args.name,
+                method_type=args.type,
+                top_k=args.top_k,
+                k1=args.bm25_k1,
+                b=args.bm25_b,
+                sublinear_tf=not args.no_sublinear_tf,
+                use_prototypes=not args.no_prototypes,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "preflight-sealed-evaluation":
+            report = preflight_sealed_evaluation(args.config)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        f"sealed preflight output exists and will not be overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+                report = {
+                    **report,
+                    "report": {
+                        "path": str(args.output.resolve()),
+                        "sha256": sha256_file(args.output),
+                        "bytes": args.output.stat().st_size,
+                    },
+                }
+            print(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "evaluate-sealed-test":
+            manifest = evaluate_sealed_test(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "coverage": manifest["coverage"],
+                        "metrics": manifest["metrics"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "preflight-sealed-namespace-repair":
+            report = namespace_repair_readiness(args.config)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        "namespace-repair preflight output exists and will not be "
+                        f"overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+                report = {
+                    **report,
+                    "report": {
+                        "path": str(args.output.resolve()),
+                        "sha256": sha256_file(args.output),
+                        "bytes": args.output.stat().st_size,
+                    },
+                }
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "evaluate-sealed-namespace-repair":
+            manifest = evaluate_post_access_namespace_repair(
+                args.config,
+                authorization_path=args.authorization_record,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "pristine_single_pass_sealed_test": manifest[
+                            "pristine_single_pass_sealed_test"
+                        ],
+                        "coverage": manifest["coverage"],
+                        "metrics": manifest["metrics"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "build-expert-review-package":
+            manifest = build_expert_review_package(
+                args.config,
+                generation_command=recorded_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": manifest["status"],
+                        "sample": manifest["sample"],
+                        "human_dependency": manifest["human_dependency"],
+                        "manifest": manifest["manifest"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "expert-review-conflicts":
+            report = build_conflict_report(args.package_dir, args.state_dir)
+            if args.output is not None:
+                if args.output.exists():
+                    raise ResearchDataError(
+                        f"conflict report exists and will not be overwritten: {args.output}"
+                    )
+                _write_json(args.output, report)
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "export-expert-review":
+            manifest = export_expert_review(
+                args.package_dir,
+                args.state_dir,
+                args.output_dir,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-property-graph-run":
+            bundle = _load_cli_query_bundle(
+                args, query_fields=tuple(args.query_fields)
+            )
+            manifest = build_property_graph_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                prototypes_path=args.prototypes,
+                evidence_path=args.evidence,
+                corpus_manifest_path=args.corpus_manifest,
+                reference_manifest_path=args.reference_manifest,
+                output_path=args.output,
+                cutoff=args.cutoff,
+                top_k=args.top_k,
+                candidate_pool=args.candidate_pool,
+                rrf_k=args.rrf_k,
+                prototype_weight=args.prototype_weight,
+                evidence_weight=args.evidence_weight,
+                edge_support_weight=args.edge_support_weight,
+                k1=args.bm25_k1,
+                b=args.bm25_b,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-lightrag-mix-run":
+            bundle = _load_cli_query_bundle(
+                args, query_fields=tuple(args.query_fields)
+            )
+            manifest = build_lightrag_mix_run(
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                property_graph_run_path=args.property_graph_run,
+                vector_run_path=args.vector_run,
+                output_path=args.output,
+                top_k=args.top_k,
+                rrf_k=args.rrf_k,
+                local_weight=args.local_weight,
+                global_weight=args.global_weight,
+                query_fields=tuple(args.query_fields),
+                generation_command=recorded_command,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "materialize-model-assets":
+            audit = materialize_model_assets(
+                config_path=args.config,
+                output_root=args.output_root,
+                hf_cli=args.hf_cli,
+                execute=args.execute,
+                authorization_reference=args.authorization_reference,
+                selected_assets=tuple(args.asset),
+                max_workers=args.max_workers,
+                dry_run_timeout_seconds=args.dry_run_timeout_seconds,
+                download_timeout_seconds=args.download_timeout_seconds,
+                generation_command=recorded_command,
+            )
+            print(json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-scientific-encoder-run":
+            bundle = _load_cli_query_bundle(args)
+            provider = LocalScientificEncoderProvider(
+                protocol=args.protocol,
+                model_dir=args.model_dir,
+                model_repo=args.model_repo,
+                model_revision=args.model_revision,
+                adapter_dir=args.adapter_dir,
+                adapter_repo=args.adapter_repo,
+                adapter_revision=args.adapter_revision,
+                device=args.device,
+                batch_size=args.embedding_batch_size,
+                max_length=args.max_length,
+                fp16=not args.no_fp16,
+            )
+            last_progress_bucket = -1
+
+            def report_scientific_progress(processed: int, total: int) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed // 1024
+                if processed != total and bucket == last_progress_bucket:
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "scientific_embedding_progress": {
+                                "processed": processed,
+                                "total": total,
+                                "protocol": args.protocol,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            manifest = build_scientific_encoder_run(
+                provider=provider,
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                cache_path=args.cache,
+                output_path=args.output,
+                top_k=args.top_k,
+                query_batch_size=args.query_batch_size,
+                prototype_chunk_size=args.prototype_chunk_size,
+                apply_prototype_weights=not args.ignore_prototype_weights,
+                generation_command=recorded_command,
+                embedding_progress=report_scientific_progress,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        elif args.command == "build-cross-encoder-run":
+            bundle = _load_cli_query_bundle(args)
+            provider = LocalBGECrossEncoderProvider(
+                model_dir=args.model_dir,
+                model_repo=args.model_repo,
+                model_revision=args.model_revision,
+                device=args.device,
+                batch_size=args.batch_size,
+                max_length=args.max_length,
+                fp16=not args.no_fp16,
+            )
+            last_progress_bucket = -1
+
+            def report_cross_progress(
+                processed_queries: int,
+                total_queries: int,
+                processed_pairs: int,
+                newly_scored_pairs: int,
+            ) -> None:
+                nonlocal last_progress_bucket
+                bucket = processed_queries // 50
+                if (
+                    processed_queries != total_queries
+                    and bucket == last_progress_bucket
+                ):
+                    return
+                last_progress_bucket = bucket
+                print(
+                    json.dumps(
+                        {
+                            "cross_encoder_progress": {
+                                "processed_queries": processed_queries,
+                                "total_queries": total_queries,
+                                "processed_pairs": processed_pairs,
+                                "newly_scored_pairs": newly_scored_pairs,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            manifest = build_cross_encoder_run(
+                provider=provider,
+                bundle=bundle,
+                dataset_path=args.dataset,
+                profiles_path=args.profiles,
+                reference_manifest_path=args.reference_manifest,
+                first_stage_run_path=args.first_stage_run,
+                cache_path=args.cache,
+                output_path=args.output,
+                candidate_pool=args.candidate_pool,
+                top_k=args.top_k,
+                generation_command=recorded_command,
+                progress=report_cross_progress,
+            )
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        else:  # pragma: no cover - argparse enforces the command choices
+            raise ResearchDataError(f"unsupported command: {args.command!r}")
     except (OSError, ResearchDataError, HistoricalCollectionError, ValueError) as exc:
         print(f"research benchmark error: {exc}", file=sys.stderr)
         return 2

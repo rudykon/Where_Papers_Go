@@ -16,6 +16,8 @@
 - [近期论文期刊恢复评测](recent-journal-benchmark.md)：Crossref 自然标签、泄漏审计与完整流水线指标。
 - [近期论文评测结果](recent-journal-benchmark-results.md)：500 篇分层数据集、多通道冒烟评测与历史 20 篇先导对照。
 - [性能与离线效果评测](performance-evaluation-2026-08-14.md)：向量召回提速、4,791 篇时间评测和原 500 篇对照。
+- [M3 强基线冻结](m3-strong-baselines.md)：11 方法、55 配对统计、延迟/成本与完整负结果。
+- [SCOPE-Rank 开发集冻结](scope-rank-results.md)：正式方法、11 消融、78 配对统计、拒答评测与负结果根因。
 
 ## 遗留兼容
 

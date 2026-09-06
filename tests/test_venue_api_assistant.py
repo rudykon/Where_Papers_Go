@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -122,7 +123,10 @@ class CandidateConstraintTests(unittest.TestCase):
                 [],
             )
 
-        self.assertEqual([len(batch) for batch in calls], [5, 5, 2])
+        self.assertCountEqual([len(batch) for batch in calls], [5, 5, 2])
+        self.assertEqual(
+            {entity_id for batch in calls for entity_id in batch}, set(range(1, 13))
+        )
         self.assertEqual(set(scores), set(range(1, 13)))
 
     def test_rerank_runs_two_batches_concurrently(self) -> None:
@@ -373,6 +377,68 @@ class MandatorySearchTests(unittest.TestCase):
         )
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0].query, "mobile link adaptation")
+
+
+class LLMFailureTests(unittest.TestCase):
+    @staticmethod
+    def config(*, max_retries: int) -> dict[str, object]:
+        return {
+            "llm": {
+                "base_url": "https://llm.example/v1",
+                "model": "test-model",
+                "max_retries": max_retries,
+                "timeout": 1,
+            }
+        }
+
+    def test_llm_timeout_fails_closed_without_cache(self) -> None:
+        with TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            assistant = OpenAICompatibleQueryAssistant(
+                self.config(max_retries=0), cache_dir=cache_dir
+            )
+            with patch(
+                "where_paper_go.api_assistant.http_request",
+                side_effect=TimeoutError("gateway timed out"),
+            ):
+                with self.assertRaisesRegex(ApiAssistantError, "LLM API"):
+                    assistant.plan_query("wireless systems", {})
+
+            self.assertEqual(list(cache_dir.rglob("*.json")), [])
+
+    def test_llm_429_exhausts_bounded_retries_without_cache(self) -> None:
+        errors = [
+            urllib.error.HTTPError(
+                "https://llm.example/v1/chat/completions",
+                429,
+                "rate limited",
+                {"Retry-After": "0"},
+                None,
+            )
+            for _ in range(2)
+        ]
+        try:
+            with TemporaryDirectory() as directory:
+                cache_dir = Path(directory)
+                assistant = OpenAICompatibleQueryAssistant(
+                    self.config(max_retries=1), cache_dir=cache_dir
+                )
+                with (
+                    patch(
+                        "where_paper_go.api_assistant.http_request",
+                        side_effect=errors,
+                    ) as request,
+                    patch("where_paper_go.api_assistant.time.sleep") as sleep,
+                ):
+                    with self.assertRaisesRegex(ApiAssistantError, "HTTP 429"):
+                        assistant.plan_query("wireless systems", {})
+
+                self.assertEqual(request.call_count, 2)
+                sleep.assert_called_once()
+                self.assertEqual(list(cache_dir.rglob("*.json")), [])
+        finally:
+            for error in errors:
+                error.close()
 
 
 if __name__ == "__main__":
