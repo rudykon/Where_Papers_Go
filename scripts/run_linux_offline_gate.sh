@@ -204,6 +204,7 @@ gate_outer_stage=root-sandbox-entry
     runner_commands_dir="${WPG_PR_RUNNER_COMMANDS_DIR:?}"
     caller_home="${WPG_PR_CALLER_HOME:?}"
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
+    echo "OS-level offline gate root stage root-metadata complete" >&2
 
     gate_stage=root-identity
     setup_uid_line=
@@ -219,6 +220,8 @@ gate_outer_stage=root-sandbox-entry
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
+    echo "OS-level offline gate root stage root-identity complete" >&2
+
     gate_stage=root-capabilities
     setup_cap_inh=
     setup_cap_prm=
@@ -243,6 +246,7 @@ gate_outer_stage=root-sandbox-entry
         exit 2
       fi
     done
+    echo "OS-level offline gate root stage root-capabilities complete" >&2
 
     # Current hosted-runner kernels can reject the setuid mount helper even
     # with aligned root IDs and CAP_SYS_ADMIN.  Use sudo once to replace /tmp
@@ -259,6 +263,8 @@ gate_outer_stage=root-sandbox-entry
     /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
       -o rw,nosuid,nodev,mode=1777,size=1g \
       wpg-tmp /tmp
+    echo "OS-level offline gate root stage root-private-tmp complete" >&2
+
     gate_stage=root-mount-helper
     mount_helper=/tmp/.wpg-offline-gate-mount
     /usr/bin/cp -- /usr/bin/mount "$mount_helper"
@@ -267,6 +273,7 @@ gate_outer_stage=root-sandbox-entry
     [[ -f "$mount_helper" && ! -L "$mount_helper" && \
        -x "$mount_helper" && \
        "$(/usr/bin/stat -Lc "%u:%g:%a" "$mount_helper")" == 0:0:700 ]]
+    echo "OS-level offline gate root stage root-mount-helper complete" >&2
 
     readonly_bind() {
       local target="$1"
@@ -306,6 +313,7 @@ gate_outer_stage=root-sandbox-entry
     "$mount_helper" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
+    echo "OS-level offline gate root stage root-private-mounts complete" >&2
 
     # A test process must not be able to rewrite checked-out actions, runner
     # post hooks, temp command files, runner binaries, or the hosted tool cache
@@ -327,6 +335,7 @@ gate_outer_stage=root-sandbox-entry
     if [[ "$runner_commands_dir" != /nonexistent ]]; then
       readonly_bind "$runner_commands_dir"
     fi
+    echo "OS-level offline gate root stage root-readonly-mounts complete" >&2
 
     # Replace /run last, after the one short-lived sudo invocation and all
     # other mounts have returned.  The outer sudo monitor is outside this
@@ -337,6 +346,7 @@ gate_outer_stage=root-sandbox-entry
       wpg-run /run
     /usr/bin/rm -- "$mount_helper"
     [[ ! -e "$mount_helper" && ! -L "$mount_helper" ]]
+    echo "OS-level offline gate root stage root-private-run complete" >&2
     cd -- "$project_root"
 
     gate_stage=root-loopback
