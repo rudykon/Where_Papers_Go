@@ -254,10 +254,10 @@
     },
     {
       "bytes": 17099,
-      "git_blob_sha1": "1f3036ba2fd2c3112f1bb86f45d6534810b40d20",
+      "git_blob_sha1": "a5720a770f6014f08675c21ac048a5b84d7be76a",
       "mode": "100644",
       "path": "scripts/run_linux_offline_gate.sh",
-      "sha256": "8a91cf4ddddeadf359e8d19a2f1e9e5d73b5c24e9a2787ca2d79c6aa4ad08718"
+      "sha256": "81ee2c79799a748c4747dc2403ff402957c2952b767145b955283ab2a90099e2"
     },
     {
       "bytes": 27925,
@@ -274,11 +274,11 @@
       "sha256": "5af1b9cee8422936ade9554346ba88cb715f10a07fa9cf7fa0305848e2a24425"
     },
     {
-      "bytes": 78970,
-      "git_blob_sha1": "26a4db2222c7b6eee9c4d02105389f515fa87be3",
+      "bytes": 79658,
+      "git_blob_sha1": "6ddd8786717d3efbd9f0695a86ab810801cd7be0",
       "mode": "100644",
       "path": "scripts/validate_pr_gates.py",
-      "sha256": "bc89529b588879ba695932e5895f31964381a71174e9a4e82eaba2d07a07ea2c"
+      "sha256": "53ecde684393ecbc71bbac8823ca2252141839aff24ff34298e4ee761ab888c9"
     },
     {
       "bytes": 63336,
@@ -288,11 +288,11 @@
       "sha256": "73c58053ec13d5de79abdc4bb633205eedc2d8520f823a127afe1263e5b9aafb"
     },
     {
-      "bytes": 38238,
-      "git_blob_sha1": "a586119bb4e8b9b100e99f49ee0c218c1a98456b",
+      "bytes": 38208,
+      "git_blob_sha1": "28c83749473e96acb6c490ae965b48d5332ed29a",
       "mode": "100644",
       "path": "tests/test_closeout_runner.py",
-      "sha256": "3ab78d4fe7ad50d088d142e88c95f878b7c725806ddf26f02ff6c66c22a052e9"
+      "sha256": "503072ff42c1a09d6d22fd269d31e108f33eccd7235b9a0916067875c08b4bd8"
     },
     {
       "bytes": 166729,
@@ -309,11 +309,11 @@
       "sha256": "acf018a9184c5cf572b1c4c299096af23ca14e6f8ee82cdb41e711807df8f3e0"
     },
     {
-      "bytes": 80707,
-      "git_blob_sha1": "575eb5cdd7a2fb80952426b97bd79252ccb5fcb9",
+      "bytes": 81672,
+      "git_blob_sha1": "c30f75605b29654d2eca3867eda53038925685ad",
       "mode": "100644",
       "path": "tests/test_evaluate_recent_journals.py",
-      "sha256": "c049d9455e3f5e55e029303ae201ed87b63cde6da8803f94a19df3f03a0510a1"
+      "sha256": "e013ce11fb7b9371dfa36342de6a8c3541fd034d203fb2324d1aae36cfe1363d"
     },
     {
       "bytes": 4317,
@@ -533,11 +533,11 @@
       "sha256": "b66808337c48705d0234e2acd22977ada0a21731790da224a52ae5847beecdfe"
     },
     {
-      "bytes": 93352,
-      "git_blob_sha1": "add711a8cf7326eba1c2c82b514b21381182b2ac",
+      "bytes": 94286,
+      "git_blob_sha1": "1461e97aa05c5a3b463806e43f44af2fbb3fc147",
       "mode": "100644",
       "path": "tests/test_validate_closeout.py",
-      "sha256": "57b8d4ce9cf0ab787dc006ae808ba2c0deee9d17645ec14a6deb46ef9fe98b89"
+      "sha256": "8dc2be0c932dcf18f9b4fe4348537e254fcdbb73e1d92cc097c4877738cc6e55"
     },
     {
       "bytes": 16764,
@@ -561,11 +561,11 @@
       "sha256": "7be35254f11f58a9b0af4be27e44d981a7c16c675d99abd69f42e7a137e76c2a"
     },
     {
-      "bytes": 46049,
-      "git_blob_sha1": "48f6d7dba81145c07ef68443445c1a50c1b84687",
+      "bytes": 46141,
+      "git_blob_sha1": "6102801a06d72b28356a63f75e6243005d553e2f",
       "mode": "100644",
       "path": "tests/test_venue_recommender.py",
-      "sha256": "13a0b79c15499e8422b39b0c267f780127f3eb53397ed955716817a9b1874603"
+      "sha256": "355f4097e14e64602008e88584d0c2a2da47e62c25be6112b2e3f50ee6eb5040"
     },
     {
       "bytes": 14731,
@@ -674,7 +674,7 @@
     "no_new_privs_required": true,
     "nonloopback_python_socket_attempts_allowed": 0,
     "os_isolation_path": "scripts/run_linux_offline_gate.sh",
-    "os_isolation_sha256": "8a91cf4ddddeadf359e8d19a2f1e9e5d73b5c24e9a2787ca2d79c6aa4ad08718",
+    "os_isolation_sha256": "81ee2c79799a748c4747dc2403ff402957c2952b767145b955283ab2a90099e2",
     "os_isolation_token": "linux-sandbox-v3",
     "runner_command_files_writable": false,
     "runner_tool_cache_writable": false,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "6f11038a755bb15e72abfb50313b5cd04cd948fb6823617826b85ae8d554df04"
+    "inventory_sha256": "5cedb7f5888888005c0824c6fef3ec84ec9e863990715f009941e73c3a9f411d"
   },
   "tests": {
     "full": {

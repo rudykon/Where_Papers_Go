@@ -431,6 +431,8 @@ class ApiAssistedSearchIntegrationTests(unittest.TestCase):
                     str(query_write_cache),
                     "--lightrag-embedding-cache",
                     str(lightrag_write_cache),
+                    "--graph",
+                    str(cache_root / "venue_graph.json.gz"),
                     "--limit",
                     "3",
                     "--format",

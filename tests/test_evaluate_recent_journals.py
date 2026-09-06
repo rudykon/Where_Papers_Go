@@ -558,6 +558,27 @@ class EvaluatorExecutionSafetyTests(unittest.TestCase):
             (self.lightrag_working_dir_seed / name).write_text(
                 json.dumps({"synthetic": name}) + "\n", encoding="utf-8"
             )
+        self.data_dir = self.root / "data"
+        self.data_dir.mkdir()
+        for name in (*evaluator.DATA_FILES, evaluator.CURATED_SCOPE_FILE):
+            (self.data_dir / name).write_text(
+                f"synthetic evaluator source: {name}\n", encoding="utf-8"
+            )
+        graph_path = self.data_dir / "venue_graph.json.gz"
+        graph_path.write_bytes(b"synthetic evaluator graph\n")
+        evaluator.vector_path_for_graph(graph_path).write_bytes(
+            b"synthetic evaluator vectors\n"
+        )
+        self.data_dir_patch = mock.patch.object(
+            evaluator, "DATA_DIR", self.data_dir
+        )
+        self.inspect_graph_patch = mock.patch.object(
+            evaluator,
+            "inspect_graph",
+            return_value=mock.Mock(fresh=True, reason="fresh"),
+        )
+        self.data_dir_patch.start()
+        self.inspect_graph_patch.start()
         self.registry = self.root / "authorization-registry"
         self.registry_patch = mock.patch.object(
             evaluator, "DEFAULT_AUTHORIZATION_REGISTRY_DIR", self.registry
@@ -566,6 +587,8 @@ class EvaluatorExecutionSafetyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.registry_patch.stop()
+        self.inspect_graph_patch.stop()
+        self.data_dir_patch.stop()
         self.temporary.cleanup()
 
     def argv(self, output: Path, *extra: str) -> list[str]:
