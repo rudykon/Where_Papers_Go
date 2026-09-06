@@ -633,6 +633,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
+        self.assertEqual(offline_wrapper.count("--reuid=0"), 1)
+        self.assertEqual(offline_wrapper.count("--regid=0"), 1)
         for local_name, environment_name in (
             ("caller_uid", "WPG_PR_CALLER_UID"),
             ("caller_gid", "WPG_PR_CALLER_GID"),

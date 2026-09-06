@@ -158,13 +158,6 @@ gate_outer_stage=root-sandbox-entry
     --uts \
     --propagation private \
     -- \
-  /usr/bin/setpriv \
-    --reuid=0 \
-    --regid=0 \
-    --clear-groups \
-    --inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
-    --ambient-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
-    -- \
   /usr/bin/env -i \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=C.UTF-8 \
