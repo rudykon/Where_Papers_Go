@@ -183,6 +183,13 @@ gate_outer_stage=root-sandbox-entry
     WPG_PR_RUNNER_COMMANDS_DIR="$runner_commands_dir" \
     WPG_PR_RUNNER_TOOL_CACHE="$runner_tool_cache" \
   /bin/bash --noprofile --norc -p -Eeuo pipefail -c '
+    echo "OS-level offline gate entered root setup" >&2
+
+    # Drop the inherited checkout cwd before defining the setup trap or any
+    # helper state.  The old mount must not remain reachable through cwd once
+    # the checkout receives its read-only bind below.
+    cd /
+
     gate_stage=root-metadata
     report_setup_exit() {
       local rc="$?"
@@ -193,7 +200,6 @@ gate_outer_stage=root-sandbox-entry
       exit "$rc"
     }
     trap report_setup_exit EXIT
-    echo "OS-level offline gate entered root setup" >&2
 
     # Metadata is carried by the explicit env -i block above.  Keep every
     # positional parameter reserved for the target command across both
@@ -252,34 +258,30 @@ gate_outer_stage=root-sandbox-entry
     # therefore clears ambient capabilities before mount(2), despite the
     # aligned root IDs above.  no_new_privs makes that setuid bit ineffective,
     # so the explicitly bounded ambient capabilities survive the exec without
-    # leaving a nested sudo monitor inside this namespace.
-    gate_stage=root-mount-helper
-    mount_helper() {
-      /usr/bin/setpriv --no-new-privs -- /usr/bin/mount "$@"
-    }
-    declare -F mount_helper >/dev/null
-    echo "OS-level offline gate root stage root-mount-helper complete" >&2
-
-    # Drop the inherited checkout cwd before overmounting it.  Otherwise the
-    # old mount remains reachable through the process's cwd despite the new
-    # read-only bind at the same pathname.
-    cd /
+    # leaving a nested sudo monitor inside this namespace.  Keep the command
+    # as immutable argv instead of depending on shell-function lookup.
+    gate_stage=root-mount-command
+    readonly -a mount_command=(
+      /usr/bin/setpriv --no-new-privs -- /usr/bin/mount
+    )
+    [[ "${#mount_command[@]}" -eq 4 ]]
+    echo "OS-level offline gate root stage root-mount-command complete" >&2
 
     gate_stage=root-private-tmp
-    mount_helper -t tmpfs \
+    "${mount_command[@]}" -t tmpfs \
       -o rw,nosuid,nodev,mode=1777,size=1g \
       wpg-tmp /tmp
     echo "OS-level offline gate root stage root-private-tmp complete" >&2
 
     readonly_bind() {
       local target="$1"
-      mount_helper --bind "$target" "$target"
-      mount_helper -o remount,bind,ro,nosuid,nodev,noexec "$target"
+      "${mount_command[@]}" --bind "$target" "$target"
+      "${mount_command[@]}" -o remount,bind,ro,nosuid,nodev,noexec "$target"
     }
     readonly_bind_exec() {
       local target="$1"
-      mount_helper --bind "$target" "$target"
-      mount_helper -o remount,bind,ro,nosuid,nodev "$target"
+      "${mount_command[@]}" --bind "$target" "$target"
+      "${mount_command[@]}" -o remount,bind,ro,nosuid,nodev "$target"
     }
     mask_directory() {
       local target="$1"
@@ -296,7 +298,7 @@ gate_outer_stage=root-sandbox-entry
         echo "OS-level offline gate rejects redirected socket directory: $target" >&2
         exit 2
       fi
-      mount_helper -t tmpfs \
+      "${mount_command[@]}" -t tmpfs \
         -o rw,nosuid,nodev,noexec,mode=0700,size=1m \
         wpg-private "$target"
     }
@@ -306,7 +308,7 @@ gate_outer_stage=root-sandbox-entry
     # that mount operation is rejected by some otherwise capable hosted
     # runners, so verify the resulting namespace below after privileges drop.
     gate_stage=root-private-mounts
-    mount_helper -t tmpfs \
+    "${mount_command[@]}" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
     echo "OS-level offline gate root stage root-private-mounts complete" >&2
@@ -337,7 +339,7 @@ gate_outer_stage=root-sandbox-entry
     # sole outer sudo monitor is outside this mount namespace, so runner
     # cleanup remains reachable.
     gate_stage=root-private-run
-    mount_helper -t tmpfs \
+    "${mount_command[@]}" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
       wpg-run /run
     echo "OS-level offline gate root stage root-private-run complete" >&2
