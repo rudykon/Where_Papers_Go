@@ -274,11 +274,11 @@
       "sha256": "5af1b9cee8422936ade9554346ba88cb715f10a07fa9cf7fa0305848e2a24425"
     },
     {
-      "bytes": 79658,
-      "git_blob_sha1": "6ddd8786717d3efbd9f0695a86ab810801cd7be0",
+      "bytes": 79673,
+      "git_blob_sha1": "2d9e45d905eebed8c11cbd3dd89d7de1e4d2b88a",
       "mode": "100644",
       "path": "scripts/validate_pr_gates.py",
-      "sha256": "53ecde684393ecbc71bbac8823ca2252141839aff24ff34298e4ee761ab888c9"
+      "sha256": "48a789ee707cf9d43bbfb1d232f705478ec2b9ea02d3dce274c1a1f02db13910"
     },
     {
       "bytes": 63336,
