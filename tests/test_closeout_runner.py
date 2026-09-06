@@ -626,6 +626,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "root setup failed during $gate_stage",
             "unprivileged checks failed during $gate_stage",
             "outer wrapper failed during $gate_outer_stage",
+            "OS-level offline gate root setup complete",
+            "OS-level offline gate entered unprivileged checks",
             "trap report_outer_exit EXIT",
             "trap report_setup_exit EXIT",
             "trap report_unprivileged_exit EXIT",
