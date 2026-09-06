@@ -12,7 +12,9 @@ Skipped-test IDs use the independent domain
 ``b"where-papers-go-closeout-skipped-test-ids-v1\\0"``.  The fixed
 suite-specific skip policy, including reason match modes and values, uses
 ``b"where-papers-go-closeout-skip-allowlist-v1\\0"`` with length-prefixed
-fields.  Only their counts and digests are emitted.
+fields.  When the runner fails, a separate stderr diagnostic uses the
+independent domain ``b"where-papers-go-closeout-nonpassing-test-ids-v1\\0"``.
+It exposes only a count, digest, and boolean aggregate-integrity result.
 """
 
 from __future__ import annotations
@@ -39,15 +41,30 @@ ACTIVE_ENV = "WPG_CLOSEOUT_OFFLINE_GUARD_ACTIVE"
 BOOTSTRAP_ENV = "WPG_CLOSEOUT_RUNNER_BOOTSTRAPPED"
 ARTIFACT_TYPE = "where_papers_go_closeout_test_report"
 REPORT_SCHEMA_VERSION = 2
+DIAGNOSTIC_ARTIFACT_TYPE = "where_papers_go_closeout_test_diagnostic"
+DIAGNOSTIC_SCHEMA_VERSION = 1
+DIAGNOSTIC_PREFIX = b"WPG_CLOSEOUT_DIAGNOSTIC "
 MODEL_MODULES = ("tests.test_model_runs", "tests.test_local_model_runtime")
 ID_HASH_DOMAIN = b"where-papers-go-closeout-test-ids-v1\0"
 SKIPPED_TEST_ID_HASH_DOMAIN = (
     b"where-papers-go-closeout-skipped-test-ids-v1\0"
 )
+NONPASSING_TEST_ID_HASH_DOMAIN = (
+    b"where-papers-go-closeout-nonpassing-test-ids-v1\0"
+)
+INTEGRITY_ISSUE_HASH_DOMAIN = (
+    b"where-papers-go-closeout-integrity-issues-v1\0"
+)
 SKIP_ALLOWLIST_HASH_DOMAIN = b"where-papers-go-closeout-skip-allowlist-v1\0"
 EMPTY_ID_SHA256 = hashlib.sha256(ID_HASH_DOMAIN).hexdigest()
 EMPTY_SKIPPED_TEST_ID_SHA256 = hashlib.sha256(
     SKIPPED_TEST_ID_HASH_DOMAIN
+).hexdigest()
+EMPTY_NONPASSING_TEST_ID_SHA256 = hashlib.sha256(
+    NONPASSING_TEST_ID_HASH_DOMAIN
+).hexdigest()
+EMPTY_INTEGRITY_ISSUE_SHA256 = hashlib.sha256(
+    INTEGRITY_ISSUE_HASH_DOMAIN
 ).hexdigest()
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -120,6 +137,29 @@ REPORT_KEYS = {
     "skipped_test_id_sha256",
     "skip_allowlist_sha256",
 }
+DIAGNOSTIC_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "integrity_valid",
+    "integrity_issue_count",
+    "integrity_issue_sha256",
+    "nonpassing_test_id_count",
+    "nonpassing_test_id_sha256",
+}
+INTEGRITY_ISSUES = frozenset(
+    {
+        "runner_setup",
+        "initial_audit",
+        "child_guard",
+        "initial_guard",
+        "suite_execution",
+        "executed_ids",
+        "fixture_outcomes",
+        "skip_policy",
+        "final_guard",
+        "final_audit",
+    }
+)
 
 
 def _update_length_prefixed(digest: Any, value: str) -> None:
@@ -215,6 +255,20 @@ def _empty_report(
             _suite_skip_allowlist(suite_name)
         ),
     }
+
+
+def _empty_diagnostic() -> dict[str, Any]:
+    diagnostic = {
+        "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+        "artifact_type": DIAGNOSTIC_ARTIFACT_TYPE,
+        "integrity_valid": False,
+        "integrity_issue_count": 1,
+        "integrity_issue_sha256": "",
+        "nonpassing_test_id_count": 0,
+        "nonpassing_test_id_sha256": EMPTY_NONPASSING_TEST_ID_SHA256,
+    }
+    _set_integrity_diagnostic(diagnostic, {"runner_setup"})
+    return diagnostic
 
 
 def _child_python_arguments(program: str) -> list[str]:
@@ -368,14 +422,27 @@ def _open_report(path: Path) -> int:
     return descriptor
 
 
-def _silence_process_output() -> tuple[int, int]:
-    sys.stdout.flush()
-    sys.stderr.flush()
-    saved_stdout = os.dup(1)
-    devnull = os.open(os.devnull, os.O_WRONLY | _O_CLOEXEC)
-    os.dup2(devnull, 1)
-    os.dup2(devnull, 2)
-    return saved_stdout, devnull
+def _silence_process_output() -> tuple[int, int, int]:
+    saved_stdout: int | None = None
+    saved_stderr: int | None = None
+    devnull: int | None = None
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY | _O_CLOEXEC)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+    except BaseException:
+        for descriptor in (saved_stdout, saved_stderr, devnull):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        raise
+    return saved_stdout, saved_stderr, devnull
 
 
 def _flatten_suite(suite: unittest.TestSuite) -> list[unittest.TestCase]:
@@ -410,6 +477,27 @@ def _test_id_digest(test_ids: Iterable[str]) -> str:
 
 def _skipped_test_id_digest(test_ids: Iterable[str]) -> str:
     return _identifier_digest(test_ids, SKIPPED_TEST_ID_HASH_DOMAIN)
+
+
+def _nonpassing_test_id_digest(test_ids: Iterable[str]) -> str:
+    return _identifier_digest(test_ids, NONPASSING_TEST_ID_HASH_DOMAIN)
+
+
+def _integrity_issue_digest(issues: Iterable[str]) -> str:
+    return _identifier_digest(issues, INTEGRITY_ISSUE_HASH_DOMAIN)
+
+
+def _set_integrity_diagnostic(
+    diagnostic: dict[str, Any], issues: Iterable[str]
+) -> None:
+    canonical_issues = tuple(sorted(set(issues)))
+    if any(issue not in INTEGRITY_ISSUES for issue in canonical_issues):
+        raise ValueError("unknown closeout integrity issue")
+    diagnostic["integrity_valid"] = not canonical_issues
+    diagnostic["integrity_issue_count"] = len(canonical_issues)
+    diagnostic["integrity_issue_sha256"] = _integrity_issue_digest(
+        canonical_issues
+    )
 
 
 class AggregateTestResult(unittest.TestResult):
@@ -658,13 +746,22 @@ def _audit_is_pristine_and_unchanged(
     )
 
 
-def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
+def _run_suite(
+    name: str,
+    guard_module: Any,
+    *,
+    diagnostic: dict[str, Any] | None = None,
+    integrity_issues: set[str] | None = None,
+) -> dict[str, Any]:
     discovered_ids: list[str] = []
     result = AggregateTestResult()
+    issues = integrity_issues if integrity_issues is not None else set()
     try:
-        integrity_ok = bool(guard_module.guard_self_check())
+        initial_guard_valid = bool(guard_module.guard_self_check())
     except BaseException:
-        integrity_ok = False
+        initial_guard_valid = False
+    if not initial_guard_valid:
+        issues.add("initial_guard")
     try:
         suite = _load_suite(name)
         cases = _flatten_suite(suite)
@@ -680,14 +777,14 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
             raise ValueError("duplicate discovered unittest ID")
         suite.run(result)
     except BaseException:
-        integrity_ok = False
+        issues.add("suite_execution")
     finally:
         result.close_interrupted_tests()
 
     if tuple(result.executed_ids) != tuple(discovered_ids):
-        integrity_ok = False
+        issues.add("executed_ids")
     if result.fixture_outcomes:
-        integrity_ok = False
+        issues.add("fixture_outcomes")
     (
         skip_policy_ok,
         skipped_ids,
@@ -695,20 +792,49 @@ def _run_suite(name: str, guard_module: Any) -> dict[str, Any]:
         skip_allowlist_sha256,
     ) = _skip_policy_evidence(name, result)
     if not skip_policy_ok:
-        integrity_ok = False
+        issues.add("skip_policy")
     try:
         final_guard_active = bool(guard_module.guard_self_check())
     except BaseException:
         final_guard_active = False
     if not final_guard_active:
-        integrity_ok = False
+        issues.add("final_guard")
+    nonpassing_ids = tuple(
+        sorted(
+            identifier
+            for identifier, outcome in result.final_outcomes.items()
+            if outcome
+            in {
+                "failures",
+                "errors",
+                "expected_failures",
+                "unexpected_successes",
+            }
+        )
+    )
+    if diagnostic is not None:
+        diagnostic.clear()
+        diagnostic.update(
+            {
+                "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+                "artifact_type": DIAGNOSTIC_ARTIFACT_TYPE,
+                "integrity_valid": False,
+                "integrity_issue_count": 0,
+                "integrity_issue_sha256": EMPTY_INTEGRITY_ISSUE_SHA256,
+                "nonpassing_test_id_count": len(nonpassing_ids),
+                "nonpassing_test_id_sha256": _nonpassing_test_id_digest(
+                    nonpassing_ids
+                ),
+            }
+        )
+        _set_integrity_diagnostic(diagnostic, issues)
     counts = result.aggregate()
     # Preserve one final outcome per discovered test while making each
     # disallowed final skip visible as an aggregate error.
     invalid_skip_count = min(counts["skipped"], invalid_skip_count)
     counts["skipped"] -= invalid_skip_count
     counts["errors"] += invalid_skip_count
-    if not integrity_ok:
+    if issues:
         _invalidate_counts(counts)
     total = sum(counts.values())
     if total == 0:
@@ -739,6 +865,20 @@ def _encode_report(report: dict[str, Any]) -> bytes:
         raise ValueError("internal closeout report key mismatch")
     return (
         json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        + "\n"
+    ).encode("ascii")
+
+
+def _encode_diagnostic(diagnostic: dict[str, Any]) -> bytes:
+    if set(diagnostic) != DIAGNOSTIC_KEYS:
+        raise ValueError("internal closeout diagnostic key mismatch")
+    return DIAGNOSTIC_PREFIX + (
+        json.dumps(
+            diagnostic,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
         + "\n"
     ).encode("ascii")
 
@@ -778,7 +918,7 @@ def main() -> int:
             parsed = None
 
     try:
-        saved_stdout, devnull = _silence_process_output()
+        saved_stdout, saved_stderr, devnull = _silence_process_output()
     except OSError:
         if report_fd is not None:
             os.close(report_fd)
@@ -789,15 +929,30 @@ def main() -> int:
     report = _empty_report(
         guard_active=guard_active, suite_name=suite_name
     )
+    diagnostic = _empty_diagnostic()
+    integrity_issues = {"runner_setup"}
     initial_audit: tuple[str, int, int, int, int, int] | None = None
     try:
         if parsed is not None and guard_module is not None:
+            integrity_issues.clear()
             initial_audit = _audit_snapshot(guard_module)
             audit_is_pristine = _audit_is_pristine_and_unchanged(
                 initial_audit, initial_audit
             )
-            if audit_is_pristine and _child_inherits_guard():
-                report = _run_suite(parsed[0], guard_module)
+            if not audit_is_pristine:
+                integrity_issues.add("initial_audit")
+            child_guard_valid = (
+                audit_is_pristine and _child_inherits_guard()
+            )
+            if audit_is_pristine and not child_guard_valid:
+                integrity_issues.add("child_guard")
+            if audit_is_pristine and child_guard_valid:
+                report = _run_suite(
+                    parsed[0],
+                    guard_module,
+                    diagnostic=diagnostic,
+                    integrity_issues=integrity_issues,
+                )
             else:
                 report = _empty_report(
                     guard_active=guard_active,
@@ -809,6 +964,7 @@ def main() -> int:
                 initial_audit, final_audit
             )
             if not audit_unchanged:
+                integrity_issues.add("final_audit")
                 counts = {
                     key: int(report[key])
                     for key in (
@@ -823,6 +979,7 @@ def main() -> int:
                 _invalidate_counts(counts)
                 report.update(counts)
                 report["total"] = sum(counts.values())
+        _set_integrity_diagnostic(diagnostic, integrity_issues)
         payload = _encode_report(report)
         _write_all(target_fd, payload, synchronize=report_fd is not None)
     except BaseException:
@@ -837,13 +994,21 @@ def main() -> int:
             or report["unexpected_successes"] != 0
         ):
             return_code = 1
-    finally:
-        for descriptor in (report_fd, saved_stdout, devnull):
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
+    if return_code != 0:
+        try:
+            _write_all(
+                saved_stderr,
+                _encode_diagnostic(diagnostic),
+                synchronize=False,
+            )
+        except BaseException:
+            return_code = 2
+    for descriptor in (report_fd, saved_stdout, saved_stderr, devnull):
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     return return_code
 
 
