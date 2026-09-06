@@ -977,9 +977,14 @@ NoNewPrivs:\t1
             },
         ), patch.object(
             validate_pr_gates, "_sandbox_attestation", return_value=False
+        ), patch.object(
+            validate_pr_gates,
+            "_sandbox_attestation_failure",
+            return_value="synthetic_attestation_failure",
         ):
             with self.assertRaisesRegex(
-                validate_pr_gates.PrGateError, "sandbox isolation is inactive"
+                validate_pr_gates.PrGateError,
+                "sandbox isolation is inactive: synthetic_attestation_failure",
             ):
                 validate_pr_gates._os_network_isolation_active(required=True)
         with patch.object(validate_pr_gates, "_verify_critical_files"), patch.object(
