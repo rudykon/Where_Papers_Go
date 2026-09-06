@@ -1651,7 +1651,7 @@ def _sandbox_attestation_failure() -> str | None:
         current_namespace = os.stat("/proc/self/ns/net")
         status_text = Path("/proc/self/status").read_text(encoding="ascii")
         mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-        interfaces = set(os.listdir("/sys/class/net"))
+        interfaces = {name for _index, name in socket.if_nameindex()}
     except (OSError, UnicodeError):
         return "proc_metadata"
     current_netns_id = f"{current_namespace.st_dev}:{current_namespace.st_ino}"
