@@ -309,11 +309,11 @@
       "sha256": "acf018a9184c5cf572b1c4c299096af23ca14e6f8ee82cdb41e711807df8f3e0"
     },
     {
-      "bytes": 81672,
-      "git_blob_sha1": "c30f75605b29654d2eca3867eda53038925685ad",
+      "bytes": 83282,
+      "git_blob_sha1": "f9df843c17e617e00663622e15323fa334d5606f",
       "mode": "100644",
       "path": "tests/test_evaluate_recent_journals.py",
-      "sha256": "e013ce11fb7b9371dfa36342de6a8c3541fd034d203fb2324d1aae36cfe1363d"
+      "sha256": "e2c28487964dbe826bbbc8c03eb78222250ba5fc54a09f9672ef20cbd8006bad"
     },
     {
       "bytes": 4317,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "d7f46c124a578f7059aa06112ed67ea7649ef645af96996126dfcfdfe9e8f270"
+    "inventory_sha256": "1cea935f25f1cb7fae438dd5c3adc07a9ffaa9ab68dc1c235462b23922d1d694"
   },
   "tests": {
     "full": {

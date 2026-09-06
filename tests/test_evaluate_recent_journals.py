@@ -686,6 +686,16 @@ class EvaluatorExecutionSafetyTests(unittest.TestCase):
 
     def test_dry_run_is_read_only_and_never_constructs_worker(self) -> None:
         output = self.root / "new-output"
+        certs = self.root / "tls-certs"
+        certs.mkdir()
+        (certs / "fixture.pem").write_text(
+            "fixture certificate\n", encoding="utf-8"
+        )
+        linked_certs = self.root / "ssl-certs"
+        linked_certs.symlink_to("tls-certs", target_is_directory=True)
+        verify_paths = evaluator.ssl.get_default_verify_paths()._replace(
+            capath=str(linked_certs)
+        )
         patches = self.local_only_patches()
         with patches[0], patches[1], mock.patch.object(
             evaluator.PersistentWorker,
@@ -694,6 +704,10 @@ class EvaluatorExecutionSafetyTests(unittest.TestCase):
         ), mock.patch(
             "urllib.request.urlopen",
             side_effect=AssertionError("dry-run opened HTTP transport"),
+        ), mock.patch.object(
+            evaluator.ssl,
+            "get_default_verify_paths",
+            return_value=verify_paths,
         ):
             rendered = StringIO()
             with redirect_stdout(rendered):
@@ -707,8 +721,30 @@ class EvaluatorExecutionSafetyTests(unittest.TestCase):
         self.assertRegex(plan["api_config_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(plan["reviewed_plan_digest"], r"^[0-9a-f]{64}$")
         self.assertIn("diagnostic_nonformal", plan["claim_status"])
+        capath = plan["runtime_bindings"]["network_environment"]["tls_trust"][
+            "material"
+        ]["active_default_capath"]
+        self.assertTrue(capath["symlink"])
+        self.assertEqual(capath["symlink_target"], "tls-certs")
+        self.assertEqual(capath["resolved_target"], str(certs))
+        self.assertIn(str(linked_certs.absolute()), capath["binding_paths"])
+        self.assertIn(str(certs), capath["binding_paths"])
         self.assertFalse(output.exists())
         self.assertFalse(self.registry.exists())
+
+        broken = self.root / "broken-certs"
+        broken.symlink_to("missing-certs", target_is_directory=True)
+        with self.assertRaisesRegex(evaluator.EvaluationError, "broken symlink"):
+            evaluator._ca_directory_snapshot(broken)
+
+        bundle = self.root / "bundle.pem"
+        bundle.write_text("fixture certificate\n", encoding="utf-8")
+        file_link = self.root / "file-certs"
+        file_link.symlink_to("bundle.pem")
+        with self.assertRaisesRegex(
+            evaluator.EvaluationError, "target must be a directory"
+        ):
+            evaluator._ca_directory_snapshot(file_link)
 
     def test_existing_output_requires_explicit_resume(self) -> None:
         output = self.root / "existing"
