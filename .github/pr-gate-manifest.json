@@ -288,11 +288,11 @@
       "sha256": "73c58053ec13d5de79abdc4bb633205eedc2d8520f823a127afe1263e5b9aafb"
     },
     {
-      "bytes": 46514,
-      "git_blob_sha1": "3f3851d4b37578b6342c381c9cb52deee22720d4",
+      "bytes": 46720,
+      "git_blob_sha1": "9a9deaacc2e9c420ab9e4778968e8e4d450d8560",
       "mode": "100644",
       "path": "tests/test_closeout_runner.py",
-      "sha256": "627053eec35c0cd8281d81388576b2c0e370c2e054238603b5336e6bcccbef37"
+      "sha256": "5ebd710bed7354a0114b801cda366f4592a66cb1ad1d9fdd9547034cb932fc48"
     },
     {
       "bytes": 167066,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "0eaa081db31444662fe0a5f0702011930348fbc662c4261b9d8756527c0635b8"
+    "inventory_sha256": "fcdc1a9f27685204448de275a634ab39ed8403e02ab60e9c705ffdab95ed79ed"
   },
   "tests": {
     "full": {
