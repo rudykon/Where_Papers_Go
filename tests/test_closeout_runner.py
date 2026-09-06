@@ -585,8 +585,10 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "/usr/bin/sudo -n /usr/bin/setpriv",
-            "/usr/bin/sudo -n /usr/bin/env -i",
             "/usr/bin/sudo -n /usr/bin/mount",
+            "mount_helper=/tmp/.wpg-offline-gate-mount",
+            '"$mount_helper" --bind "$target" "$target"',
+            "/usr/bin/rm -- \"$mount_helper\"",
             "--reuid=0",
             "--regid=0",
             "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
@@ -620,6 +622,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             '[[ "$uid_line" =~ $uid_pattern ]]',
             '[[ "$gid_line" =~ $gid_pattern ]]',
             "OS-level offline gate privileged setup shell lacks required capabilities",
+            '"$setup_cap_bnd" "$setup_cap_amb"',
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
