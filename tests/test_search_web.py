@@ -8,6 +8,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from where_paper_go.enrichment import search_web
+from where_paper_go.tavily_pool import TavilyKeyPool
 
 
 class LLMNativeSearchTests(TestCase):
@@ -139,6 +140,52 @@ class TavilySearchTests(TestCase):
                     5,
                     raise_on_error=True,
                 )
+
+    def test_timeout_fails_closed_without_negative_cache(self) -> None:
+        with TemporaryDirectory() as directory, patch(
+            "where_paper_go.enrichment.http_request",
+            side_effect=TimeoutError("search timed out"),
+        ):
+            cache_dir = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "provider duckduckgo"):
+                search_web(
+                    "wireless link adaptation",
+                    {"provider": "duckduckgo"},
+                    cache_dir,
+                    1,
+                    5,
+                    raise_on_error=True,
+                )
+
+            self.assertEqual(list(cache_dir.rglob("*.json")), [])
+
+    def test_exhausted_local_quota_fails_before_transport_and_without_cache(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_file = root / "pool.json"
+            key = "tvly-fictitious-exhausted-key"
+            TavilyKeyPool([key], quota_per_key=1, state_file=state_file).acquire()
+            config = {
+                "provider": "tavily",
+                "api_keys": [key],
+                "quota_per_key": 1,
+                "key_pool_state_file": str(state_file),
+                "proxy": "direct",
+            }
+            cache_dir = root / "cache"
+            with patch("where_paper_go.enrichment.http_request") as request:
+                with self.assertRaisesRegex(RuntimeError, "provider tavily"):
+                    search_web(
+                        "wireless link adaptation",
+                        config,
+                        cache_dir,
+                        1,
+                        5,
+                        raise_on_error=True,
+                    )
+
+            request.assert_not_called()
+            self.assertEqual(list(cache_dir.rglob("*.json")), [])
 
     def test_proxy_failure_retries_tavily_direct(self) -> None:
         response = {

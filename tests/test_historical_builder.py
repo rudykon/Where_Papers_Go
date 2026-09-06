@@ -40,7 +40,11 @@ from research.historical_builder import (
     stable_collection_queue,
 )
 from research.pcl_retry import PCLRetryOutcome, PCLRetryQueue
-from research.prototype_vectors import build_prototype_vector_run
+from research.prototype_vectors import (
+    build_prototype_vector_run,
+    plan_prototype_vector_cache,
+    validate_reference_binding,
+)
 from research.types import Query, VenueDocument
 
 
@@ -1911,12 +1915,114 @@ class PrototypeRetrievalTests(unittest.TestCase):
                 top_k=2,
                 query_batch_size=1,
                 prototype_chunk_size=2,
+                external_authorization_reference="unit-test synthetic texts",
+                max_new_embeddings=3,
+                estimated_external_cost_usd=0.0,
                 generation_command=("python", "-m", "research", "test-vector"),
             )
             first = json.loads(output.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(first["venue_id"], "v1")
             self.assertEqual(manifest["prototype_count"], 3)
             self.assertEqual(manifest["venue_count"], 2)
+            plan = plan_prototype_vector_cache(
+                provider=FakeEmbeddingProvider(),
+                bundle=bundle,
+                profiles_path=profiles,
+                cache_path=root / "vectors.json.gz",
+                estimated_external_cost_usd=0.0,
+            )
+            self.assertFalse(plan["network_performed"])
+            self.assertEqual(plan["coverage"]["missing_unique_text_count"], 0)
+            self.assertEqual(plan["request_bound"]["logical_embedding_batches"], 0)
+            self.assertFalse(plan["payload"]["text_values_returned"])
+            with self.assertRaisesRegex(ResearchDataError, "authorization reference"):
+                build_prototype_vector_run(
+                    provider=FakeEmbeddingProvider(),
+                    bundle=bundle,
+                    dataset_path=dataset,
+                    profiles_path=profiles,
+                    cache_path=root / "unauthorized-vectors.json.gz",
+                    output_path=root / "unauthorized-run.jsonl",
+                    top_k=2,
+                    generation_command=("python", "test-vector"),
+                )
+            self.assertFalse((root / "unauthorized-run.jsonl").exists())
+
+            class CacheOnlyProvider(FakeEmbeddingProvider):
+                def embed(self, texts):
+                    del texts
+                    raise AssertionError("cache-only mode called the provider")
+
+            cached_manifest = build_prototype_vector_run(
+                provider=CacheOnlyProvider(),
+                bundle=bundle,
+                dataset_path=dataset,
+                profiles_path=profiles,
+                cache_path=root / "vectors.json.gz",
+                output_path=root / "cached-run.jsonl",
+                top_k=2,
+                query_batch_size=1,
+                prototype_chunk_size=2,
+                cache_only=True,
+                generation_command=("python", "-m", "research", "test-vector"),
+            )
+            self.assertEqual(cached_manifest["embedded_text_count"], 0)
+            self.assertEqual(cached_manifest["cached_text_count"], 3)
+            self.assertTrue(cached_manifest["execution"]["cache_only"])
+            self.assertEqual(cached_manifest["execution"]["external_api_calls"], 0)
+
+            with self.assertRaisesRegex(
+                ResearchDataError, "refuses external embedding calls"
+            ):
+                build_prototype_vector_run(
+                    provider=CacheOnlyProvider(),
+                    bundle=bundle,
+                    dataset_path=dataset,
+                    profiles_path=profiles,
+                    cache_path=root / "empty-vectors.json.gz",
+                    output_path=root / "must-not-exist.jsonl",
+                    top_k=2,
+                    cache_only=True,
+                    generation_command=(
+                        "python",
+                        "-m",
+                        "research",
+                        "test-vector",
+                    ),
+                )
+            self.assertFalse((root / "must-not-exist.jsonl").exists())
+
+    def test_vector_reference_binding_requires_exact_p0_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "p0-manifest.json"
+            binding = {
+                "dataset": {"sha256": "dataset", "bytes": 10},
+                "queries": {"count": 2, "ordered_ids_sha256": "queries"},
+                "profiles": {"sha256": "profiles", "bytes": 20},
+                "candidates": {
+                    "count": 3,
+                    "ordering": "lexicographic",
+                    "ordered_ids_sha256": "candidates",
+                },
+                "configuration": {"canonical_sha256": "config"},
+            }
+            manifest_path.write_text(
+                json.dumps({"binding": binding}) + "\n", encoding="utf-8"
+            )
+
+            record = validate_reference_binding(manifest_path, binding)
+            self.assertEqual(record["bytes"], manifest_path.stat().st_size)
+            self.assertEqual(
+                record["verified_fields"]["queries"]["ordered_ids_sha256"],
+                "queries",
+            )
+
+            mismatched = {**binding, "profiles": {"sha256": "wrong", "bytes": 20}}
+            with self.assertRaisesRegex(
+                ResearchDataError, "reference binding mismatch for profiles.sha256"
+            ):
+                validate_reference_binding(manifest_path, mismatched)
 
 
 if __name__ == "__main__":

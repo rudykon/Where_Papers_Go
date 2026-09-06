@@ -1,0 +1,8 @@
+# Fixed CPU-compatible runtime for the two temporary tiny-BERT integrations.
+# These tests never download model weights; they create random local models.
+# This is the reviewed resolution input. CI installs the complete hashed
+# .github/pylock.wpg-pr-model.toml wheel set without an index or dependency pass.
+torch==2.11.0
+transformers==4.57.6
+safetensors==0.7.0
+tokenizers==0.22.2

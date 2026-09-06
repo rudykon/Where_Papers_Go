@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
+from .external_call_budget import prepare_external_call_urlopen
+
 
 EMBEDDING_CACHE_SCHEMA_VERSION = "1"
 DEFAULT_EMBEDDING_CACHE_FILE = ".embedding_cache.sqlite3"
@@ -139,7 +141,12 @@ class OpenAICompatibleEmbeddingProvider:
                 headers=headers,
             )
             try:
-                with urllib.request.urlopen(
+                open_url = prepare_external_call_urlopen(
+                    "embedding",
+                    self.config.endpoint,
+                    unbudgeted_open=urllib.request.urlopen,
+                )
+                with open_url(
                     request, timeout=self.config.timeout
                 ) as response:
                     result = json.loads(response.read(20_000_000).decode("utf-8"))
@@ -153,7 +160,9 @@ class OpenAICompatibleEmbeddingProvider:
                 return vectors
             except urllib.error.HTTPError as exc:
                 last_error = exc
-                if exc.code not in {408, 409, 429, 500, 502, 503, 504}:
+                retryable = exc.code in {408, 409, 429, 500, 502, 503, 504}
+                exc.close()
+                if not retryable:
                     break
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 last_error = exc

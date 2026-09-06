@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import http.client
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -46,10 +47,31 @@ MANIFEST_FILE = "venue_import_manifest.json"
 # workspace so all supported LightRAG versions use the same on-disk paths.
 LIGHTRAG_WORKSPACE = ""
 VENUE_ID_RE = re.compile(r"(?i)VENUE::(\d+)::")
+IMPORT_EVENT_LOOP_HEARTBEAT_SECONDS = 0.25
+_LIGHTRAG_LOGGING_LOCK = threading.Lock()
 
 
 class LightRAGRuntimeError(RuntimeError):
     """Raised when mandatory LightRAG storage or retrieval is unavailable."""
+
+
+def _configure_lightrag_logging() -> None:
+    """Keep third-party LightRAG query content out of production logs.
+
+    LightRAG 1.5.6 logs raw node, edge, and vector queries at ``INFO`` on the
+    process-global ``lightrag`` logger.  A per-request context manager would
+    race with concurrent requests, so enforce a process-level floor instead.
+    Existing namespace loggers and handlers are covered because propagated
+    child records are filtered by handler level, while warnings and errors
+    remain observable.
+    """
+
+    with _LIGHTRAG_LOGGING_LOCK:
+        logger = logging.getLogger("lightrag")
+        logger.setLevel(logging.WARNING)
+        logger.propagate = False
+        for handler in logger.handlers:
+            handler.setLevel(logging.WARNING)
 
 
 class _UnicodeCodepointTokenizer:
@@ -99,6 +121,18 @@ def manifest_path(working_dir: Path) -> Path:
     return working_dir / MANIFEST_FILE
 
 
+# LightRAG mix queries read every one of these stores.  Keep this list shared
+# with the web worker/cache binding so a partial atomic index switch cannot be
+# mistaken for the manifest-bound workspace that the worker preloaded.
+QUERY_STORAGE_FILES = (
+    "graph_chunk_entity_relation.graphml",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "vdb_chunks.json",
+    "kv_store_text_chunks.json",
+)
+
+
 def _load_manifest(working_dir: Path) -> dict[str, Any]:
     path = manifest_path(working_dir)
     try:
@@ -144,13 +178,9 @@ def validate_lightrag_workspace(
             + "、".join(mismatches)
             + "）；请运行 python3 -m scripts.prepare_retrieval --force"
         )
-    required_files = (
-        "graph_chunk_entity_relation.graphml",
-        "vdb_entities.json",
-        "vdb_relationships.json",
-        "vdb_chunks.json",
-    )
-    missing = [name for name in required_files if not (working_dir / name).is_file()]
+    missing = [
+        name for name in QUERY_STORAGE_FILES if not (working_dir / name).is_file()
+    ]
     if missing:
         raise LightRAGRuntimeError(
             "LightRAG 存储不完整，缺少：" + "、".join(missing)
@@ -330,6 +360,7 @@ def _runtime_components(
         raise LightRAGRuntimeError(
             "未安装 LightRAG；请运行 python3 -m pip install -e ."
         ) from exc
+    _configure_lightrag_logging()
 
     try:
         root = load_api_assistant_config(config_path)
@@ -391,6 +422,18 @@ def _finalize_lightrag_shared_state() -> None:
     finalize_share_data()
 
 
+async def _import_event_loop_heartbeat() -> None:
+    """Keep Python 3.14 responsive to LightRAG executor completions.
+
+    LightRAG 1.5.6's chunking executor can finish its concurrent future
+    without waking an otherwise idle Python 3.14 event loop.  A short timer
+    keeps the loop polling until the one-shot custom-KG import completes.
+    """
+
+    while True:
+        await asyncio.sleep(IMPORT_EVENT_LOOP_HEARTBEAT_SECONDS)
+
+
 async def _import_async(
     custom_kg: dict[str, list[dict[str, Any]]],
     working_dir: Path,
@@ -401,9 +444,17 @@ async def _import_async(
         working_dir, config_path, embedding_cache
     )
     await rag.initialize_storages()
+    heartbeat = asyncio.create_task(
+        _import_event_loop_heartbeat(), name="lightrag-import-heartbeat"
+    )
     try:
         await rag.ainsert_custom_kg(custom_kg)
     finally:
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
         try:
             await rag.finalize_storages()
         finally:
@@ -538,6 +589,7 @@ async def _query_async(
         low_keywords = [query]
     await rag.initialize_storages()
     try:
+        _configure_lightrag_logging()
         result = await rag.aquery_data(
             query,
             QueryParam(
@@ -619,6 +671,7 @@ class _PersistentLightRAGRuntime:
         if not high_keywords and not low_keywords:
             low_keywords = [query]
         assert self.rag is not None
+        _configure_lightrag_logging()
         return await self.rag.aquery_data(
             query,
             QueryParam(
@@ -681,15 +734,22 @@ _PERSISTENT_RUNTIME_KEY: tuple[object, ...] | None = None
 _PERSISTENT_RUNTIME: _PersistentLightRAGRuntime | None = None
 
 
-def _path_stamp(path: Path | None) -> tuple[str, int, int] | None:
+def _path_stamp(path: Path | None) -> tuple[str, int, int, int, int, int] | None:
     if path is None:
         return None
     resolved = path.resolve()
     try:
         stat = resolved.stat()
-        return str(resolved), stat.st_mtime_ns, stat.st_size
+        return (
+            str(resolved),
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
     except FileNotFoundError:
-        return str(resolved), -1, -1
+        return str(resolved), -1, -1, -1, -1, -1
 
 
 def _persistent_key(
@@ -702,6 +762,7 @@ def _persistent_key(
         str(working_dir.resolve()),
         _path_stamp(graph_path),
         _path_stamp(manifest_path(working_dir)),
+        *(_path_stamp(working_dir / name) for name in QUERY_STORAGE_FILES),
         _path_stamp(config_path),
         str(embedding_cache.resolve()) if embedding_cache is not None else None,
     )

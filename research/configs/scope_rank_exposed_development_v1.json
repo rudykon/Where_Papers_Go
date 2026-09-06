@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "fail_on_critical_leakage": true,
+  "evaluation_status": "exposed_development_not_sealed",
+  "output_dir": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1",
+  "reference_manifest": "../../benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/manifest.json",
+  "reference_manifest_sha256": "6f3c6e4f1ca1220cff45d206edf9db5ecb936724ac3c8b171c462abd55dd84e6",
+  "dataset": {
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
+    "query_fields": ["title", "abstract"]
+  },
+  "corpus": {
+    "path": "../../benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl",
+    "id_field": "venue_id",
+    "text_fields": ["name"],
+    "snapshot_field": "snapshot_date"
+  },
+  "temporal_split": {
+    "start": "2026-01-01",
+    "train_end": "2026-03-31",
+    "validation_end": "2026-05-31",
+    "test_end": "2026-06-30"
+  },
+  "channels": [
+    {
+      "name": "bm25",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bm25_clean_pcl.jsonl",
+      "run_sha256": "4b2d7978f6942af4b795e3b63c0be7f051bcdd60a59fea38f645814136d70fdc",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bm25_clean_pcl.jsonl.manifest.json",
+      "manifest_sha256": "4081cadd8dce5dd6554f6d46bafe3db03f8016a837acbaa5d2b893e5626df399",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "implementation_revision": "20a3769fd79afe5390e598177c2d0b1a6f77d5ec:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "bge_m3",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bge_m3_prototype_max_cache_only.jsonl",
+      "run_sha256": "3b1b0372511d50dea0a7231fc6ab7ee648fddf0203e89363ec56208b284eedde",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bge_m3_prototype_max_cache_only.jsonl.manifest.json",
+      "manifest_sha256": "9a1d88dc4e9694b656410195eb1b9f0c5fd4de478646f1db5e580fe68b0089e0",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "provider_fingerprint": "1f2fc9c5a6e71e31e8fa33a740fae28deeb88903018536643686b7c4475f80d5",
+      "implementation_revision": "prototype-vector-max-pooling-v3@9ef12e787359a89a2b00423c705cbb97ae2811ae83a8ef8c6853bcea5c779c36"
+    },
+    {
+      "name": "specter2",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/specter2_proximity_prototype_max.jsonl",
+      "run_sha256": "fd0d586be452abbbc3c3d0cb9472105fc767a79b9adfa0c41277d481697ab341",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/specter2_proximity_prototype_max.jsonl.manifest.json",
+      "manifest_sha256": "4a23c7a864b6a24c840317a506a77fa5abde0b941d0a73a8de1d017cbcdda7c4",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "model_revision": "allenai/specter2_base@a1319d4410c835ce9033da42ccd6bc31030ee9d1",
+      "provider_fingerprint": "76944d6cf1c41affaf32232055cf3079fdf848cc0bb08395489cd3ef8d788e4c",
+      "implementation_revision": "scientific-prototype-cls-max-pooling-v2@e64711f84fb733545853332778a33eaadad16ee8c2ffc2873f2f842aa6716a5e"
+    },
+    {
+      "name": "scincl",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/scincl_prototype_max.jsonl",
+      "run_sha256": "9b84d99012b27cb72f27fc84a48d2ccc7fad7f9a9bff55d4e0abe9163e720c27",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/scincl_prototype_max.jsonl.manifest.json",
+      "manifest_sha256": "535472f6944a863622c8f40ef31b12949c77062b046dbd58044410ed1bf91446",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "model_revision": "malteos/scincl@ebc5348d184ba2fc9beee69b4e394263fce57b2e",
+      "provider_fingerprint": "eece9897fab4c845fb0cd1f8ba8fe038ea623cfd9663cb7703b30182b0e505d9",
+      "implementation_revision": "scientific-prototype-cls-max-pooling-v2@e64711f84fb733545853332778a33eaadad16ee8c2ffc2873f2f842aa6716a5e"
+    },
+    {
+      "name": "property_graph",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/property_graph_edge_bm25_rrf.jsonl",
+      "run_sha256": "964f9cd7f51de6e7734564e09e98e05440df7fd4a2f65c17fe86e47c495d9d72",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/property_graph_edge_bm25_rrf.jsonl.manifest.json",
+      "manifest_sha256": "5fd43d8a3ade1d64560d0a0924f05b3770511cd53a2357fb49ea7d8466de0060",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "implementation_revision": "property-graph-edge-bm25-rrf-v1@a230eb97e0c3d62dff2b82ddc991684e783d8291554693421542767d4d1c1ab5"
+    },
+    {
+      "name": "lightrag",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/lightrag_mix_edge_rrf.jsonl",
+      "run_sha256": "de52907850a4447a1b4a56d8896ffaaa800fcaefd01f20b6890362c2ca78de03",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/lightrag_mix_edge_rrf.jsonl.manifest.json",
+      "manifest_sha256": "3ebe9e0db53bc9d201622e78089eddc76cd2b18933c9748dd246f0ead4edc474",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "implementation_revision": "lightrag-mix-edge-rrf-v1@a230eb97e0c3d62dff2b82ddc991684e783d8291554693421542767d4d1c1ab5"
+    },
+    {
+      "name": "cross_encoder",
+      "path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bge_reranker_v2_m3_lightrag_top100.jsonl",
+      "run_sha256": "88d6dc7df45c47ae60ad450622e794109a565bab97d9656412ecaa6d86c5e9e7",
+      "manifest_path": "../../benchmark_artifacts/m3_strong_baselines_20260827/all_strong_baselines_unified_v2/runs/bge_reranker_v2_m3_lightrag_top100.jsonl.manifest.json",
+      "manifest_sha256": "10301d20cace0a796d191eee4324e433912f8b3fd77351220c76bd9c0b1da2c1",
+      "generation_config_sha256": "73752ce8014202807ea30c1bca19535322e68b44cf80f8a17ffe7fef5401326b",
+      "model_revision": "BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+      "provider_fingerprint": "445006d56447fb3175a0711883b858295e37fb34504c087bd9656b27a2c639b2",
+      "implementation_revision": "bge-cross-encoder-prototype-max-v1@2cbad70cd8f25d4bf4834b1a6df1d79806d1e177b588ba493f0ce46738e3226f"
+    }
+  ],
+  "method": {
+    "source_depth": 100,
+    "top_k": 100,
+    "profile_cutoff": "2026-03-31",
+    "total_recall_budget": 350,
+    "fixed_quotas": {
+      "bm25": 50,
+      "bge_m3": 50,
+      "specter2": 50,
+      "scincl": 50,
+      "property_graph": 50,
+      "lightrag": 50,
+      "subject_route": 50
+    },
+    "calibration_salt": "scope-rank-train-calibration-v1",
+    "calibration_denominator": 5,
+    "hard_negatives": 20,
+    "epochs": 120,
+    "learning_rate": 0.12,
+    "l2": 0.002,
+    "calibrator": {
+      "target_precision": 0.15,
+      "min_confidence": 0.0,
+      "min_evidence_coverage": 0.15,
+      "min_channel_agreement": 0.10
+    }
+  }
+}

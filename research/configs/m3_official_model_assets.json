@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "purpose": "Pinned inference-only assets for the M3 SPECTER2, SciNCL, and cross-encoder score runs",
+  "estimated_total_download_bytes": 3187700000,
+  "estimate_only": true,
+  "assets": [
+    {
+      "name": "specter2_base",
+      "repo_id": "allenai/specter2_base",
+      "revision": "a1319d4410c835ce9033da42ccd6bc31030ee9d1",
+      "source_url": "https://huggingface.co/allenai/specter2_base/tree/a1319d4410c835ce9033da42ccd6bc31030ee9d1",
+      "include": [
+        "config.json",
+        "model.safetensors",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.txt"
+      ],
+      "required_files": [
+        "config.json",
+        "model.safetensors",
+        "tokenizer_config.json",
+        "vocab.txt"
+      ],
+      "estimated_download_bytes": 442000000
+    },
+    {
+      "name": "specter2_proximity_adapter",
+      "repo_id": "allenai/specter2",
+      "revision": "2081559630a80fc5851d8f798a05ba81e9468089",
+      "source_url": "https://huggingface.co/allenai/specter2/tree/2081559630a80fc5851d8f798a05ba81e9468089",
+      "include": [
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "pytorch_adapter.bin"
+      ],
+      "required_files": [
+        "adapter_config.json",
+        "pytorch_adapter.bin"
+      ],
+      "estimated_download_bytes": 3700000
+    },
+    {
+      "name": "scincl",
+      "repo_id": "malteos/scincl",
+      "revision": "ebc5348d184ba2fc9beee69b4e394263fce57b2e",
+      "source_url": "https://huggingface.co/malteos/scincl/tree/ebc5348d184ba2fc9beee69b4e394263fce57b2e",
+      "include": [
+        "config.json",
+        "model.safetensors",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.txt"
+      ],
+      "required_files": [
+        "config.json",
+        "model.safetensors",
+        "tokenizer_config.json",
+        "vocab.txt"
+      ],
+      "estimated_download_bytes": 442000000
+    },
+    {
+      "name": "bge_reranker_v2_m3",
+      "repo_id": "BAAI/bge-reranker-v2-m3",
+      "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-v2-m3/tree/953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+      "include": [
+        "added_tokens.json",
+        "config.json",
+        "model.safetensors",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ],
+      "required_files": [
+        "config.json",
+        "model.safetensors",
+        "sentencepiece.bpe.model",
+        "tokenizer_config.json"
+      ],
+      "estimated_download_bytes": 2300000000
+    }
+  ]
+}

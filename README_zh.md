@@ -50,7 +50,7 @@ Where Papers Go 将论文题目、摘要、关键词或尚未定型的研究想�
 - 支持 CCF、TH-CPL、中科院和 JCR，多个目标等级之间是**或**关系。
 - 主题检索强制使用 **LightRAG + 精确向量召回 + LLM + Search API**，任一层失败时不会静默降级。
 - Search、向量和 LightRAG 并行执行，LLM 候选重排采用双并发批次。
-- **SCOPE-Rank 目前只是未验证的研究脚手架**：它根据 LLM 给出的模糊度/跨学科信号和通道实时覆盖自适应分配召回配额，尚不是已有实验结论支持的排序方法；旧的固定配额作为显式消融对照保留。
+- 正式的离线 **SCOPE-Rank 研究实现**已覆盖自适应召回、仅训练集学习的融合、硬约束、拒答和来源解释。学习版 full 方法在暴露开发集和下文有限定的未来评测中都是统计显著的负结果，不能用作产品排序更好的证据；固定 linear/RRF 方案仍作为显式消融对照保留。
 - 完整结果和 API 响应均可缓存；Web 端持续显示检索状态，并流式输出可用结果。
 - 在线查询使用可重建的文件化属性图谱，不需要 Neo4j 服务。
 
@@ -99,7 +99,7 @@ flowchart LR
     I --> V[精确向量召回]
     I --> G[LightRAG mix 召回]
     I --> S[Search API 证据]
-    V --> A[未验证的 SCOPE-Rank 脚手架]
+    V --> A[离线 SCOPE-Rank 研究路径]
     G --> A
     S --> A
     A --> M[候选融合]
@@ -158,10 +158,22 @@ python3 -m scripts.prepare_retrieval --api-config llmapi.json
 ### 4. 启动 Web 界面
 
 ```bash
-where-paper-go-web --host 0.0.0.0 --port 8000
+where-paper-go-web --host 127.0.0.1 --port 8000
 ```
 
-本机访问 `http://127.0.0.1:8000/`；通过 SSH 或局域网使用时访问 `http://<服务器IP>:8000/`。界面支持中英文切换、投稿范围组合筛选、常驻检索进度、流式结果和证据详情。
+本机访问 `http://127.0.0.1:8000/`。如需临时开放受信局域网，必须把下面的示例网段替换为真实 LAN，并保留 loopback：
+
+```bash
+WPG_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,::1/128,192.168.1.0/24 \
+  where-paper-go-web --host 0.0.0.0 --port 8000
+```
+
+其他 direct peer 会在创建请求处理线程前被拒绝。界面支持中英文切换、投稿范围组合筛选、常驻检索进度、流式结果和证据详情。
+
+可重启服务、严格 readiness、HTTPS/鉴权前门、限流/审计、影子升级和可恢复回滚请参考[production deployment runbook](docs/production-deployment.md)。直接 `0.0.0.0` 仅用于受信 LAN 过渡，不是 Internet-facing 部署。
+
+截至 2026-08-30，已审计的宿主部署特意仅监听
+`http://127.0.0.1:8001/`。systemd 用户服务已 enabled 且 active，并通过显式重启与强制终止进程后的恢复检查。当前未对 LAN 或 Internet 开放：Nginx 尚未安装，管理员 TLS/鉴权反向代理激活和物理宿主重启仍是人工门禁。
 
 <details>
 <summary><strong>命令行示例</strong></summary>
@@ -209,7 +221,7 @@ where-paper-go \
 
 细粒度审核范围已覆盖全部 58 个 CCF-A 会议、117 个 TH-CPL-A 投稿目标和 53 个中科院 1 区计算机科学大类期刊。跨榜单重复会刊复用同一条审核范围，因此这些数量不能直接相加为唯一实体数。
 
-本地已完成截止 2026-03-31 的候选侧采集快照：20,087 个 JCR Q1--Q4 期刊画像全部存在，其中 19,593 个具有历史论文证据（97.54%）。这些被 Git 忽略的研究产物与上述产品审核 scope 是两个不同口径；其 PCL 派生画像在用于论文结论前，仍必须通过因果时间重建和冻结 run 契约。
+本地已完成截止 2026-03-31 的候选侧采集快照：20,087 个 JCR Q1--Q4 期刊画像全部存在，其中 19,593 个具有历史论文证据（97.54%）。独立的因果清洁研究派生集覆盖同一 20,087 候选空间：记录均受 2026-03-31 截止日限制，warm/few-shot 期刊具有论文证据原型，P0-C 冻结 run 和泄漏门禁已在 4,791 条暴露开发查询上通过。这些被 Git 忽略的采集/研究产物与上述产品审核 scope 仍是不同口径；它们建立离线实验基线，不代表 SCOPE-Rank 获得有效增益。
 
 数据来源与校验规则见 [`data/README.md`](data/README.md)。榜单名称、第三方数据和来源描述仍遵循各自的使用条款。
 
@@ -239,7 +251,15 @@ python3 -m research evaluate \
   --config research/configs/cached_crossref_baselines.json
 ```
 
-已提交的配置包含 BM25、TF-IDF、RRF 和仅在训练集拟合的线性融合。向量、图或 LightRAG 的冻结运行结果也可以通过同一接口导入。任务定义、强基线、消融、统计方法和结论边界见 [CCF-A 研究化路线图](docs/ccf-a-research-roadmap.md)。
+已完成的 M3 研究工程平台通过同一接口评测 11 种词法、稠密、科学文献编码器、图、LightRAG、cross-encoder 和混合方法。所有方法共享 4,791 条开发查询、按顺序冻结的 20,087 候选、查询顺序、指标和 55 对统计比较族。任务定义、强基线、消融、统计方法和结论边界见 [CCF-A 研究化路线图](docs/ccf-a-research-roadmap.md)。
+
+P0-A～P0-C 和 M3 强基线工程平台已完成。M3 与 SCOPE-Rank 共用 Search-free 暴露开发集；学习版 SCOPE-Rank full 显著弱于最强 M3 基线，linear/RRF 固定融合未建立显著增益。详见[完整负结果冻结](docs/scope-rank-results.md)。
+
+独立的 future 500-paper 正式采集和完整分母评测器的机器基础设施已完成，但尚未授权或执行新的实时 500-paper Search/LLM 运行。正式准入必须使用新采集、由当前用户控制且 mode-`0444` 的 dataset 和 builder manifest，并附完整 acquisition-evidence bundle。历史 500-paper 文件（`dataset.jsonl` SHA-256 `4c4d59dc...cbf65f1`，`manifest.json` SHA-256 `99abb875...e0026c`）仍为 mode `0664` 且缺少该证据，因此会被正式 preflight 拒绝，不得改称为正式评测。
+
+2026 年 7 月未来评测保留全部 300 条查询、同一 20,087 候选、4 种冻结方法和全部 6 对比较。SCOPE-Rank full 再次呈现显著负结果；linear 和 RRF 替代方案仅在数值上高于所评 LightRAG 基线，经多重比较校正后均不显著。该证据明确**不是 pristine single-pass sealed test**：首次评测已访问标签，随后因 ID 命名空间不一致在计算指标前 fail-closed；发布结果使用了确定性的精确 ID 命名空间修复，未改变预测、方法、统计、候选或分母。因此它只能称为**经审计的 post-access namespace-repaired future evaluation**，不能作为 SCOPE-Rank 有效的干净确证。
+
+专家盲评工具与材料已完成：250 条查询、6,129 个去重评审项、3 份专家分配。当前真实标注数为 **0**，一致性和专家效果结论均待人工评测。
 
 <a id="repository-map"></a>
 ## 项目结构

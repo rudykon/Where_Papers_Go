@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from time import perf_counter
+from typing import Any, Callable, Mapping, Sequence
 import urllib.parse
 
 import numpy as np
@@ -26,6 +28,7 @@ from .data import (
     build_run_binding,
     canonical_json_sha256,
     runtime_provenance,
+    sha256_file,
     write_run,
 )
 from .types import Run, ScoredDocument
@@ -37,6 +40,61 @@ class PrototypeUnit:
     prototype_id: str
     text: str
     weight: float
+
+
+_REFERENCE_BINDING_FIELDS = (
+    ("dataset", "sha256"),
+    ("dataset", "bytes"),
+    ("queries", "count"),
+    ("queries", "ordered_ids_sha256"),
+    ("profiles", "sha256"),
+    ("profiles", "bytes"),
+    ("candidates", "count"),
+    ("candidates", "ordering"),
+    ("candidates", "ordered_ids_sha256"),
+)
+
+
+def validate_reference_binding(
+    reference_manifest_path: Path,
+    binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless a frozen run exactly matches a reference binding."""
+
+    try:
+        payload = json.loads(reference_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResearchDataError(
+            f"cannot read reference binding manifest: {reference_manifest_path}"
+        ) from exc
+    reference = payload.get("binding") if isinstance(payload, Mapping) else None
+    if not isinstance(reference, Mapping):
+        raise ResearchDataError("reference manifest is missing a binding object")
+
+    verified: dict[str, dict[str, Any]] = {}
+    for section, field in _REFERENCE_BINDING_FIELDS:
+        expected_section = reference.get(section)
+        actual_section = binding.get(section)
+        if not isinstance(expected_section, Mapping) or field not in expected_section:
+            raise ResearchDataError(
+                f"reference binding is missing {section}.{field}"
+            )
+        if not isinstance(actual_section, Mapping) or field not in actual_section:
+            raise ResearchDataError(f"run binding is missing {section}.{field}")
+        expected = expected_section[field]
+        actual = actual_section[field]
+        if actual != expected:
+            raise ResearchDataError(
+                f"reference binding mismatch for {section}.{field}"
+            )
+        verified.setdefault(section, {})[field] = actual
+
+    return {
+        "path": str(reference_manifest_path.resolve()),
+        "sha256": sha256_file(reference_manifest_path),
+        "bytes": reference_manifest_path.stat().st_size,
+        "verified_fields": verified,
+    }
 
 
 def load_prototype_units(path: Path) -> tuple[list[PrototypeUnit], list[str]]:
@@ -148,6 +206,12 @@ def build_prototype_vector_run(
     prototype_chunk_size: int = 4096,
     apply_prototype_weights: bool = True,
     query_fields: Sequence[str] = ("title", "abstract"),
+    reference_manifest_path: Path | None = None,
+    embedding_progress: Callable[[int, int], None] | None = None,
+    cache_only: bool = False,
+    external_authorization_reference: str = "",
+    max_new_embeddings: int | None = None,
+    estimated_external_cost_usd: float | None = None,
     generation_command: Sequence[str],
 ) -> dict[str, Any]:
     """Embed profiles/queries, max-pool prototypes, and freeze a reusable run."""
@@ -162,20 +226,86 @@ def build_prototype_vector_run(
     query_hashes, query_texts = _prepared_hashes(
         provider, [query.text for query in bundle.queries]
     )
+    generation_config = {
+        "builder": "prototype-vector-max-pooling-v3",
+        "query_fields": list(query_fields),
+        "top_k": top_k,
+        "query_batch_size": query_batch_size,
+        "prototype_chunk_size": prototype_chunk_size,
+        "apply_prototype_weights": apply_prototype_weights,
+        "model": provider.model,
+        "provider_fingerprint": provider.fingerprint,
+        "cache_only": cache_only,
+    }
+    binding = build_run_binding(
+        dataset_path=dataset_path,
+        profiles_path=profiles_path,
+        query_ids=tuple(query.query_id for query in bundle.queries),
+        candidate_ids=venue_ids,
+        configuration=generation_config,
+    )
+    reference_binding = (
+        validate_reference_binding(reference_manifest_path, binding)
+        if reference_manifest_path is not None
+        else None
+    )
     all_texts = dict(prototype_texts)
     all_texts.update(query_texts)
+    embedding_started = perf_counter()
     with FileEmbeddingCache(cache_path) as cache:
-        dimensions, embedded_count, cached_count = ensure_cached_embeddings(
-            provider, all_texts, cache
-        )
+        preliminary_rows = cache.get_many(provider.fingerprint, list(all_texts))
+        preliminary_missing_count = len(all_texts) - len(preliminary_rows)
+        if cache_only:
+            cached_rows = preliminary_rows
+            if preliminary_missing_count:
+                raise ResearchDataError(
+                    "cache-only vector run refuses external embedding calls: "
+                    f"{preliminary_missing_count} prepared texts are missing"
+                )
+            cached_dimensions = {
+                dimension for dimension, _vector in cached_rows.values()
+            }
+            if len(cached_dimensions) != 1:
+                raise ResearchDataError(
+                    "cache-only embedding dimensions are inconsistent: "
+                    f"{sorted(cached_dimensions)}"
+                )
+            dimensions = next(iter(cached_dimensions))
+            embedded_count = 0
+            cached_count = len(cached_rows)
+        else:
+            if preliminary_missing_count and not external_authorization_reference.strip():
+                raise ResearchDataError(
+                    "external embedding calls require an explicit authorization reference"
+                )
+            if (
+                max_new_embeddings is not None
+                and preliminary_missing_count > max_new_embeddings
+            ):
+                raise ResearchDataError(
+                    "missing embedding count exceeds the authorized cap: "
+                    f"{preliminary_missing_count}/{max_new_embeddings}"
+                )
+            if preliminary_missing_count and (
+                estimated_external_cost_usd is None
+                or estimated_external_cost_usd < 0
+            ):
+                raise ResearchDataError(
+                    "external embedding calls require a non-negative cost estimate"
+                )
+            dimensions, embedded_count, cached_count = ensure_cached_embeddings(
+                provider, all_texts, cache, progress=embedding_progress
+            )
         prototype_vectors = _vectors_from_cache(cache, provider, prototype_hashes)
         query_vectors = _vectors_from_cache(cache, provider, query_hashes)
+    embedding_total_ms = (perf_counter() - embedding_started) * 1000.0
 
     unit_venues = np.asarray([venue_index[unit.venue_id] for unit in units], dtype=np.int32)
     unit_weights = np.asarray([unit.weight for unit in units], dtype=np.float32)
     run: Run = {}
     candidate_count = len(venue_ids)
     keep = min(top_k, candidate_count)
+    scoring_started = perf_counter()
     for query_offset in range(0, len(bundle.queries), query_batch_size):
         query_chunk = query_vectors[query_offset : query_offset + query_batch_size]
         pooled = np.full((len(query_chunk), candidate_count), -np.inf, dtype=np.float32)
@@ -203,28 +333,16 @@ def build_prototype_vector_run(
                 ScoredDocument(doc_id=venue_id, score=score)
                 for venue_id, score in ranked
             ]
-    generation_config = {
-        "builder": "prototype-vector-max-pooling-v2",
-        "query_fields": list(query_fields),
-        "top_k": top_k,
-        "query_batch_size": query_batch_size,
-        "prototype_chunk_size": prototype_chunk_size,
-        "apply_prototype_weights": apply_prototype_weights,
-        "model": provider.model,
-        "provider_fingerprint": provider.fingerprint,
-    }
-    binding = build_run_binding(
-        dataset_path=dataset_path,
-        profiles_path=profiles_path,
-        query_ids=tuple(query.query_id for query in bundle.queries),
-        candidate_ids=venue_ids,
-        configuration=generation_config,
-    )
+    scoring_total_ms = (perf_counter() - scoring_started) * 1000.0
     runtime = runtime_provenance()
+    implementation_revision = (
+        "prototype-vector-max-pooling-v3@" + sha256_file(Path(__file__))
+    )
     method = {
         "name": "prototype_vector_max_pool",
         "kind": "vector",
         "implementation": "research.prototype_vectors.build_prototype_vector_run",
+        "implementation_revision": implementation_revision,
         "provider_fingerprint": provider.fingerprint,
         "model": provider.model,
         "configuration_sha256": canonical_json_sha256(generation_config),
@@ -253,9 +371,127 @@ def build_prototype_vector_run(
             "embedding_cache": str(cache_path),
             "embedded_text_count": embedded_count,
             "cached_text_count": cached_count,
+            "execution": {
+                "cache_only": cache_only,
+                "embedding_total_ms": embedding_total_ms,
+                "scoring_total_ms": scoring_total_ms,
+                "mean_scoring_ms_per_query": scoring_total_ms / len(bundle.queries),
+                "external_api_calls": (
+                    0
+                    if cache_only
+                    else math.ceil(embedded_count / provider.batch_size)
+                ),
+                "external_http_attempt_upper_bound": (
+                    0
+                    if cache_only
+                    else math.ceil(embedded_count / provider.batch_size)
+                    * (
+                        int(
+                            getattr(
+                                getattr(provider, "config", None),
+                                "max_retries",
+                                0,
+                            )
+                        )
+                        + 1
+                    )
+                ),
+                "external_authorization_reference": (
+                    None if cache_only else external_authorization_reference
+                ),
+                "authorized_new_embedding_cap": (
+                    0 if cache_only else max_new_embeddings
+                ),
+                "estimated_external_cost_usd": (
+                    0.0
+                    if cache_only or not embedded_count
+                    else estimated_external_cost_usd
+                ),
+                "failed_query_count": 0,
+                "offline_only": cache_only,
+                "search_free": True,
+            },
+            **(
+                {"reference_binding_manifest": reference_binding}
+                if reference_binding is not None
+                else {}
+            ),
         },
     )
     return manifest
+
+
+def plan_prototype_vector_cache(
+    *,
+    provider: EmbeddingProvider,
+    bundle: DatasetBundle,
+    profiles_path: Path,
+    cache_path: Path,
+    estimated_external_cost_usd: float,
+) -> dict[str, Any]:
+    """Inspect exact cache coverage without embedding or returning input text."""
+
+    if estimated_external_cost_usd < 0:
+        raise ResearchDataError("embedding cost estimate must be non-negative")
+    units, venue_ids = load_prototype_units(profiles_path)
+    _prototype_hashes, prototype_texts = _prepared_hashes(
+        provider, [unit.text for unit in units]
+    )
+    _query_hashes, query_texts = _prepared_hashes(
+        provider, [query.text for query in bundle.queries]
+    )
+    combined = dict(prototype_texts)
+    combined.update(query_texts)
+    with FileEmbeddingCache(cache_path) as cache:
+        cached = cache.get_many(provider.fingerprint, list(combined))
+    prototype_unique = set(prototype_texts)
+    query_unique = set(query_texts)
+    missing = set(combined) - set(cached)
+    batches = math.ceil(len(missing) / provider.batch_size) if missing else 0
+    max_retries = int(
+        getattr(getattr(provider, "config", None), "max_retries", 0)
+    )
+    return {
+        "schema_version": 1,
+        "artifact_type": "prototype_vector_cache_plan",
+        "network_performed": False,
+        "provider": {
+            "model": provider.model,
+            "fingerprint": provider.fingerprint,
+            "batch_size": provider.batch_size,
+            "max_retries": max_retries,
+        },
+        "coverage": {
+            "candidate_count": len(venue_ids),
+            "prototype_count": len(units),
+            "query_count": len(bundle.queries),
+            "unique_prepared_text_count": len(combined),
+            "cached_unique_text_count": len(cached),
+            "missing_unique_text_count": len(missing),
+            "missing_prototype_text_count": len(missing & prototype_unique),
+            "missing_query_text_count": len(missing & query_unique),
+            "cache_coverage": len(cached) / len(combined),
+        },
+        "request_bound": {
+            "logical_embedding_batches": batches,
+            "http_attempt_upper_bound": batches * (max_retries + 1),
+        },
+        "payload": {
+            "missing_prepared_character_count": sum(
+                len(combined[key]) for key in missing
+            ),
+            "text_values_returned": False,
+        },
+        "cost": {
+            "estimated_external_cost_usd": estimated_external_cost_usd,
+            "pricing_source": "caller-supplied bounded estimate",
+        },
+        "cache": {
+            "path": str(cache_path.resolve()),
+            "sha256": sha256_file(cache_path) if cache_path.is_file() else None,
+            "bytes": cache_path.stat().st_size if cache_path.is_file() else 0,
+        },
+    }
 
 
 def pcl_embedding_provider(api_config: Path) -> OpenAICompatibleEmbeddingProvider:

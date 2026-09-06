@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "evaluation_status": "exposed_development_not_sealed",
+  "output_dir": "../../benchmark_artifacts/scope_rank_20260828/selective_evaluation_v1",
+  "suite_manifest": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/manifest.json",
+  "suite_manifest_sha256": "971a91b5ac9f615f7916df30fb42a2ffb90e5a18a950c34bc6a316621b071080",
+  "decisions": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/decisions.jsonl",
+  "decisions_sha256": "9acaa383b11d886bbdf056731296952df3baf2df60953737009cc5e87ed9ce40",
+  "leakage_audit": "../../benchmark_artifacts/scope_rank_20260828/exposed_development_v1/leakage_audit.json",
+  "leakage_audit_sha256": "1a5c183a09f386bd8acb7bcf3e0b839dd80633b5ec79b77cdfa22437584912ad",
+  "dataset": {
+    "path": "../../benchmark_artifacts/research_20260814/cached_crossref/papers.jsonl",
+    "query_fields": ["title", "abstract"],
+    "relevance_field": "gold_journal_id"
+  },
+  "temporal_split": {
+    "start": "2026-01-01",
+    "train_end": "2026-03-31",
+    "validation_end": "2026-05-31",
+    "test_end": "2026-06-30"
+  },
+  "calibration_bins": 10,
+  "confidence": 0.95
+}

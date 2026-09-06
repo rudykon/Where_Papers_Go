@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Where Papers Go operations monitor every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=where-papers-go-monitor.service
+
+[Install]
+WantedBy=timers.target

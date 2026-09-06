@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "status": "predictions_committed_before_label_unseal",
+  "offline_only": true,
+  "search_free": true,
+  "output_dir": "../../benchmark_artifacts/future_sealed_evaluation_202607_v1",
+  "sealed_test": {
+    "manifest": "../../benchmark_artifacts/future_sealed_test_202607_v1/manifest.json",
+    "manifest_sha256": "b11de0a6bfce3869643a4c0dab38a0ac3d92913a0720d579c1cf850ab98d9650"
+  },
+  "prediction_commitment": {
+    "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/prediction_commitment.json",
+    "sha256": "8a2732e1626397d58f0be7bd9665aa98b79ddade13b1a294722640a5a39d875a"
+  },
+  "corpus": {
+    "path": "../../benchmark_artifacts/historical_venues_20260331_clean_pcl_v5/venue_profiles.train.jsonl",
+    "id_field": "venue_id",
+    "text_fields": ["name"],
+    "snapshot_field": "snapshot_date"
+  },
+  "methods": [
+    {
+      "name": "lightrag_mix_edge_rrf",
+      "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/lightrag_mix_edge_rrf.jsonl",
+      "run_sha256": "fe0352baa7ea7528c2933e16a89b55e75b5274bf9ec235520318ceb4087934e3",
+      "manifest_path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/lightrag_mix_edge_rrf.jsonl.manifest.json",
+      "manifest_sha256": "0ab22bbc8658f49250ada44a2c256fa67f9078b3223209aa39e26e5a3a44e0d2"
+    },
+    {
+      "name": "scope_rank_full",
+      "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_full.jsonl",
+      "run_sha256": "7dd9bc8e042e8e2a5d3e760e1bd1f408b1d4d4e7917bdb5eaaca3fc2273f6223",
+      "manifest_path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_full.jsonl.manifest.json",
+      "manifest_sha256": "54e118b99a317a6f2af342e01dd08071965dc8174465ae97ac77b5f0e426c8df"
+    },
+    {
+      "name": "scope_rank_replace_linear",
+      "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_replace_linear.jsonl",
+      "run_sha256": "7eafc6f603d6ba0784477c848a11d6ec6d1983f5808c2b42db7e72d6ee27db0d",
+      "manifest_path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_replace_linear.jsonl.manifest.json",
+      "manifest_sha256": "0d06208ad2a1e9bfc7cef964821ccfa5829f5aab07f15a59f60985f20491cf8c"
+    },
+    {
+      "name": "scope_rank_replace_rrf",
+      "path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_replace_rrf.jsonl",
+      "run_sha256": "62d159880c56c5e9b9126f828231d65bdfcdb87abcaf33ab8a2fb5ac6cd04729",
+      "manifest_path": "../../benchmark_artifacts/future_sealed_predictions_202607_v1/scope_rank_frozen_v1/scope_rank_replace_rrf.jsonl.manifest.json",
+      "manifest_sha256": "120acd67553aeb640e4fd42e9d29856822bb4178dc9012a5c6853b0b62807069"
+    }
+  ],
+  "evaluation": {
+    "cutoffs": [1, 3, 5, 10, 20, 50]
+  },
+  "statistics": {
+    "metric": "ndcg@10",
+    "bootstrap_iterations": 2000,
+    "permutation_iterations": 2000,
+    "confidence": 0.95,
+    "seed": 20260828,
+    "comparison_family": "all_methods_unordered_pairs"
+  }
+}
