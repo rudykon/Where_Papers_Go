@@ -21,6 +21,15 @@ from where_paper_go.tavily_pool import TavilyKeyPool
 
 
 class DeploymentManifestTests(TestCase):
+    def _enter_context(self, manager):
+        """Register one context-manager cleanup on Python 3.10 and newer."""
+
+        enter = type(manager).__enter__
+        exit_method = type(manager).__exit__
+        result = enter(manager)
+        self.addCleanup(exit_method, manager, None, None, None)
+        return result
+
     def test_source_git_queries_ignore_host_overrides(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=b"value\n", stderr=b""
@@ -1225,7 +1234,7 @@ class DeploymentManifestTests(TestCase):
     def test_systemd_render_is_dry_run_then_backs_up_existing_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            self.enterContext(
+            self._enter_context(
                 patch.object(
                     manage_deployment.pwd,
                     "getpwuid",
@@ -1259,7 +1268,7 @@ class DeploymentManifestTests(TestCase):
                     return current_renderer_payload
                 return real_git_output(project, *arguments)
 
-            self.enterContext(
+            self._enter_context(
                 patch.object(
                     manage_deployment,
                     "_git_output",
@@ -1294,14 +1303,14 @@ class DeploymentManifestTests(TestCase):
                 "python_executable_sha256": manage_deployment.sha256_file(python),
                 "import_paths": [str(import_path)],
             }
-            runtime_release_probe = self.enterContext(
+            runtime_release_probe = self._enter_context(
                 patch.object(
                     manage_deployment,
                     "validate_python_runtime_release",
                     return_value=runtime_identity,
                 )
             )
-            runtime_probe = self.enterContext(
+            runtime_probe = self._enter_context(
                 patch.object(manage_deployment, "_validate_python_runtime")
             )
             args = Namespace(
@@ -2458,7 +2467,7 @@ class DeploymentManifestTests(TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            self.enterContext(
+            self._enter_context(
                 patch.object(
                     manage_deployment.pwd,
                     "getpwuid",
@@ -3672,7 +3681,7 @@ class DeploymentManifestTests(TestCase):
     def test_prepare_runtime_is_private_atomic_and_preserves_prior_generation(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            self.enterContext(
+            self._enter_context(
                 patch.object(
                     manage_deployment.pwd,
                     "getpwuid",
@@ -3814,7 +3823,7 @@ class DeploymentManifestTests(TestCase):
             api_token_file.parent.chmod(0o700)
             api_token_file.write_text("t" * 48 + "\n", encoding="ascii")
             api_token_file.chmod(0o600)
-            runtime_release_probe = self.enterContext(
+            runtime_release_probe = self._enter_context(
                 patch.object(
                     manage_deployment,
                     "validate_python_runtime_release",
@@ -3831,7 +3840,7 @@ class DeploymentManifestTests(TestCase):
                     },
                 )
             )
-            runtime_probe = self.enterContext(
+            runtime_probe = self._enter_context(
                 patch.object(manage_deployment, "_validate_python_runtime")
             )
             systemd = manage_deployment.render_systemd(

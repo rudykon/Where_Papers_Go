@@ -295,11 +295,11 @@
       "sha256": "cf9c658bcd90def33a1a61dd99dcf5ddf7f9c401e8c68f3e252b0927bdc756fe"
     },
     {
-      "bytes": 166729,
-      "git_blob_sha1": "040a6fdf0314a0b8840eb29551a8a3c97842f5e8",
+      "bytes": 167066,
+      "git_blob_sha1": "e1bc664b88384df9adddb73f712e4d10dbb71e23",
       "mode": "100644",
       "path": "tests/test_deployment.py",
-      "sha256": "13a3000208b6bf8b6a7f563f39b8862eb0d1bd20d1c8d252bfd5cc99276cea4f"
+      "sha256": "9d9131a81628a4b325629c41f72875b3368c1042c25aebb5b221545db8eab7ae"
     },
     {
       "bytes": 3780,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "1cea935f25f1cb7fae438dd5c3adc07a9ffaa9ab68dc1c235462b23922d1d694"
+    "inventory_sha256": "aac3f7b0456172225f9c96ecb0cc0bc032d6caf13f328e0f13d14ffddf763926"
   },
   "tests": {
     "full": {
