@@ -611,6 +611,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "command is below the noexec checkout",
             "[[ ! -w scripts/validate_pr_gates.py ]]",
             "WPG_PR_RUNNER_TOOL_CACHE",
+            "WPG_PR_HOST_PIDNS_ID",
             'wpg-root "$command_path" "$@"',
             'wpg-unprivileged "$@"',
             "GITHUB_ENV+x",

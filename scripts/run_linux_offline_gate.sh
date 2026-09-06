@@ -107,6 +107,11 @@ if [[ ! "$host_netns_id" =~ ^[0-9]+:[0-9]+$ ]]; then
   echo "OS-level offline gate cannot fingerprint the host network namespace" >&2
   exit 2
 fi
+host_pidns_id="$(/usr/bin/stat -Lc '%d:%i' /proc/self/ns/pid)"
+if [[ ! "$host_pidns_id" =~ ^[0-9]+:[0-9]+$ ]]; then
+  echo "OS-level offline gate cannot fingerprint the host PID namespace" >&2
+  exit 2
+fi
 
 gate_outer_stage=runner-path-validation
 runner_commands_dir=/nonexistent
@@ -176,6 +181,7 @@ gate_outer_stage=root-sandbox-entry
     PYTHONDONTWRITEBYTECODE=1 \
     WPG_PR_OS_OFFLINE_ACTIVE=linux-sandbox-v3 \
     WPG_PR_HOST_NETNS_ID="$host_netns_id" \
+    WPG_PR_HOST_PIDNS_ID="$host_pidns_id" \
     WPG_PR_CALLER_UID="$caller_uid" \
     WPG_PR_CALLER_GID="$caller_gid" \
     WPG_PR_CALLER_HOME="$caller_home" \

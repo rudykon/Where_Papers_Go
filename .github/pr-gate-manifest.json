@@ -253,11 +253,11 @@
       "sha256": "0507d409b50ec8fbe53359f147c26a05062e2e66febf6b6bd40c001965b20b41"
     },
     {
-      "bytes": 17099,
-      "git_blob_sha1": "a5720a770f6014f08675c21ac048a5b84d7be76a",
+      "bytes": 17348,
+      "git_blob_sha1": "1a1656f7d976614e9428d90057aa41513ba62b53",
       "mode": "100644",
       "path": "scripts/run_linux_offline_gate.sh",
-      "sha256": "81ee2c79799a748c4747dc2403ff402957c2952b767145b955283ab2a90099e2"
+      "sha256": "94b43a47954f26915fdbff30ac340f3c207856bb329ac65233525edc238bac58"
     },
     {
       "bytes": 27925,
@@ -274,11 +274,11 @@
       "sha256": "5af1b9cee8422936ade9554346ba88cb715f10a07fa9cf7fa0305848e2a24425"
     },
     {
-      "bytes": 79673,
-      "git_blob_sha1": "2d9e45d905eebed8c11cbd3dd89d7de1e4d2b88a",
+      "bytes": 80623,
+      "git_blob_sha1": "4fcc902719ffa3560d19f1b8ee291770ce630b63",
       "mode": "100644",
       "path": "scripts/validate_pr_gates.py",
-      "sha256": "48a789ee707cf9d43bbfb1d232f705478ec2b9ea02d3dce274c1a1f02db13910"
+      "sha256": "add76595e82e6339b4c45050ab376a516aac876725d8a4fbf4f0320ddb82d0b6"
     },
     {
       "bytes": 63336,
@@ -288,11 +288,11 @@
       "sha256": "73c58053ec13d5de79abdc4bb633205eedc2d8520f823a127afe1263e5b9aafb"
     },
     {
-      "bytes": 38208,
-      "git_blob_sha1": "28c83749473e96acb6c490ae965b48d5332ed29a",
+      "bytes": 38244,
+      "git_blob_sha1": "cda69121626aad0711304dff479c3fc54d9d1927",
       "mode": "100644",
       "path": "tests/test_closeout_runner.py",
-      "sha256": "503072ff42c1a09d6d22fd269d31e108f33eccd7235b9a0916067875c08b4bd8"
+      "sha256": "cf9c658bcd90def33a1a61dd99dcf5ddf7f9c401e8c68f3e252b0927bdc756fe"
     },
     {
       "bytes": 166729,
@@ -674,7 +674,7 @@
     "no_new_privs_required": true,
     "nonloopback_python_socket_attempts_allowed": 0,
     "os_isolation_path": "scripts/run_linux_offline_gate.sh",
-    "os_isolation_sha256": "81ee2c79799a748c4747dc2403ff402957c2952b767145b955283ab2a90099e2",
+    "os_isolation_sha256": "94b43a47954f26915fdbff30ac340f3c207856bb329ac65233525edc238bac58",
     "os_isolation_token": "linux-sandbox-v3",
     "runner_command_files_writable": false,
     "runner_tool_cache_writable": false,
@@ -692,7 +692,7 @@
   "schema_version": 1,
   "test_sources": {
     "count": 45,
-    "inventory_sha256": "5cedb7f5888888005c0824c6fef3ec84ec9e863990715f009941e73c3a9f411d"
+    "inventory_sha256": "d7f46c124a578f7059aa06112ed67ea7649ef645af96996126dfcfdfe9e8f270"
   },
   "tests": {
     "full": {
