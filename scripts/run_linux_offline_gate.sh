@@ -183,6 +183,18 @@ gate_outer_stage=root-sandbox-entry
     WPG_PR_RUNNER_COMMANDS_DIR="$runner_commands_dir" \
     WPG_PR_RUNNER_TOOL_CACHE="$runner_tool_cache" \
   /bin/bash --noprofile --norc -p -Eeuo pipefail -c '
+    gate_stage=root-metadata
+    report_setup_exit() {
+      local rc="$?"
+      trap - EXIT
+      if (( rc != 0 )); then
+        echo "OS-level offline gate root setup failed during $gate_stage (status $rc)" >&2
+      fi
+      exit "$rc"
+    }
+    trap report_setup_exit EXIT
+    echo "OS-level offline gate entered root setup" >&2
+
     # Metadata is carried by the explicit env -i block above.  Keep every
     # positional parameter reserved for the target command across both
     # bash -c boundaries.
@@ -194,16 +206,6 @@ gate_outer_stage=root-sandbox-entry
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
     gate_stage=root-identity
-    report_setup_exit() {
-      local rc="$?"
-      trap - EXIT
-      if (( rc != 0 )); then
-        echo "OS-level offline gate root setup failed during $gate_stage (status $rc)" >&2
-      fi
-      exit "$rc"
-    }
-    trap report_setup_exit EXIT
-
     setup_uid_line=
     setup_gid_line=
     while read -r key values; do
