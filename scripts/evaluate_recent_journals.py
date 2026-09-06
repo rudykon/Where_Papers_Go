@@ -1521,7 +1521,7 @@ def _dependency_environment_snapshot() -> dict[str, Any]:
 
 
 def _ca_directory_snapshot(path: Path) -> dict[str, Any]:
-    """Hash a certificate directory without following directory symlinks."""
+    """Hash a certificate directory while binding any root symlink identity."""
 
     resolved = path.resolve()
     try:
@@ -1534,13 +1534,32 @@ def _ca_directory_snapshot(path: Path) -> dict[str, Any]:
             "tree_sha256": "missing",
             "binding_paths": [],
         }
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+    root_is_symlink = stat.S_ISLNK(root_info.st_mode)
+    root_symlink_target: str | None = None
+    if root_is_symlink:
+        root_symlink_target = os.readlink(path)
+        try:
+            resolved = path.resolve(strict=True)
+            resolved_info = resolved.stat()
+        except OSError as exc:
+            raise EvaluationError(
+                f"TLS CA directory is a broken symlink: {path}"
+            ) from exc
+        if not stat.S_ISDIR(resolved_info.st_mode):
+            raise EvaluationError(
+                f"TLS CA directory symlink target must be a directory: {path}"
+            )
+        traversal_root = resolved
+        binding_paths: list[str] = [str(path.absolute()), str(resolved)]
+    elif stat.S_ISDIR(root_info.st_mode):
+        traversal_root = path
+        binding_paths = [str(resolved)]
+    else:
         raise EvaluationError(f"TLS CA directory must be a real directory: {path}")
     digest = hashlib.sha256()
-    binding_paths: list[str] = [str(path.resolve())]
     entry_count = 0
     for current_root, directory_names, file_names in os.walk(
-        path, topdown=True, followlinks=False
+        traversal_root, topdown=True, followlinks=False
     ):
         directory_names.sort()
         file_names.sort()
@@ -1548,7 +1567,7 @@ def _ca_directory_snapshot(path: Path) -> dict[str, Any]:
         for directory_name in list(directory_names):
             candidate = current / directory_name
             info = candidate.lstat()
-            relative = candidate.relative_to(path).as_posix()
+            relative = candidate.relative_to(traversal_root).as_posix()
             if stat.S_ISLNK(info.st_mode):
                 directory_names.remove(directory_name)
                 target = os.readlink(candidate)
@@ -1579,7 +1598,7 @@ def _ca_directory_snapshot(path: Path) -> dict[str, Any]:
         for file_name in file_names:
             candidate = current / file_name
             info = candidate.lstat()
-            relative = candidate.relative_to(path).as_posix()
+            relative = candidate.relative_to(traversal_root).as_posix()
             if stat.S_ISLNK(info.st_mode):
                 target = os.readlink(candidate)
                 try:
@@ -1604,13 +1623,22 @@ def _ca_directory_snapshot(path: Path) -> dict[str, Any]:
                 )
             entry_count += 1
             digest.update(row.encode("utf-8"))
-    return {
-        "path": str(resolved),
+    snapshot = {
+        "path": str(path.absolute()) if root_is_symlink else str(resolved),
         "exists": True,
+        "symlink": root_is_symlink,
         "entry_count": entry_count,
         "tree_sha256": digest.hexdigest(),
         "binding_paths": sorted(set(binding_paths)),
     }
+    if root_is_symlink:
+        snapshot.update(
+            {
+                "symlink_target": root_symlink_target,
+                "resolved_target": str(resolved),
+            }
+        )
+    return snapshot
 
 
 def _tls_file_snapshot(path: Path) -> dict[str, Any]:
