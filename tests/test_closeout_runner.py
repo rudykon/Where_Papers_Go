@@ -585,9 +585,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         for required_fragment in (
             "/usr/bin/unshare",
             "/usr/bin/sudo -n /usr/bin/setpriv",
-            "mount_helper() {",
-            '/usr/bin/setpriv --no-new-privs -- /usr/bin/mount "$@"',
-            'mount_helper --bind "$target" "$target"',
+            "readonly -a mount_command=(",
+            "/usr/bin/setpriv --no-new-privs -- /usr/bin/mount",
+            '"${mount_command[@]}" --bind "$target" "$target"',
             "--reuid=0",
             "--regid=0",
             "--inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin",
@@ -627,7 +627,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             "outer wrapper failed during $gate_outer_stage",
             "OS-level offline gate entered root setup",
             "root stage root-capabilities complete",
-            "root stage root-mount-helper complete",
+            "root stage root-mount-command complete",
             "root stage root-private-run complete",
             "OS-level offline gate root setup complete",
             "OS-level offline gate entered unprivileged checks",
@@ -640,6 +640,7 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)
         self.assertNotIn("/usr/bin/sudo -n /usr/bin/mount", offline_wrapper)
         self.assertNotIn(".wpg-offline-gate-mount", offline_wrapper)
+        self.assertNotIn("mount_helper", offline_wrapper)
         self.assertEqual(offline_wrapper.count("--reuid=0"), 1)
         self.assertEqual(offline_wrapper.count("--regid=0"), 1)
         for local_name, environment_name in (
