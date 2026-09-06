@@ -55,6 +55,9 @@ NONPASSING_TEST_ID_HASH_DOMAIN = (
 INTEGRITY_ISSUE_HASH_DOMAIN = (
     b"where-papers-go-closeout-integrity-issues-v1\0"
 )
+AUDIT_MUTATOR_TEST_ID_HASH_DOMAIN = (
+    b"where-papers-go-closeout-audit-mutator-test-ids-v1\0"
+)
 SKIP_ALLOWLIST_HASH_DOMAIN = b"where-papers-go-closeout-skip-allowlist-v1\0"
 EMPTY_ID_SHA256 = hashlib.sha256(ID_HASH_DOMAIN).hexdigest()
 EMPTY_SKIPPED_TEST_ID_SHA256 = hashlib.sha256(
@@ -65,6 +68,9 @@ EMPTY_NONPASSING_TEST_ID_SHA256 = hashlib.sha256(
 ).hexdigest()
 EMPTY_INTEGRITY_ISSUE_SHA256 = hashlib.sha256(
     INTEGRITY_ISSUE_HASH_DOMAIN
+).hexdigest()
+EMPTY_AUDIT_MUTATOR_TEST_ID_SHA256 = hashlib.sha256(
+    AUDIT_MUTATOR_TEST_ID_HASH_DOMAIN
 ).hexdigest()
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -143,9 +149,15 @@ DIAGNOSTIC_KEYS = {
     "integrity_valid",
     "integrity_issue_count",
     "integrity_issue_sha256",
+    "audit_change_kind",
+    "audit_mutator_test_id_count",
+    "audit_mutator_test_id_sha256",
     "nonpassing_test_id_count",
     "nonpassing_test_id_sha256",
 }
+AUDIT_CHANGE_KINDS = frozenset(
+    {"unavailable", "identity", "nonempty", "timestamps", "unchanged"}
+)
 INTEGRITY_ISSUES = frozenset(
     {
         "runner_setup",
@@ -156,6 +168,7 @@ INTEGRITY_ISSUES = frozenset(
         "executed_ids",
         "fixture_outcomes",
         "skip_policy",
+        "audit_observation",
         "final_guard",
         "final_audit",
     }
@@ -264,6 +277,9 @@ def _empty_diagnostic() -> dict[str, Any]:
         "integrity_valid": False,
         "integrity_issue_count": 1,
         "integrity_issue_sha256": "",
+        "audit_change_kind": "unavailable",
+        "audit_mutator_test_id_count": 0,
+        "audit_mutator_test_id_sha256": EMPTY_AUDIT_MUTATOR_TEST_ID_SHA256,
         "nonpassing_test_id_count": 0,
         "nonpassing_test_id_sha256": EMPTY_NONPASSING_TEST_ID_SHA256,
     }
@@ -487,6 +503,10 @@ def _integrity_issue_digest(issues: Iterable[str]) -> str:
     return _identifier_digest(issues, INTEGRITY_ISSUE_HASH_DOMAIN)
 
 
+def _audit_mutator_test_id_digest(test_ids: Iterable[str]) -> str:
+    return _identifier_digest(test_ids, AUDIT_MUTATOR_TEST_ID_HASH_DOMAIN)
+
+
 def _set_integrity_diagnostic(
     diagnostic: dict[str, Any], issues: Iterable[str]
 ) -> None:
@@ -512,7 +532,12 @@ class AggregateTestResult(unittest.TestResult):
         "errors": 5,
     }
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        audit_module: Any | None = None,
+        audit_initial: tuple[str, int, int, int, int, int] | None = None,
+    ) -> None:
         super().__init__()
         self.executed_ids: list[str] = []
         self._active: dict[int, tuple[str, str]] = {}
@@ -520,11 +545,37 @@ class AggregateTestResult(unittest.TestResult):
         self.skip_observations: list[tuple[str, Any, bool]] = []
         self.counts = {name: 0 for name in self._PRECEDENCE}
         self.fixture_outcomes = 0
+        self.audit_mutator_test_ids: set[str] = set()
+        self.audit_observation_valid = (
+            audit_module is None or audit_initial is not None
+        )
+        self._audit_module = audit_module
+        self._audit_boundary = audit_initial
+        self._last_test_id: str | None = None
+
+    def _observe_audit(self, identifier: str | None) -> None:
+        if self._audit_module is None:
+            return
+        snapshot = _audit_snapshot(self._audit_module)
+        if snapshot is None:
+            self.audit_observation_valid = False
+            return
+        if self._audit_boundary is not None and snapshot != self._audit_boundary:
+            if identifier is None:
+                self.audit_observation_valid = False
+            else:
+                self.audit_mutator_test_ids.add(identifier)
+        self._audit_boundary = snapshot
+
+    def observe_final_audit(self) -> None:
+        self._observe_audit(self._last_test_id)
 
     def startTest(self, test: unittest.TestCase) -> None:  # noqa: N802
-        super().startTest(test)
         identifier = test.id()
+        self._observe_audit(identifier)
+        super().startTest(test)
         self.executed_ids.append(identifier)
+        self._last_test_id = identifier
         self._active[id(test)] = (identifier, "passed")
 
     def _active_parent(
@@ -573,6 +624,7 @@ class AggregateTestResult(unittest.TestResult):
             self.counts[outcome] += 1
             self.final_outcomes[identifier] = outcome
         super().stopTest(test)
+        self._observe_audit(test.id())
 
     def addSuccess(self, test: unittest.TestCase) -> None:  # noqa: N802
         self._mark(test, "passed")
@@ -746,15 +798,34 @@ def _audit_is_pristine_and_unchanged(
     )
 
 
+def _audit_change_kind(
+    initial: tuple[str, int, int, int, int, int] | None,
+    final: tuple[str, int, int, int, int, int] | None,
+) -> str:
+    if initial is None or final is None:
+        return "unavailable"
+    if initial[:3] != final[:3]:
+        return "identity"
+    if final[3] != 0:
+        return "nonempty"
+    if initial[4:] != final[4:]:
+        return "timestamps"
+    return "unchanged"
+
+
 def _run_suite(
     name: str,
     guard_module: Any,
     *,
     diagnostic: dict[str, Any] | None = None,
     integrity_issues: set[str] | None = None,
+    audit_initial: tuple[str, int, int, int, int, int] | None = None,
 ) -> dict[str, Any]:
     discovered_ids: list[str] = []
-    result = AggregateTestResult()
+    result = AggregateTestResult(
+        audit_module=guard_module if audit_initial is not None else None,
+        audit_initial=audit_initial,
+    )
     issues = integrity_issues if integrity_issues is not None else set()
     try:
         initial_guard_valid = bool(guard_module.guard_self_check())
@@ -780,7 +851,10 @@ def _run_suite(
         issues.add("suite_execution")
     finally:
         result.close_interrupted_tests()
+        result.observe_final_audit()
 
+    if not result.audit_observation_valid:
+        issues.add("audit_observation")
     if tuple(result.executed_ids) != tuple(discovered_ids):
         issues.add("executed_ids")
     if result.fixture_outcomes:
@@ -821,6 +895,15 @@ def _run_suite(
                 "integrity_valid": False,
                 "integrity_issue_count": 0,
                 "integrity_issue_sha256": EMPTY_INTEGRITY_ISSUE_SHA256,
+                "audit_change_kind": "unavailable",
+                "audit_mutator_test_id_count": len(
+                    result.audit_mutator_test_ids
+                ),
+                "audit_mutator_test_id_sha256": (
+                    _audit_mutator_test_id_digest(
+                        result.audit_mutator_test_ids
+                    )
+                ),
                 "nonpassing_test_id_count": len(nonpassing_ids),
                 "nonpassing_test_id_sha256": _nonpassing_test_id_digest(
                     nonpassing_ids
@@ -952,6 +1035,7 @@ def main() -> int:
                     guard_module,
                     diagnostic=diagnostic,
                     integrity_issues=integrity_issues,
+                    audit_initial=initial_audit,
                 )
             else:
                 report = _empty_report(
@@ -979,6 +1063,9 @@ def main() -> int:
                 _invalidate_counts(counts)
                 report.update(counts)
                 report["total"] = sum(counts.values())
+            diagnostic["audit_change_kind"] = _audit_change_kind(
+                initial_audit, final_audit
+            )
         _set_integrity_diagnostic(diagnostic, integrity_issues)
         payload = _encode_report(report)
         _write_all(target_fd, payload, synchronize=report_fd is not None)

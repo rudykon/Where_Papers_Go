@@ -32,7 +32,7 @@ from urllib.parse import unquote, urlsplit
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_CLOSEOUT_TESTS_PATH = PROJECT_ROOT / "scripts" / "run_closeout_tests.py"
 RUN_CLOSEOUT_TESTS_SHA256 = (
-    "75b13545097135cd1a2f263574f86a36727dfa030c74a2c7b0041c733ea25cad"
+    "7cd6f23174256d521757111ce6d0f75ccb4dbd2b3624822f28e77e89452f9121"
 )
 
 
@@ -1170,11 +1170,18 @@ def _parse_test_diagnostic(payload: bytes) -> dict[str, Any]:
         raise PrGateError("fixed runner diagnostic identity is invalid")
     if type(value.get("integrity_valid")) is not bool:
         raise PrGateError("fixed runner diagnostic integrity result is invalid")
+    if value.get("audit_change_kind") not in run_closeout_tests.AUDIT_CHANGE_KINDS:
+        raise PrGateError("fixed runner diagnostic audit change kind is invalid")
     for count_field, digest_field, empty_digest in (
         (
             "integrity_issue_count",
             "integrity_issue_sha256",
             run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
+        ),
+        (
+            "audit_mutator_test_id_count",
+            "audit_mutator_test_id_sha256",
+            run_closeout_tests.EMPTY_AUDIT_MUTATOR_TEST_ID_SHA256,
         ),
         (
             "nonpassing_test_id_count",
@@ -1207,6 +1214,12 @@ def _test_diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
         + str(diagnostic["integrity_issue_count"])
         + ", integrity_issue_sha256="
         + str(diagnostic["integrity_issue_sha256"])
+        + ", audit_change_kind="
+        + str(diagnostic["audit_change_kind"])
+        + ", audit_mutator_test_id_count="
+        + str(diagnostic["audit_mutator_test_id_count"])
+        + ", audit_mutator_test_id_sha256="
+        + str(diagnostic["audit_mutator_test_id_sha256"])
         + ", nonpassing_test_id_count="
         + str(diagnostic["nonpassing_test_id_count"])
         + ", nonpassing_test_id_sha256="

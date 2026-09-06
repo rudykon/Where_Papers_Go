@@ -121,10 +121,11 @@ class CloseoutRunnerContractTests(unittest.TestCase):
                     run_closeout_tests.SKIPPED_TEST_ID_HASH_DOMAIN,
                     run_closeout_tests.NONPASSING_TEST_ID_HASH_DOMAIN,
                     run_closeout_tests.INTEGRITY_ISSUE_HASH_DOMAIN,
+                    run_closeout_tests.AUDIT_MUTATOR_TEST_ID_HASH_DOMAIN,
                     run_closeout_tests.SKIP_ALLOWLIST_HASH_DOMAIN,
                 }
             ),
-            5,
+            6,
         )
         for field in (
             "failures",
@@ -146,6 +147,10 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         self.assertEqual(
             run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
             "ad52643676c0b0344a556b1e801ae65839d5f3b5097b7f40b7e536a1b85a27cb",
+        )
+        self.assertEqual(
+            run_closeout_tests.EMPTY_AUDIT_MUTATOR_TEST_ID_SHA256,
+            "ee6053bc1c7e8384cff7040a50b672d611fb7c9b0d2ce0c0564053ea37e47903",
         )
 
         expected_allowlist = {
@@ -267,6 +272,12 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             failure_diagnostic["integrity_issue_sha256"],
             run_closeout_tests.EMPTY_INTEGRITY_ISSUE_SHA256,
         )
+        self.assertEqual(failure_diagnostic["audit_change_kind"], "unavailable")
+        self.assertEqual(failure_diagnostic["audit_mutator_test_id_count"], 0)
+        self.assertEqual(
+            failure_diagnostic["audit_mutator_test_id_sha256"],
+            run_closeout_tests.EMPTY_AUDIT_MUTATOR_TEST_ID_SHA256,
+        )
         self.assertEqual(failure_diagnostic["nonpassing_test_id_count"], 1)
         self.assertEqual(
             failure_diagnostic["nonpassing_test_id_sha256"],
@@ -294,6 +305,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             validate_pr_gates._test_diagnostic_summary(parsed_diagnostic),
             r"integrity_valid=true, integrity_issue_count=0, "
             r"integrity_issue_sha256=[0-9a-f]{64}, "
+            r"audit_change_kind=unavailable, "
+            r"audit_mutator_test_id_count=0, "
+            r"audit_mutator_test_id_sha256=[0-9a-f]{64}, "
             r"nonpassing_test_id_count=1, "
             r"nonpassing_test_id_sha256=fbd3a800",
         )
@@ -301,6 +315,8 @@ class CloseoutRunnerContractTests(unittest.TestCase):
         inconsistent_diagnostic["nonpassing_test_id_count"] = 0
         integrity_inconsistent_diagnostic = dict(failure_diagnostic)
         integrity_inconsistent_diagnostic["integrity_valid"] = False
+        invalid_audit_kind_diagnostic = dict(failure_diagnostic)
+        invalid_audit_kind_diagnostic["audit_change_kind"] = "test details"
         noncanonical_diagnostic = run_closeout_tests.DIAGNOSTIC_PREFIX + (
             json.dumps(failure_diagnostic, sort_keys=True) + "\n"
         ).encode("ascii")
@@ -312,6 +328,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             run_closeout_tests._encode_diagnostic(
                 integrity_inconsistent_diagnostic
             ),
+            run_closeout_tests._encode_diagnostic(
+                invalid_audit_kind_diagnostic
+            ),
         ):
             with self.subTest(malformed_diagnostic=malformed_diagnostic[:32]):
                 with self.assertRaises(validate_pr_gates.PrGateError):
@@ -322,6 +341,50 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             validate_pr_gates._validate_test_report(
                 failure_report, suite="full"
             )
+
+        audit_initial = ("/tmp/synthetic-audit", 1, 2, 0, 3, 4)
+        audit_final = ("/tmp/synthetic-audit", 1, 2, 0, 3, 5)
+
+        class MutableAuditGuard(_HealthyGuard):
+            snapshot = audit_initial
+
+            @classmethod
+            def audit_snapshot(cls) -> tuple[str, int, int, int, int, int]:
+                return cls.snapshot
+
+        class SyntheticAuditMutationCase(unittest.TestCase):
+            def id(self) -> str:
+                return "synthetic.audit-mutator"
+
+            def runTest(self) -> None:
+                MutableAuditGuard.snapshot = audit_final
+
+        audit_diagnostic = run_closeout_tests._empty_diagnostic()
+        with patch.object(
+            run_closeout_tests,
+            "_load_suite",
+            return_value=unittest.TestSuite((SyntheticAuditMutationCase(),)),
+        ):
+            audit_report = run_closeout_tests._run_suite(
+                "full",
+                MutableAuditGuard,
+                diagnostic=audit_diagnostic,
+                audit_initial=audit_initial,
+            )
+        self.assertEqual(audit_report["passed"], 1)
+        self.assertEqual(audit_diagnostic["audit_mutator_test_id_count"], 1)
+        self.assertEqual(
+            audit_diagnostic["audit_mutator_test_id_sha256"],
+            "061402647b9b922b6b531e2c74bdc816ab9f31c9a5435a0164edbf307617c613",
+        )
+        self.assertNotIn(
+            b"synthetic.audit-mutator",
+            run_closeout_tests._encode_diagnostic(audit_diagnostic),
+        )
+        self.assertEqual(
+            run_closeout_tests._audit_change_kind(audit_initial, audit_final),
+            "timestamps",
+        )
 
         fixed_full_report = dict(report)
         fixed_full_report.update(
