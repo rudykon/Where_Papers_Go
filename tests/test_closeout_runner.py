@@ -623,6 +623,9 @@ class CloseoutRunnerContractTests(unittest.TestCase):
             '[[ "$gid_line" =~ $gid_pattern ]]',
             "OS-level offline gate privileged setup shell lacks required capabilities",
             '"$setup_cap_bnd" "$setup_cap_amb"',
+            "root setup failed during $gate_stage",
+            "unprivileged checks failed during $gate_stage",
+            "gate_stage=unprivileged-mount-verification",
         ):
             self.assertIn(required_fragment, offline_wrapper)
         self.assertNotIn("mount --make-rprivate /", offline_wrapper)

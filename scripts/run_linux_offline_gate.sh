@@ -181,6 +181,14 @@ fi
     caller_home="${WPG_PR_CALLER_HOME:?}"
     runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
 
+    gate_stage=root-identity
+    report_setup_error() {
+      local rc="$?"
+      echo "OS-level offline gate root setup failed during $gate_stage (status $rc)" >&2
+      exit "$rc"
+    }
+    trap report_setup_error ERR
+
     setup_uid_line=
     setup_gid_line=
     while read -r key values; do
@@ -194,6 +202,7 @@ fi
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
+    gate_stage=root-capabilities
     setup_cap_inh=
     setup_cap_prm=
     setup_cap_eff=
@@ -229,9 +238,11 @@ fi
     # read-only bind at the same pathname.
     cd /
 
+    gate_stage=root-private-tmp
     /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
       -o rw,nosuid,nodev,mode=1777,size=1g \
       wpg-tmp /tmp
+    gate_stage=root-mount-helper
     mount_helper=/tmp/.wpg-offline-gate-mount
     /usr/bin/cp -- /usr/bin/mount "$mount_helper"
     /usr/bin/chmod 0700 "$mount_helper"
@@ -274,6 +285,7 @@ fi
     # recursive MS_PRIVATE transition before this shell starts.  Repeating
     # that mount operation is rejected by some otherwise capable hosted
     # runners, so verify the resulting namespace below after privileges drop.
+    gate_stage=root-private-mounts
     "$mount_helper" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
@@ -281,6 +293,7 @@ fi
     # A test process must not be able to rewrite checked-out actions, runner
     # post hooks, temp command files, runner binaries, or the hosted tool cache
     # for execution after the isolated terminal step returns.
+    gate_stage=root-readonly-mounts
     readonly_bind_exec "$caller_home"
     if [[ "$runner_tool_cache" != /nonexistent && \
           "$runner_tool_cache" != "$caller_home" ]]; then
@@ -301,6 +314,7 @@ fi
     # Replace /run last, after the one short-lived sudo invocation and all
     # other mounts have returned.  The outer sudo monitor is outside this
     # mount namespace, so runner cleanup remains reachable.
+    gate_stage=root-private-run
     "$mount_helper" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
       wpg-run /run
@@ -308,6 +322,7 @@ fi
     [[ ! -e "$mount_helper" && ! -L "$mount_helper" ]]
     cd -- "$project_root"
 
+    gate_stage=root-loopback
     /usr/sbin/ip link set lo up
     mapfile -t interfaces < <(/usr/sbin/ip -o link show)
     [[ "${#interfaces[@]}" -eq 1 && "${interfaces[0]}" == *" lo:"* ]]
@@ -317,6 +332,7 @@ fi
     # Create the PID namespace only after the short-lived inner sudo has
     # exited.  The forked child below is therefore PID 1 rather than a sudo
     # monitor process.
+    gate_stage=root-pid-namespace
     exec /usr/bin/unshare \
       --pid \
       --fork \
@@ -341,6 +357,14 @@ fi
         runner_commands_dir="${WPG_PR_RUNNER_COMMANDS_DIR:?}"
         caller_home="${WPG_PR_CALLER_HOME:?}"
         runner_tool_cache="${WPG_PR_RUNNER_TOOL_CACHE:?}"
+
+        gate_stage=unprivileged-identity
+        report_unprivileged_error() {
+          local rc="$?"
+          echo "OS-level offline gate unprivileged checks failed during $gate_stage (status $rc)" >&2
+          exit "$rc"
+        }
+        trap report_unprivileged_error ERR
 
         uid_line=
         gid_line=
@@ -378,6 +402,7 @@ fi
           "$cap_inh" "$cap_prm" "$cap_eff" "$cap_bnd" "$cap_amb"; do
           [[ "$capability_set" == 0000000000000000 ]]
         done
+        gate_stage=unprivileged-mount-verification
         [[ "$(pwd -P)" == "$project_root" ]]
         while IFS= read -r mount_line; do
           case " $mount_line " in
@@ -387,6 +412,7 @@ fi
               ;;
           esac
         done </proc/self/mountinfo
+        gate_stage=unprivileged-writability
         [[ ! -w . && ! -w "$project_root" ]]
         [[ ! -w "$project_root/.github/pr-gate-manifest.json" ]]
         [[ ! -w "$project_root/scripts/validate_pr_gates.py" ]]
@@ -403,14 +429,17 @@ fi
         if [[ "$runner_tool_cache" != /nonexistent ]]; then
           [[ ! -w "$runner_tool_cache" ]]
         fi
+        gate_stage=unprivileged-environment
         [[ -z "${GITHUB_ENV+x}${GITHUB_PATH+x}${GITHUB_OUTPUT+x}" ]]
         [[ ! -S /run/docker.sock && ! -S /var/run/docker.sock ]]
         [[ ! -S /run/dbus/system_bus_socket && ! -S /run/systemd/private ]]
         [[ -z "$(/usr/bin/find /run /tmp /dev/shm -xdev -type s -print -quit)" ]]
+        gate_stage=unprivileged-sudo-drop
         if /usr/bin/sudo -n /usr/bin/true >/dev/null 2>&1; then
           echo "OS-level offline gate retained sudo privilege" >&2
           exit 2
         fi
+        gate_stage=target-exec
         exec "$@"
       '\'' wpg-unprivileged "$@"
   ' wpg-root "$command_path" "$@"
