@@ -17,8 +17,9 @@ if [[ "$(/usr/bin/id -u)" -eq 0 ]]; then
 fi
 
 for required in \
-  /usr/bin/find /usr/bin/getent /usr/bin/id /usr/bin/mount \
-  /usr/bin/readlink /usr/bin/setpriv /usr/bin/stat /usr/bin/sudo \
+  /usr/bin/chmod /usr/bin/cmp /usr/bin/cp /usr/bin/find \
+  /usr/bin/getent /usr/bin/id /usr/bin/mount /usr/bin/readlink \
+  /usr/bin/rm /usr/bin/setpriv /usr/bin/stat /usr/bin/sudo \
   /usr/bin/uname /usr/bin/unshare /usr/sbin/ip; do
   if [[ ! -x "$required" ]]; then
     echo "OS-level offline gate is missing $required" >&2
@@ -138,7 +139,14 @@ fi
     --uts \
     --propagation private \
     -- \
-  /usr/bin/sudo -n /usr/bin/env -i \
+  /usr/bin/setpriv \
+    --reuid=0 \
+    --regid=0 \
+    --clear-groups \
+    --inh-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
+    --ambient-caps=+dac_override,+dac_read_search,+setgid,+setuid,+setpcap,+net_admin,+sys_admin \
+    -- \
+  /usr/bin/env -i \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -186,41 +194,61 @@ fi
       echo "OS-level offline gate privileged setup shell lacks aligned root IDs" >&2
       exit 2
     fi
+    setup_cap_inh=
+    setup_cap_prm=
     setup_cap_eff=
+    setup_cap_bnd=
+    setup_cap_amb=
     while read -r key values; do
-      if [[ "$key" == CapEff: ]]; then
-        setup_cap_eff="$values"
-        break
-      fi
+      case "$key" in
+        CapInh:) setup_cap_inh="$values" ;;
+        CapPrm:) setup_cap_prm="$values" ;;
+        CapEff:) setup_cap_eff="$values" ;;
+        CapBnd:) setup_cap_bnd="$values" ;;
+        CapAmb:) setup_cap_amb="$values" ;;
+      esac
     done </proc/self/status
-    if [[ ! "$setup_cap_eff" =~ ^[0-9a-fA-F]{16}$ ]] ||
-       (( (16#$setup_cap_eff & 16#2011c6) != 16#2011c6 )); then
-      echo "OS-level offline gate privileged setup shell lacks required capabilities" >&2
-      exit 2
-    fi
+    for setup_capability_set in \
+      "$setup_cap_inh" "$setup_cap_prm" "$setup_cap_eff" \
+      "$setup_cap_bnd" "$setup_cap_amb"; do
+      if [[ ! "$setup_capability_set" =~ ^[0-9a-fA-F]{16}$ ]] ||
+         (( (16#$setup_capability_set & 16#2011c6) != 16#2011c6 )); then
+        echo "OS-level offline gate privileged setup shell lacks required capabilities" >&2
+        exit 2
+      fi
+    done
 
-    # Some hosted-runner kernels shed the effective root credential when the
-    # setuid mount helper is executed directly, even though this setup shell
-    # has aligned root IDs and CAP_SYS_ADMIN.  Invoke only the fixed system
-    # mount binary through sudo so the mount(2) caller is normalized too.  All
-    # sudo access is removed and tested after the namespace setup below.
+    # Current hosted-runner kernels can reject the setuid mount helper even
+    # with aligned root IDs and CAP_SYS_ADMIN.  Use sudo once to replace /tmp
+    # with a private filesystem, then copy the trusted helper there without
+    # its setuid bit.  Ambient capabilities now survive that ordinary exec.
+    # No sudo monitor remains in this namespace when /run is replaced below.
 
     # Drop the inherited checkout cwd before overmounting it.  Otherwise the
     # old mount remains reachable through the process's cwd despite the new
     # read-only bind at the same pathname.
     cd /
 
+    /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
+      -o rw,nosuid,nodev,mode=1777,size=1g \
+      wpg-tmp /tmp
+    mount_helper=/tmp/.wpg-offline-gate-mount
+    /usr/bin/cp -- /usr/bin/mount "$mount_helper"
+    /usr/bin/chmod 0700 "$mount_helper"
+    /usr/bin/cmp --silent -- /usr/bin/mount "$mount_helper"
+    [[ -f "$mount_helper" && ! -L "$mount_helper" && \
+       -x "$mount_helper" && \
+       "$(/usr/bin/stat -Lc "%u:%g:%a" "$mount_helper")" == 0:0:700 ]]
+
     readonly_bind() {
       local target="$1"
-      /usr/bin/sudo -n /usr/bin/mount --bind "$target" "$target"
-      /usr/bin/sudo -n /usr/bin/mount \
-        -o remount,bind,ro,nosuid,nodev,noexec "$target"
+      "$mount_helper" --bind "$target" "$target"
+      "$mount_helper" -o remount,bind,ro,nosuid,nodev,noexec "$target"
     }
     readonly_bind_exec() {
       local target="$1"
-      /usr/bin/sudo -n /usr/bin/mount --bind "$target" "$target"
-      /usr/bin/sudo -n /usr/bin/mount \
-        -o remount,bind,ro,nosuid,nodev "$target"
+      "$mount_helper" --bind "$target" "$target"
+      "$mount_helper" -o remount,bind,ro,nosuid,nodev "$target"
     }
     mask_directory() {
       local target="$1"
@@ -237,7 +265,7 @@ fi
         echo "OS-level offline gate rejects redirected socket directory: $target" >&2
         exit 2
       fi
-      /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
+      "$mount_helper" -t tmpfs \
         -o rw,nosuid,nodev,noexec,mode=0700,size=1m \
         wpg-private "$target"
     }
@@ -246,13 +274,7 @@ fi
     # recursive MS_PRIVATE transition before this shell starts.  Repeating
     # that mount operation is rejected by some otherwise capable hosted
     # runners, so verify the resulting namespace below after privileges drop.
-    /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
-      -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
-      wpg-run /run
-    /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
-      -o rw,nosuid,nodev,mode=1777,size=1g \
-      wpg-tmp /tmp
-    /usr/bin/sudo -n /usr/bin/mount -t tmpfs \
+    "$mount_helper" -t tmpfs \
       -o rw,nosuid,nodev,noexec,mode=1777,size=64m \
       wpg-shm /dev/shm
 
@@ -275,6 +297,15 @@ fi
     if [[ "$runner_commands_dir" != /nonexistent ]]; then
       readonly_bind "$runner_commands_dir"
     fi
+
+    # Replace /run last, after the one short-lived sudo invocation and all
+    # other mounts have returned.  The outer sudo monitor is outside this
+    # mount namespace, so runner cleanup remains reachable.
+    "$mount_helper" -t tmpfs \
+      -o rw,nosuid,nodev,noexec,mode=0755,size=4m \
+      wpg-run /run
+    /usr/bin/rm -- "$mount_helper"
+    [[ ! -e "$mount_helper" && ! -L "$mount_helper" ]]
     cd -- "$project_root"
 
     /usr/sbin/ip link set lo up
@@ -283,9 +314,9 @@ fi
     [[ -z "$(/usr/sbin/ip -4 route show table main)" ]]
     [[ -z "$(/usr/sbin/ip -6 route show table main)" ]]
 
-    # Create the PID namespace only after sudo has normalized every root
-    # credential field.  The forked child below is therefore PID 1 rather
-    # than a sudo monitor process.
+    # Create the PID namespace only after the short-lived inner sudo has
+    # exited.  The forked child below is therefore PID 1 rather than a sudo
+    # monitor process.
     exec /usr/bin/unshare \
       --pid \
       --fork \
