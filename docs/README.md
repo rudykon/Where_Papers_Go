@@ -7,6 +7,7 @@
 
 - [检索架构](retrieval-architecture.md)：属性图、LightRAG、精确向量、LLM 与 Search API。
 - [Web 前端](web-frontend.md)：服务启动、接口和部署建议。
+- [GitHub Pages 浏览器版](github-pages.md)：纯静态本地检索、数据边界、构建与发布。
 - [收稿范围补全](enrichment.md)：官网范围采集和审核流程。
 
 ## 研究协议与结果

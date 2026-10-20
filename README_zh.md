@@ -33,6 +33,11 @@
 > [!IMPORTANT]
 > **Where Papers Go 是投稿目标发现工具，不是录用率预测器。** 排名仅表示候选在现有数据中的主题适配程度。投稿前仍需到会刊官网核对最新收稿范围、Call for Papers、截止日期和格式要求。
 
+**[打开浏览器版](https://rudykon.github.io/Where_Papers_Go/)**：无需账号或 API 密钥，
+直接在浏览器检索公开刊会目录，查询内容保留在本机。纯静态版采用独立的 Web Worker
+本地检索算法；下文的 Python 服务提供严格在线流水线。
+详见[构建、发布与算法说明](docs/github-pages.md)。
+
 <a id="overview"></a>
 ## 项目概览
 

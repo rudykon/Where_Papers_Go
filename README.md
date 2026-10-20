@@ -33,6 +33,12 @@
 > [!IMPORTANT]
 > **Where Papers Go is a venue-discovery assistant, not an acceptance predictor.** Rankings express topic fit within the available data. Always verify the latest aims and scope, Call for Papers, deadlines, and submission rules on the official venue website.
 
+**[Open the browser edition](https://rudykon.github.io/Where_Papers_Go/)** — search
+the public venue catalog locally in your browser, with no account or API keys.
+Queries stay on your device. This static edition uses its own Worker-based retrieval;
+the Python service below provides the strict online pipeline.
+See [build, deployment, and algorithm details](docs/github-pages.md).
+
 <a id="overview"></a>
 ## Overview
 
