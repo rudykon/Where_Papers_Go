@@ -1,0 +1,63 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "scripts/build_github_pages.py"
+      - "tests/pages/**"
+      - "data/**"
+      - "where_paper_go/recommender.py"
+      - "where_paper_go/paths.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Verify the public catalog export
+        run: python -m unittest discover -s tests/pages -p 'test_*.py' -v
+      - name: Verify browser retrieval
+        run: node tests/pages/search-engine.test.mjs
+      - name: Build the static site
+        run: python scripts/build_github_pages.py
+      - name: Upload the website artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/github-pages
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

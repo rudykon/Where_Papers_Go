@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#7460cf">
+  <meta name="description" content="Where Papers Go：在浏览器中探索会议与期刊，结合论文主题、等级与收稿范围，寻找适合研究的投稿目标。所有检索在你的设备上完成。">
+  <title>Where Papers Go · 为研究找到合适的去处</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-en="Skip to content">跳转到内容</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#overview" aria-label="Where Papers Go"><img src="assets/favicon.svg" width="38" height="38" alt=""><span>Where Papers <b>Go</b></span><span class="brand-divider"></span><span class="brand-caption" data-en="Research venue discovery">学术投稿导航</span></a>
+      <div class="header-tools">
+        <button id="language-toggle" class="language-toggle" type="button" aria-label="Switch to English">English</button>
+        <button class="quick-search" id="quick-search" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><span data-en="Find a venue">搜索会议与期刊</span><kbd>/</kbd></button>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="切换深浅主题" title="切换深浅主题"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+        <a class="github-link" href="https://github.com/rudykon/Where_Papers_Go" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-4.3 1.3-4.3-2.2-6-2.7M15 22v-3.4a3 3 0 0 0-.8-2.3c2.8-.3 5.8-1.4 5.8-6.3a4.9 4.9 0 0 0-1.3-3.4A4.5 4.5 0 0 0 18.6 3S17.5 2.7 15 4.3a12 12 0 0 0-6 0C6.5 2.7 5.4 3 5.4 3a4.5 4.5 0 0 0-.1 3.6A4.9 4.9 0 0 0 4 10c0 4.9 3 6 5.8 6.3a3 3 0 0 0-.8 2.3V22"/></svg><span>GitHub ↗</span></a>
+      </div>
+    </div>
+    <nav class="main-nav" aria-label="主导航">
+      <div class="nav-inner">
+        <a href="#overview" class="nav-link active" aria-current="page" data-en="Overview">项目概览</a>
+        <a href="#recommend" class="nav-link" data-en="Find a venue">投稿推荐</a>
+        <a href="#catalog" class="nav-link" data-en="Venue directory">刊会目录</a>
+        <a href="#method" class="nav-link" data-en="How it works">检索方法</a>
+        <a href="#data" class="nav-link" data-en="Data & sources">数据说明</a>
+      </div>
+    </nav>
+  </header>
+  <div class="page-layout">
+    <aside class="sidebar" aria-label="页面导航">
+      <div class="sidebar-title" id="sidebar-title">项目概览</div>
+      <nav class="toc" id="toc"></nav>
+      <div class="sidebar-note"><span class="status-dot" id="engine-dot"></span><span id="engine-status" role="status">正在准备本地检索</span><small data-en="Web Worker · on your device">Web Worker · 设备端计算</small></div>
+      <p class="privacy-note"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg><span data-en="Your query stays in your browser.">论文内容不上传</span></p>
+      <a class="sidebar-source" href="https://github.com/rudykon/Where_Papers_Go" target="_blank" rel="noopener noreferrer" data-en="View source ↗">项目源码 ↗</a>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="breadcrumb">Where Papers Go <span>/</span><span id="breadcrumb-page">项目概览</span></div>
+
+      <div data-view="overview">
+        <section class="hero" id="intro">
+          <div class="hero-copy">
+            <div class="eyebrow">YOUR RESEARCH. THE RIGHT VENUE.</div>
+            <h1><span data-en="Give your research">让你的研究，</span><br><span class="accent" data-en="a place to belong.">找到合适的去处。</span></h1>
+            <p class="hero-lead" data-en="From a first idea to a finished abstract, explore conferences and journals through topics, rankings, and reviewed scopes. Find a shortlist you can understand and verify.">从一个研究想法，到一篇完整摘要。结合研究主题、刊会等级与收稿范围，找到适合你的会议和期刊，让投稿选择有据可依。</p>
+            <div class="hero-tags"><span>CCF · TH-CPL</span><span>CAS · JCR</span><span data-en="Private, local search">浏览器本地检索</span></div>
+            <div class="actions"><a class="button primary" href="#recommend"><span data-en="Find my venue">开始投稿推荐</span> <span>→</span></a><a class="button" href="#catalog"><span data-en="Browse the directory">浏览刊会目录</span> <span>↗</span></a></div>
+            <p class="hero-footnote"><span class="tiny-dot"></span><span data-en="No account or API key. Your device does the work.">无需账号与 API 密钥，由你的设备完成计算。</span></p>
+          </div>
+          <div class="discovery-visual" role="img" aria-label="论文主题经过范围筛选、词项检索、向量匹配和关键词图扩展，生成有范围依据的投稿推荐">
+            <div class="visual-heading"><span class="visual-mark">↗</span><div><strong data-en="From idea to destination">从研究主题，到投稿目标</strong><small>LOCAL VENUE DISCOVERY</small></div><span class="visual-badge">ON DEVICE</span></div>
+            <div class="paper-input"><span class="paper-icon"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h4"/></svg></span><div><strong data-en="Your next paper">你的下一篇论文</strong><small data-en="Title · abstract · research idea">题目 · 摘要 · 研究想法</small></div><span class="input-caret"></span></div>
+            <div class="flow-line"></div>
+            <div class="filter-ribbon"><span data-en="Submission scope">投稿范围</span><b>CCF-A</b><b>TH-CPL-A</b><b>JCR-Q1</b></div>
+            <div class="flow-fork"><i></i><i></i><i></i></div>
+            <div class="signal-grid"><div class="coral-block"><span>⌕</span><strong data-en="Lexical recall">词项召回</strong><small>BM25</small></div><div class="purple-block"><span>◎</span><strong data-en="Vector matching">向量匹配</strong><small>TF-IDF</small></div><div class="teal-block"><span>⌘</span><strong data-en="Topic expansion">主题扩展</strong><small data-en="Keyword graph">关键词图</small></div></div>
+            <div class="flow-line"></div>
+            <div class="visual-result"><span class="result-check">✓</span><div><strong data-en="A shortlist with reasons">有范围依据的投稿清单</strong><small data-en="Matched terms · scope · exclusions · sources">匹配词项 · 收稿范围 · 排除方向 · 来源</small></div><span>↗</span></div>
+            <div class="visual-caption"><span class="tiny-dot"></span><span data-en="Computed in a Web Worker. Your text stays here.">Web Worker 本地计算，论文内容留在浏览器。</span></div>
+          </div>
+        </section>
+        <div class="stat-strip" aria-label="目录规模"><div><strong data-stat="venues">—</strong><span data-en="Unique active venues">去重后的活动刊会</span></div><div><strong>4</strong><span data-en="Ranking sources">学术评价体系</span></div><div><strong data-stat="reviewed">—</strong><span data-en="Reviewed scope records">已审核收稿范围</span></div><div><strong>100<span class="stat-unit">%</span></strong><span data-en="Search runs in your browser">检索计算在浏览器完成</span></div></div>
+        <section class="section" id="journey">
+          <div class="section-heading"><h2 data-en="A clearer path to submission">让投稿选择，更清晰一点</h2><span class="section-index">01 / EXPLORE</span></div>
+          <div class="task-grid"><a class="task-card" href="#recommend"><span class="number-label coral-block">01</span><h3 data-en="Start with your research">描述你的研究</h3><p data-en="Enter a title, abstract, or keywords. Local retrieval finds venues with matching topics.">输入题目、摘要或关键词，通过本地检索，发现与你的研究主题相关的刊会。</p><span class="card-link" data-en="Find a venue →">开始推荐 →</span></a><a class="task-card" href="#catalog"><span class="number-label purple-block">02</span><h3 data-en="Define your shortlist">缩小投稿范围</h3><p data-en="Combine CCF, TH-CPL, CAS, and JCR tiers. Filter by venue type and research area.">组合 CCF、TH-CPL、中科院与 JCR 等级，按会议、期刊和研究分类筛选。</p><span class="card-link" data-en="Browse venues →">浏览目录 →</span></a><a class="task-card" href="#method"><span class="number-label teal-block">03</span><h3 data-en="Understand the fit">查看匹配依据</h3><p data-en="Compare reviewed scopes, exclusions, matched terms, and source links before submitting.">对照审核范围、明确排除的方向和匹配词项，沿着来源链接进一步核实。</p><span class="card-link" data-en="Explore the method →">了解检索方法 →</span></a></div>
+        </section>
+        <section class="section start-section" id="examples"><div><div class="eyebrow">A GOOD PLACE TO START</div><h2 data-en="What are you working on?">你正在研究什么？</h2><p data-en="Try a topic, then refine it with your own abstract.">从一个示例开始，再加入你的具体研究内容。</p></div><div class="example-list"><button type="button" data-example="large language model distributed training GPU scheduling"><span><small>AI SYSTEMS</small><strong data-en="Distributed training & GPU scheduling">大模型分布式训练与 GPU 调度</strong></span><b>↗</b></button><button type="button" data-example="medical image segmentation deep learning"><span><small>MEDICAL AI</small><strong data-en="Medical imaging & deep learning">医学图像分割与深度学习</strong></span><b>↗</b></button><button type="button" data-example="graph neural network recommendation"><span><small>GRAPH LEARNING</small><strong data-en="Graph neural networks & recommendation">图神经网络与推荐系统</strong></span><b>↗</b></button></div></section>
+        <div class="page-note"><span>ⓘ</span><p data-en="Rankings describe topic fit within the included data, not acceptance probability. This browser edition uses local lexical and topic evidence; it does not perform live web verification.">推荐表达收录数据中的主题匹配程度，不代表录用概率。浏览器版使用本地词项与主题依据，不进行实时联网核验。</p></div>
+      </div>
+
+      <div data-view="explore" hidden>
+        <section class="page-heading"><div class="eyebrow" id="explore-eyebrow">FIND YOUR NEXT VENUE</div><h1 id="explore-title">从你的研究，出发。</h1><p id="explore-lead">描述论文主题，找到相关刊会，并查看每一条推荐的匹配依据。</p></section>
+        <form id="search-form" class="search-panel">
+          <div class="field-heading"><label for="query" id="query-label">论文主题</label><span id="query-count">0 / 8,000</span></div>
+          <textarea id="query" rows="4" maxlength="8000" placeholder="输入论文题目、摘要或关键词，中英文均可…" aria-describedby="local-search-note"></textarea>
+          <div class="suggestions"><span data-en="Try">试一试</span><button type="button" data-example="large language model distributed training GPU scheduling" data-en="AI systems">大模型训练</button><button type="button" data-example="medical image segmentation deep learning" data-en="Medical AI">医学影像</button><button type="button" data-example="graph neural network recommendation" data-en="Graph learning">图学习</button><button type="button" id="clear-query" data-en="Clear">清空</button></div>
+          <details class="filter-panel" open><summary><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg><strong data-en="Submission scope">投稿范围</strong></span><small data-en="Combine tiers with OR">多等级满足其一即可</small><span class="chevron">⌄</span></summary><div class="filter-body">
+            <div class="rank-label"><label data-en="Target rankings">目标等级</label><button type="button" id="reset-filters" class="text-button" data-en="Reset filters ↺">重置筛选 ↺</button></div><div id="rank-filters" class="rank-filters"></div>
+            <div class="filter-grid"><label><span data-en="Venue type">投稿类型</span><select id="record-type"><option value="all" data-en="Conferences & journals">会议与期刊</option><option value="conference" data-en="Conferences">会议</option><option value="journal" data-en="Journals">期刊</option></select></label><label><span data-en="Research area">研究分类</span><select id="area"><option value="" data-en="All areas">全部分类</option></select></label><label><span data-en="Results per page">每页数量</span><select id="page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></label></div>
+            <label class="checkbox-label"><input id="reviewed-only" type="checkbox"><span data-en="Only venues with reviewed scopes">仅显示有审核范围的刊会</span></label>
+          </div></details>
+          <div class="search-bottom"><span id="local-search-note"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span data-en="Processed locally. No query uploads.">设备端计算，不上传论文内容</span></span><button class="button primary" id="search-button" type="submit"><span data-en="Find venues">检索投稿目标</span><span>→</span></button></div>
+        </form>
+        <div class="search-progress" id="search-progress" role="status" hidden><span class="spinner"></span><span id="progress-message">正在检索…</span><button type="button" id="cancel-search" class="text-button" data-en="Cancel">取消</button></div>
+        <section id="results" class="section results-section" aria-label="检索结果"><div class="section-heading"><div><h2 data-en="Venue shortlist">刊会清单</h2><p class="results-meta" id="results-meta" role="status" aria-live="polite">输入研究主题，开始探索。</p></div><button type="button" id="export-results" class="button small" hidden><span data-en="Export CSV">导出 CSV</span><span>↓</span></button></div><div id="results-note" class="results-note" hidden></div><div id="result-list"><div class="empty-state"><span class="empty-symbol">⌕</span><h3 data-en="Your next destination starts here">下一站，从这里开始</h3><p data-en="Enter your topic or browse the venue directory.">输入研究主题，或前往刊会目录查看全部目标。</p></div></div><div class="pagination" id="pagination" hidden><button class="button small" type="button" id="previous-page" data-en="← Previous">← 上一页</button><span id="page-label"></span><button class="button small" type="button" id="next-page" data-en="Next →">下一页 →</button></div></section>
+      </div>
+
+      <div data-view="method" hidden>
+        <section class="page-heading"><div class="eyebrow">TRANSPARENT BY DESIGN</div><h1 data-en="How your shortlist is built">每一条推荐，都有来由。</h1><p data-en="A transparent retrieval pipeline that runs entirely in your browser, on the included venue catalog.">基于真实刊会目录，在浏览器中完成检索，并保留可检查的匹配依据。</p></section>
+        <section class="section" id="pipeline"><div class="section-heading"><h2 data-en="The browser retrieval pipeline">浏览器检索流程</h2><span class="section-index">01 / PIPELINE</span></div><div class="method-steps">
+          <article><span>01</span><div><h3 data-en="Build the local index">建立本地索引</h3><p data-en="A dedicated Web Worker loads the public catalog and indexes venue names, research areas, and approved scope keywords without blocking page interaction.">独立的 Web Worker 加载公开目录，为刊会名称、研究分类与已审核范围关键词建立索引，不阻塞页面交互。</p></div><b>WEB WORKER</b></article>
+          <article><span>02</span><div><h3 data-en="Apply submission constraints">限定投稿范围</h3><p data-en="Apply ranking, venue type, area, and reviewed-scope filters. Multiple selected tiers use OR semantics; other filter groups intersect.">按等级、会议或期刊、研究分类及审核状态筛选。多个等级之间取并集，不同筛选项之间取交集。</p></div><b>HARD FILTERS</b></article>
+          <article><span>03</span><div><h3 data-en="Combine local retrieval signals">融合本地检索信号</h3><p data-en="BM25 recalls matching terms. TF-IDF cosine similarity compares term vectors. A reviewed-keyword co-occurrence graph expands related topics, with aliases for common research concepts.">BM25 召回匹配词项；TF-IDF 余弦相似度比较词项向量；审核关键词共现图扩展相关主题，并辅助识别常见研究概念的别名。</p></div><b>BM25 + TF-IDF + GRAPH</b></article>
+          <article><span>04</span><div><h3 data-en="Explain and verify">解释匹配，回到来源</h3><p data-en="Results show matched terms, signal contributions, reviewed scopes, and explicit exclusions. Source links help you check the original evidence.">展示匹配词项、信号贡献、已审核收稿范围与明确排除的方向，通过来源链接进一步核对原始依据。</p></div><b>EVIDENCE</b></article>
+        </div></section>
+        <section class="section" id="boundaries"><div class="section-heading"><h2 data-en="What this edition does">浏览器版的能力边界</h2><span class="section-index">02 / SCOPE</span></div><div class="table-wrap"><table><thead><tr><th data-en="Capability">能力</th><th data-en="Browser edition">浏览器版</th><th data-en="Python application">Python 应用</th></tr></thead><tbody><tr><td data-en="Ranks, filters, reviewed scopes">等级筛选与审核范围</td><td data-en="Included">支持</td><td data-en="Included">支持</td></tr><tr><td data-en="Topic retrieval">主题检索</td><td>BM25 + TF-IDF + <span data-en="keyword graph">关键词图</span></td><td>LightRAG + <span data-en="neural embeddings">神经语义向量</span></td></tr><tr><td data-en="Explanation">匹配解释</td><td data-en="Matched terms and local evidence">匹配词项与本地依据</td><td data-en="LLM reranking and explanations">LLM 重排与解释</td></tr><tr><td data-en="Live verification">实时核验</td><td data-en="No; uses the published snapshot">不支持，使用已发布快照</td><td>Search API</td></tr><tr><td data-en="Compute & privacy">计算与隐私</td><td data-en="Your device; no query uploads">用户设备计算；不上传查询</td><td data-en="Server and configured providers">服务器与配置的 API 服务</td></tr></tbody></table></div><p class="table-note" data-en="TF-IDF vectors represent words, not neural semantic embeddings. Browser scores indicate relative topic fit, not acceptance odds or validated research gains.">TF-IDF 是词项向量，不是神经语义嵌入。浏览器版分数表示相对主题匹配，不代表录用概率或经实验验证的研究增益。</p></section>
+        <a class="next-page" href="#recommend"><span data-en="Try it for yourself">开始体验</span><strong data-en="Find a venue →">投稿推荐 →</strong></a>
+      </div>
+
+      <div data-view="data" hidden>
+        <section class="page-heading"><div class="eyebrow">KNOW YOUR SOURCES</div><h1 data-en="Real data. Visible boundaries.">数据有来源，推荐有边界。</h1><p data-en="Four ranking sources, deduplicated into a searchable catalog. Ranking editions and scope review dates are retained for inspection.">整合四类榜单，按实体去重建立目录；保留榜单版本和范围审核年份，便于理解结果的适用范围。</p></section>
+        <section class="section" id="sources"><div class="section-heading"><h2 data-en="Ranking sources">榜单来源</h2><span class="section-index">01 / SOURCES</span></div><div class="table-wrap"><table><thead><tr><th data-en="Source">评价体系</th><th data-en="Edition">版本</th><th data-en="Source records">原始记录</th><th data-en="Tiers">等级</th></tr></thead><tbody id="source-table"><tr><td colspan="4" data-en="Loading the catalog…">正在加载目录…</td></tr></tbody></table></div><p class="table-note" data-en="Source rows can overlap. Unique active venue counts exclude retired or non-actionable historical entities. Rankings reflect the included editions, not a live update.">各榜单记录可能重复。活动刊会数按实体去重，并排除已合并或不可独立投稿的历史目标。等级反映收录版本，不是实时更新结果。</p></section>
+        <section class="section" id="scope-data"><div class="section-heading"><h2 data-en="Reviewed scopes">审核范围与证据</h2><span class="section-index">02 / EVIDENCE</span></div><div class="prose"><p data-en="Only approved records from the curated scope catalog appear as reviewed scopes. Automated, unreviewed web extractions are not included. Venues without reviewed scopes still have their original names, rankings, and research classifications.">只有人工审核目录中状态为 approved 的记录才显示为已审核范围。自动抓取但尚未审核的范围不会被发布。未覆盖审核范围的刊会仍可按原始名称、等级与学科分类检索。</p><p data-en="Each reviewed scope links to its source and can include covered topics, exclusions, article types, and submission context. A source may describe an earlier year; verify current calls, dates, and rules before submitting.">审核范围保留来源链接，并可能包含覆盖主题、排除方向、文章类型与投稿形式。来源可能对应历史年份；投稿前请自行核实最新征稿、日期与规则。</p></div></section>
+        <section class="section" id="privacy"><div class="section-heading"><h2 data-en="Local processing & open source">本地计算与开源实现</h2><span class="section-index">03 / PRIVACY</span></div><div class="prose"><p data-en="The page downloads static assets and a public catalog from GitHub Pages. Queries, filters, ranking, and exports are processed on your device. The site has no analytics, query API, or external model downloads.">页面从 GitHub Pages 下载静态文件与公开目录。查询、筛选、排序和导出都在你的设备上完成；站点不包含统计追踪、查询 API 或外部模型下载。</p><p data-en="Your language and theme preferences may be saved in this browser. Abstracts and search histories are not stored. Opening source links navigates to the respective third-party websites.">浏览器仅可保存语言与主题偏好，不保存摘要和检索历史。打开证据链接时，将访问相应的第三方网站。</p></div><div class="actions"><a class="button" href="https://github.com/rudykon/Where_Papers_Go/tree/main/data" target="_blank" rel="noopener noreferrer" data-en="View source data ↗">查看数据文件 ↗</a><a class="button" href="https://github.com/rudykon/Where_Papers_Go/blob/main/docs/github-pages.md" target="_blank" rel="noopener noreferrer" data-en="Build & deployment guide ↗">构建与部署说明 ↗</a></div></section>
+      </div>
+      <footer class="content-footer"><span>Where Papers Go</span><span data-en="A thoughtful next step for your research.">让好研究，找到合适的下一站。</span></footer>
+    </main>
+  </div>
+  <footer class="site-footer"><div><a class="brand" href="#overview"><img src="assets/favicon.svg" width="28" height="28" alt=""><span>Where Papers <b>Go</b></span></a><p data-en="Built on open data · Computed on your device">基于公开数据 · 计算留在本地</p><a href="https://github.com/rudykon/Where_Papers_Go" target="_blank" rel="noopener noreferrer">GitHub ↗</a></div></footer>
+  <dialog id="venue-dialog" aria-labelledby="venue-title"><div class="dialog-top"><span class="eyebrow">VENUE DETAILS</span><button class="icon-button" id="close-dialog" type="button" aria-label="关闭详情">×</button></div><div id="venue-content"></div><div class="dialog-bottom"><button class="button" id="close-dialog-bottom" type="button" data-en="Close details">关闭详情</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="no-script">请启用 JavaScript，浏览器才能通过 Web Worker 在本地执行检索。JavaScript is required for local search.</p></noscript>
+</body>
+</html>
