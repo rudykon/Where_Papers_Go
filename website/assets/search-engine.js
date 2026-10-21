@@ -34,6 +34,11 @@ const segmenter = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("zh-CN", { granularity: "word" }) : null;
 const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
 const normalize = (text) => String(text ?? "").normalize("NFKC").toLowerCase().trim();
+const normalizeLookup = (text) => normalize(text).replace(/\s+/gu, " ");
+const normalizeIssn = (text) => normalizeLookup(text).replace(/[\s\p{Pd}−]/gu, "");
+const lookupCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+const LOOKUP_FIELDS = ["name", "abbreviation", "publisher", "issn"];
+const LOOKUP_FIELD_LABELS = { name: "名称", abbreviation: "简称", publisher: "出版社", issn: "ISSN" };
 const clamp = (value) => Math.max(0, Math.min(1, value));
 const str = (value) => typeof value === "string" ? value : "";
 const strings = (value) => Array.isArray(value) ? [...new Set(value.filter((item) => typeof item === "string" && item.trim()))] : [];
@@ -88,6 +93,7 @@ function cleanVenue(value, index) {
     record_type: ["journal", "conference"].includes(value.record_type) ? value.record_type : str(value.record_type),
     ranks: strings(value.ranks), areas: strings(value.areas), scope: str(value.scope),
     keywords: strings(value.keywords), exclusions: str(value.exclusions),
+    publishers: strings(value.publishers), issns: strings(value.issns),
     url: safeUrl(value.url), scope_url: safeUrl(value.scope_url),
     reviewed: value.reviewed === true, source_ids: strings(value.source_ids),
     scope_year: typeof value.scope_year === "number" ? value.scope_year : str(value.scope_year),
@@ -124,7 +130,84 @@ function containsFilter(venue, options) {
   const targets = Array.isArray(options.targets) ? options.targets : [];
   if (targets.length && !venue.ranks.some((rank) => targets.includes(rank))) return false;
   if (options.area && options.area !== "all" && !venue.areas.includes(options.area)) return false;
+  if (options.source && options.source !== "all" && !venue.source_ids.includes(options.source)) return false;
   return true;
+}
+
+function lookupRecord(venue) {
+  return {
+    name: [normalizeLookup(venue.name)], abbreviation: [normalizeLookup(venue.abbreviation)],
+    publisher: venue.publishers.map(normalizeLookup), issn: venue.issns.map(normalizeIssn),
+    type: normalizeLookup(venue.record_type), area: normalizeLookup(venue.areas[0]),
+  };
+}
+
+/** Literal catalogue lookup never calls the recommendation tokenizer or index. */
+async function lookupVenues(venues, records, options, { onProgress, isCancelled, yieldControl }) {
+  const query = normalizeLookup(str(options.query));
+  const issnQuery = normalizeIssn(query);
+  const searchField = options.searchField || "all";
+  const matchMode = options.matchMode || "contains";
+  const sortBy = options.sortBy || "name";
+  const sortDirection = options.sortDirection || "asc";
+  if (searchField !== "all" && !LOOKUP_FIELDS.includes(searchField)) throw new Error("查找字段无效。");
+  if (!["contains", "exact"].includes(matchMode)) throw new Error("查找方式必须为 contains 或 exact。");
+  if (!["name", "abbreviation", "publisher", "type", "area"].includes(sortBy)) throw new Error("目录排序字段无效。");
+  if (!["asc", "desc"].includes(sortDirection)) throw new Error("排序方向必须为 asc 或 desc。");
+  const fields = searchField === "all" ? LOOKUP_FIELDS : [searchField];
+  const offset = Math.max(0, Math.trunc(Number(options.offset) || 0));
+  const limit = Math.max(1, Math.min(Math.max(venues.length, 1), Math.trunc(Number(options.limit) || 20)));
+  const summary = { conference: 0, journal: 0, reviewed: 0 };
+  const matches = [];
+  onProgress({ stage: "search", progress: 0, message: "正在按指定字段查找目录…" });
+  for (let index = 0; index < venues.length; index += 1) {
+    const venue = venues[index];
+    if (containsFilter(venue, options)) {
+      const matchedFields = [];
+      let exact = false;
+      if (query) {
+        for (const field of fields) {
+          const needle = field === "issn" ? issnQuery : query;
+          if (!needle) continue;
+          const values = records[index][field];
+          const fieldExact = values.some((value) => value === needle);
+          if (fieldExact || (matchMode === "contains" && values.some((value) => value.includes(needle)))) {
+            matchedFields.push(field);
+            exact ||= fieldExact;
+          }
+        }
+      }
+      if (!query || matchedFields.length) {
+        matches.push({ index, matchedFields, matchKind: !query ? "browse" : exact ? "exact" : "contains" });
+        if (venue.record_type === "conference") summary.conference += 1;
+        if (venue.record_type === "journal") summary.journal += 1;
+        if (venue.reviewed) summary.reviewed += 1;
+      }
+    }
+    if ((index + 1) % 2048 === 0) {
+      cancelled(isCancelled);
+      await yieldControl();
+      cancelled(isCancelled);
+    }
+  }
+  cancelled(isCancelled);
+  const direction = sortDirection === "desc" ? -1 : 1;
+  // Array fields sort by their first listed value; id breaks equal-value ties
+  // in ascending order regardless of direction, giving stable pagination.
+  const sortKey = (index) => {
+    const value = records[index][sortBy];
+    return Array.isArray(value) ? value[0] || "" : value;
+  };
+  matches.sort((a, b) => direction * lookupCollator.compare(sortKey(a.index), sortKey(b.index))
+    || (venues[a.index].id < venues[b.index].id ? -1 : venues[a.index].id > venues[b.index].id ? 1 : 0));
+  cancelled(isCancelled);
+  const results = matches.slice(offset, offset + limit).map(({ index, matchedFields, matchKind }) => ({
+    ...venues[index], score: null, matchedTerms: [], signals: null, matchedFields, matchKind,
+    explanation: matchKind === "browse" ? "按当前筛选条件浏览目录。"
+      : `在${matchedFields.map((field) => LOOKUP_FIELD_LABELS[field]).join("、")}中找到${matchKind === "exact" ? "完全" : "字面包含"}匹配。`,
+  }));
+  onProgress({ stage: "search", progress: 1, message: `目录查找完成，共 ${matches.length} 个结果。` });
+  return { total: matches.length, results, summary, offset, limit };
 }
 
 /**
@@ -135,6 +218,7 @@ export async function createSearchEngine(catalog, { onProgress = () => {}, yield
   if (!catalog || !Array.isArray(catalog.venues)) throw new Error("目录数据格式无效，缺少 venues 列表。");
   const started = performance.now();
   const venues = [];
+  const lookupRecords = [];
   const ids = new Map();
   const rawPostings = new Map();
   const graphCounts = new Map();
@@ -151,6 +235,7 @@ export async function createSearchEngine(catalog, { onProgress = () => {}, yield
     if (ids.has(venue.id)) throw new Error(`目录含重复标识：${venue.id}`);
     ids.set(venue.id, index);
     venues.push(venue);
+    lookupRecords.push(lookupRecord(venue));
     venue.areas.forEach((value) => areaSet.add(value));
     venue.ranks.forEach((value) => targetSet.add(value));
     const counts = new Map();
@@ -236,6 +321,9 @@ export async function createSearchEngine(catalog, { onProgress = () => {}, yield
     getDetail(id) { return ids.has(id) ? { ...venues[ids.get(id)] } : null; },
     async search(options = {}, { onProgress: progress = () => {}, isCancelled } = {}) {
       cancelled(isCancelled);
+      if (options.mode === "lookup") {
+        return lookupVenues(venues, lookupRecords, options, { onProgress: progress, isCancelled, yieldControl });
+      }
       const query = str(options.query).trim().slice(0, 8000);
       const queryLower = normalize(query);
       const offset = Math.max(0, Math.trunc(Number(options.offset) || 0));

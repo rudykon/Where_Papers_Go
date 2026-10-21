@@ -12,6 +12,7 @@ import argparse
 import csv
 import ipaddress
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -30,6 +31,7 @@ STATIC_FILES = (
     "index.html",
     "assets/styles.css",
     "assets/app.js",
+    "assets/catalog.js",
     "assets/search-worker.js",
     "assets/search-engine.js",
     "assets/favicon.svg",
@@ -42,6 +44,8 @@ PUBLIC_VENUE_FIELDS = frozenset(
         "id",
         "name",
         "abbreviation",
+        "publishers",
+        "issns",
         "record_type",
         "ranks",
         "source_ids",
@@ -106,15 +110,36 @@ def public_url(value: str) -> str:
     return value
 
 
-def _record_urls(data_dir: Path) -> dict[int, str]:
-    """Read only the public URL column in the same source order as load_records."""
+def normalize_issns(*values: str) -> list[str]:
+    """Extract valid ISSN spellings from source fields, preserving source order."""
 
-    result: dict[int, str] = {}
+    tokens = (
+        match.group().replace("-", "").upper()
+        for value in values
+        for match in re.finditer(
+            r"(?<![0-9A-Za-z-])[0-9]{4}-?[0-9]{3}[0-9Xx](?![0-9A-Za-z-])", value
+        )
+    )
+    return list(dict.fromkeys(f"{token[:4]}-{token[4:]}" for token in tokens))
+
+
+def _record_metadata(data_dir: Path) -> dict[int, dict[str, object]]:
+    """Read only public URL, publisher and ISSN fields in load_records order."""
+
+    result: dict[int, dict[str, object]] = {}
     row_id = 0
     for filename in recommender.DATA_FILES:
         with (data_dir / filename).open(encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
-                result[row_id] = public_url(row.get("url") or "")
+                result[row_id] = {
+                    "url": public_url(row.get("url") or ""),
+                    "publisher": recommender.normalize_space(row.get("publisher")),
+                    "issns": normalize_issns(
+                        row.get("issn") or "",
+                        row.get("eissn") or "",
+                        row.get("issn_eissn") or "",
+                    ),
+                }
                 row_id += 1
     return result
 
@@ -127,7 +152,7 @@ def build_catalog(data_dir: Path = ROOT / "data") -> dict[str, object]:
         scope.scope_id: scope
         for scope in recommender.load_curated_scopes(data_dir).values()
     }
-    record_urls = _record_urls(data_dir)
+    record_metadata = _record_metadata(data_dir)
     targets = [
         recommender.TargetSpec(dataset, level)
         for dataset, level in sorted({record.target_key for record in records})
@@ -154,6 +179,20 @@ def build_catalog(data_dir: Path = ROOT / "data") -> dict[str, object]:
                 "id": f"venue:{min(record.row_id for record in candidate.records)}",
                 "name": candidate.name,
                 "abbreviation": candidate.abbreviation,
+                "publishers": list(
+                    dict.fromkeys(
+                        record_metadata[record.row_id]["publisher"]
+                        for record in candidate.records
+                        if record_metadata[record.row_id]["publisher"]
+                    )
+                ),
+                "issns": list(
+                    dict.fromkeys(
+                        issn
+                        for record in candidate.records
+                        for issn in record_metadata[record.row_id]["issns"]
+                    )
+                ),
                 "record_type": candidate.record_type,
                 "ranks": [
                     f"{RANK_PREFIXES[dataset]}-{level}" for dataset, level in rank_keys
@@ -165,9 +204,9 @@ def build_catalog(data_dir: Path = ROOT / "data") -> dict[str, object]:
                 "exclusions": " ".join(candidate.curated_out_of_scope),
                 "url": next(
                     (
-                        record_urls[record.row_id]
+                        record_metadata[record.row_id]["url"]
                         for record in candidate.records
-                        if record_urls[record.row_id]
+                        if record_metadata[record.row_id]["url"]
                     ),
                     "",
                 ),
