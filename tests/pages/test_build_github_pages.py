@@ -28,6 +28,40 @@ class PublicCatalogTests(unittest.TestCase):
         self.assertIn("THCPL-A", neurips[0]["ranks"])
         self.assertTrue(neurips[0]["reviewed"])
 
+    def test_source_publishers_and_merged_journal_issns_are_preserved(self):
+        venues = self.catalog["venues"]
+        for abbreviation, publisher in (("PPoPP", "ACM"), ("HPCA", "IEEE"), ("ICSE", "IEEE/ACM")):
+            with self.subTest(abbreviation=abbreviation):
+                venue = next(venue for venue in venues if venue["abbreviation"] == abbreviation)
+                self.assertIn(publisher, venue["publishers"])
+        tpami = [
+            venue for venue in venues
+            if "0162-8828" in venue["issns"]
+        ]
+        self.assertEqual(len(tpami), 1)
+        self.assertIn("1939-3539", tpami[0]["issns"])
+        self.assertTrue({"cas", "jcr"} <= set(tpami[0]["source_ids"]))
+        # These journal sources do not supply a publisher. Do not infer IEEE
+        # from the name or fabricate missing source facts.
+        self.assertEqual(tpami[0]["publishers"], [])
+        for venue in venues:
+            self.assertEqual(venue["publishers"], list(dict.fromkeys(venue["publishers"])))
+            self.assertEqual(venue["issns"], list(dict.fromkeys(venue["issns"])))
+            for issn in venue["issns"]:
+                self.assertRegex(issn, r"^[0-9]{4}-[0-9]{3}[0-9X]$")
+
+    def test_issns_normalize_source_values_without_inventing_identifiers(self):
+        self.assertEqual(
+            pages.normalize_issns(
+                "0162-8828", "19393539", "0162-8828/1939-3539; 1433-755x",
+                "1433755X | 1234-5678",  # Format validation, not checksum validation.
+            ),
+            ["0162-8828", "1939-3539", "1433-755X", "1234-5678"],
+        )
+        for value in ("", "N/A", "1234567", "1234-56789", "123456789", "1234-56XX", "a01628828z"):
+            with self.subTest(value=value):
+                self.assertEqual(pages.normalize_issns(value), [])
+
     def test_only_reviewed_scopes_and_explicit_public_fields_are_exported(self):
         approved = {
             scope.scope_id: scope
@@ -146,6 +180,7 @@ class StaticArtifactTests(unittest.TestCase):
         self.assertEqual(files, set(pages.STATIC_FILES + pages.GENERATED_FILES))
         self.assertIn("assets/search-worker.js", files)
         self.assertIn("assets/search-engine.js", files)
+        self.assertIn("assets/catalog.js", files)
         self.assertNotIn("assets/api-client.js", files)
         self.assertEqual(
             json.loads((self.output / "assets/catalog.json").read_text()), self.catalog

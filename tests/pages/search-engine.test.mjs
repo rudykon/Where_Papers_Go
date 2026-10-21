@@ -17,6 +17,20 @@ const catalog = {
 };
 const engine = await createSearchEngine(catalog, { yieldControl: async () => {} });
 
+const lookupCatalog = {
+  venues: [
+    { id: "z", name: "ACM Computing Surveys", abbreviation: "CSUR", publishers: ["Association for Computing Machinery", "ACM"], issns: ["0360-0300", "1557-7341"], record_type: "journal", ranks: ["CCF-A", "JCR-Q1"], areas: ["计算机科学"], reviewed: true, source_ids: ["ccf", "jcr"] },
+    { id: "vision", name: "Computer Vision Conference", abbreviation: "CV", publishers: ["IEEE", "Computer Society"], issns: ["1234-567X"], record_type: "conference", ranks: ["CCF-B", "THCPL-A"], areas: ["人工智能"], reviewed: true, source_ids: ["ccf", "th_cpl"] },
+    { id: "llm-b", name: "LLM Systems", abbreviation: "LLMS", publishers: ["Zeta Press"], issns: ["2049-3630"], record_type: "journal", ranks: ["CAS-2"], areas: ["人工智能"], reviewed: false, source_ids: ["cas"] },
+    { id: "llm-a", name: "LLM Systems", abbreviation: "LLM", publishers: ["Alpha Press"], issns: [], record_type: "journal", ranks: ["CCF-A"], areas: ["计算机科学"], reviewed: true, source_ids: ["ccf"] },
+    { id: "hidden", name: "Network Mechanics", abbreviation: "NM", publishers: ["Elsevier"], issns: ["0169-7552"], record_type: "journal", ranks: ["JCR-Q2"], areas: ["通信"], reviewed: false, source_ids: ["jcr"], scope: "Natural language processing and LLM", keywords: ["computer vision", "ACM"], exclusions: "LLM" },
+    { id: "identity", name: "ACM", abbreviation: "ACM", publishers: ["ACM", "Academic Press"], issns: ["0000-000X"], record_type: "journal", ranks: ["CCF-A"], areas: ["计算机科学"], reviewed: false, source_ids: ["ccf"] },
+  ],
+};
+const lookupEngine = await createSearchEngine(lookupCatalog, { yieldControl: async () => {} });
+const lookup = (options = {}) => lookupEngine.search({ mode: "lookup", ...options });
+const resultIds = (found) => found.results.map((result) => result.id);
+
 test("catalog metadata, strict public fields and unsafe URL handling", () => {
   assert.equal(engine.stats.total, 7);
   assert.equal(engine.stats.reviewedCount, 5);
@@ -159,6 +173,126 @@ test("malformed catalogues fail clearly and empty valid catalogues work", async 
   assert.equal((await empty.search({ query: "NLP" })).total, 0);
 });
 
+test("lookup uses literal metadata only, without aliases, word stemming or scope matching", async () => {
+  assert.deepEqual(resultIds(await lookup({ query: "LLM" })), ["llm-a", "llm-b"]);
+  assert.equal((await lookup({ query: "NLP" })).total, 0);
+  assert.equal((await lookup({ query: "自然语言处理" })).total, 0);
+  assert.equal((await lookup({ query: "Natural language", searchField: "name" })).total, 0);
+  assert.equal((await lookup({ query: "Computing ACM", searchField: "name" })).total, 0);
+  assert.equal((await lookup({ query: "Computer.*Vision", searchField: "name" })).total, 0);
+  assert.equal((await lookup({ query: "computers", searchField: "name" })).total, 0);
+  assert.equal((await lookup({ query: "人工智能", searchField: "all" })).total, 0);
+  assert.equal((await lookup({ query: "CCF-A", searchField: "all" })).total, 0);
+});
+
+test("lookup exact matching checks each selected field value and exposes actual matched fields", async () => {
+  const all = await lookup({ query: "ACM", searchField: "all", matchMode: "exact" });
+  assert.deepEqual(resultIds(all), ["identity", "z"]);
+  assert.deepEqual(all.results[0].matchedFields, ["name", "abbreviation", "publisher"]);
+  assert.deepEqual(all.results[1].matchedFields, ["publisher"]);
+  assert.equal(all.results[0].matchKind, "exact");
+  assert.deepEqual(resultIds(await lookup({ query: "ACM", searchField: "name", matchMode: "exact" })), ["identity"]);
+  assert.deepEqual(resultIds(await lookup({ query: "ACM", searchField: "publisher", matchMode: "exact" })), ["identity", "z"]);
+  assert.deepEqual(resultIds(await lookup({ query: "CSUR", searchField: "abbreviation", matchMode: "exact" })), ["z"]);
+  assert.equal((await lookup({ query: "ACM Computing", matchMode: "exact" })).total, 0);
+  assert.equal((await lookup({ query: "ACM Academic Press", searchField: "publisher" })).total, 0);
+});
+
+test("literal lookup normalizes case, fullwidth characters and whitespace but keeps punctuation literal", async () => {
+  const options = { query: "  ａｃｍ\tＣＯＭＰＵＴＩＮＧ　 Ｓｕｒｖｅｙｓ \n", searchField: "name", matchMode: "exact" };
+  assert.deepEqual(resultIds(await lookup(options)), ["z"]);
+  assert.deepEqual(resultIds(await lookup({ query: "ｃｓｕｒ", searchField: "abbreviation", matchMode: "exact" })), ["z"]);
+  assert.deepEqual(resultIds(await lookup({ query: "association\n for   COMPUTING", searchField: "publisher" })), ["z"]);
+  assert.equal((await lookup({ query: "Computer-Vision", searchField: "name" })).total, 0);
+});
+
+test("ISSN lookup handles print/electronic values, hyphens, spaces, X and exact-versus-contains", async () => {
+  for (const query of ["0360-0300", "03600300", "０３６０ ０３００", "0360–0300"]) {
+    assert.deepEqual(resultIds(await lookup({ query, searchField: "issn", matchMode: "exact" })), ["z"]);
+    assert.deepEqual(resultIds(await lookup({ query, searchField: "all", matchMode: "exact" })), ["z"]);
+  }
+  assert.deepEqual(resultIds(await lookup({ query: "1557 7341", searchField: "issn", matchMode: "exact" })), ["z"]);
+  assert.deepEqual(resultIds(await lookup({ query: "１２３４ ５６７ｘ", searchField: "issn", matchMode: "exact" })), ["vision"]);
+  assert.equal((await lookup({ query: "0360", searchField: "issn", matchMode: "exact" })).total, 0);
+  assert.deepEqual(resultIds(await lookup({ query: "0360", searchField: "issn", matchMode: "contains" })), ["z"]);
+  assert.equal((await lookup({ query: "0360030015577341", searchField: "issn" })).total, 0);
+  assert.equal((await lookup({ query: "---", searchField: "issn" })).total, 0);
+  assert.equal((await lookup({ query: "03600300", searchField: "name" })).total, 0);
+});
+
+test("lookup combines source, target OR, type, area and reviewed filters", async () => {
+  const options = { source: "ccf", targets: ["CCF-A", "CCF-B"], recordType: "journal", area: "计算机科学", reviewedOnly: true };
+  assert.deepEqual(resultIds(await lookup(options)), ["z", "llm-a"]);
+  assert.deepEqual(resultIds(await lookup({ ...options, source: "jcr" })), ["z"]);
+  assert.deepEqual(resultIds(await lookup({ source: "th_cpl" })), ["vision"]);
+  assert.deepEqual(resultIds(await lookup({ source: "cas", targets: ["CAS-2", "CCF-B"] })), ["llm-b"]);
+  assert.equal((await lookup({ source: "cas", targets: ["CCF-A"] })).total, 0);
+  assert.equal((await lookup({ source: "cas", reviewedOnly: true })).total, 0);
+  assert.deepEqual(resultIds(await lookupEngine.search({ source: "jcr" })), ["z", "hidden"]);
+});
+
+test("lookup has no recommendation scores and summary counts all matches before pagination", async () => {
+  const found = await lookup({ query: " ", limit: 2, offset: 2 });
+  assert.equal(found.total, 6);
+  assert.equal(found.results.length, 2);
+  assert.deepEqual(found.summary, { conference: 1, journal: 5, reviewed: 3 });
+  for (const result of found.results) {
+    assert.equal(result.score, null);
+    assert.equal(result.signals, null);
+    assert.deepEqual(result.matchedTerms, []);
+    assert.deepEqual(result.matchedFields, []);
+    assert.equal(result.matchKind, "browse");
+  }
+  const partial = await lookup({ query: "Computing", searchField: "name" });
+  assert.equal(partial.results[0].matchKind, "contains");
+  assert.deepEqual(partial.summary, { conference: 0, journal: 1, reviewed: 1 });
+  const none = await lookup({ query: "notfound" });
+  assert.deepEqual(none.summary, { conference: 0, journal: 0, reviewed: 0 });
+});
+
+test("lookup sorting follows the selected column and direction, with stable id ties and no exact-match boost", async () => {
+  assert.deepEqual(resultIds(await lookup({ sortBy: "name" })), ["identity", "z", "vision", "llm-a", "llm-b", "hidden"]);
+  assert.deepEqual(resultIds(await lookup({ sortBy: "name", sortDirection: "desc" })), ["hidden", "llm-a", "llm-b", "vision", "z", "identity"]);
+  assert.deepEqual(resultIds(await lookup({ sortBy: "abbreviation" })), ["identity", "z", "vision", "llm-a", "llm-b", "hidden"]);
+  assert.deepEqual(resultIds(await lookup({ sortBy: "publisher" })), ["identity", "llm-a", "z", "hidden", "vision", "llm-b"]);
+  assert.deepEqual(resultIds(await lookup({ sortBy: "type" })), ["vision", "hidden", "identity", "llm-a", "llm-b", "z"]);
+  assert.deepEqual(resultIds(await lookup({ sortBy: "area" })), ["identity", "llm-a", "z", "llm-b", "vision", "hidden"]);
+  assert.deepEqual(resultIds(await lookup({ query: "ACM", sortDirection: "desc" })), ["z", "identity"]);
+  const full = await lookup({ limit: 6 });
+  const first = await lookup({ limit: 2 });
+  const second = await lookup({ limit: 2, offset: 2 });
+  const third = await lookup({ limit: 2, offset: 4 });
+  assert.deepEqual([...resultIds(first), ...resultIds(second), ...resultIds(third)], resultIds(full));
+  assert.equal((await lookup({ offset: 99 })).results.length, 0);
+});
+
+test("lookup preserves safe publisher/ISSN arrays and rejects unsupported search controls", async () => {
+  const detail = lookupEngine.getDetail("z");
+  assert.deepEqual(detail.publishers, ["Association for Computing Machinery", "ACM"]);
+  assert.deepEqual(detail.issns, ["0360-0300", "1557-7341"]);
+  const malformedFields = await createSearchEngine({ venues: [
+    { name: "Unsafe", publishers: ["<script>bad()</script>", 123, null, ""], issns: "0360-0300", secret: "no" },
+  ] });
+  const venue = malformedFields.getDetail("venue:0");
+  assert.deepEqual(venue.publishers, ["<script>bad()</script>"]);
+  assert.deepEqual(venue.issns, []);
+  assert.equal(venue.secret, undefined);
+  assert.equal((await malformedFields.search({ mode: "lookup", query: "<script>bad()</script>", searchField: "publisher", matchMode: "exact" })).total, 1);
+  for (const options of [{ searchField: "scope" }, { matchMode: "regex" }, { sortBy: "score" }, { sortDirection: "random" }]) {
+    await assert.rejects(lookup(options));
+  }
+});
+
+test("lookup yields during scanning and cancels an obsolete request", async () => {
+  let shouldCancel = false;
+  let cancellationEnabled = false;
+  const many = await createSearchEngine({ venues: Array.from({ length: 2100 }, (_, index) => ({ id: `v${index}`, name: `Venue ${index}` })) }, {
+    yieldControl: async () => { if (cancellationEnabled) shouldCancel = true; },
+  });
+  cancellationEnabled = true;
+  await assert.rejects(many.search({ mode: "lookup" }, { isCancelled: () => shouldCancel }), { name: "AbortError" });
+});
+
 test("worker protocol loads one same-directory catalog and supports search, detail, export and stale cancellation", async (t) => {
   const originalSelf = Object.getOwnPropertyDescriptor(globalThis, "self");
   const messages = [];
@@ -198,4 +332,46 @@ test("worker protocol loads one same-directory catalog and supports search, deta
   assert.equal(messages.find((message) => message.id === "current" && message.type === "results").results[0].id, "nlp");
   await receive({ data: { type: "detail", id: "missing", venueId: "missing" } });
   assert.match(messages.find((message) => message.id === "missing").message, /未找到/);
+});
+
+test("worker lookup preserves literal filters and sorting through pagination, detail and full export", async (t) => {
+  const originalSelf = Object.getOwnPropertyDescriptor(globalThis, "self");
+  const messages = [];
+  let receive;
+  Object.defineProperty(globalThis, "self", {
+    configurable: true,
+    value: {
+      postMessage: (message) => messages.push(message),
+      addEventListener: (type, callback) => { if (type === "message") receive = callback; },
+    },
+  });
+  t.after(() => {
+    if (originalSelf) Object.defineProperty(globalThis, "self", originalSelf);
+    else delete globalThis.self;
+  });
+  t.mock.method(globalThis, "fetch", async () => Response.json(lookupCatalog));
+  await import("../../website/assets/search-worker.js?lookup-protocol-test");
+  await receive({ data: { type: "init", id: "init" } });
+  const options = { mode: "lookup", query: "ACM", searchField: "all", matchMode: "exact", source: "ccf", sortBy: "name", sortDirection: "desc", limit: 1, offset: 1 };
+  await receive({ data: { ...options, type: "search", id: "lookup-page" } });
+  const page = messages.find((message) => message.id === "lookup-page" && message.type === "results");
+  assert.equal(page.total, 2);
+  assert.deepEqual(resultIds(page), ["identity"]);
+  assert.deepEqual(page.summary, { conference: 0, journal: 2, reviewed: 1 });
+  assert.equal(page.results[0].signals, null);
+  await receive({ data: { ...options, type: "export", id: "lookup-export" } });
+  const exported = messages.find((message) => message.id === "lookup-export" && message.type === "export");
+  assert.deepEqual(resultIds(exported), ["z", "identity"]);
+  assert.deepEqual(exported.summary, page.summary);
+  assert.equal(exported.offset, 0);
+  await receive({ data: { type: "detail", id: "lookup-detail", venueId: "z" } });
+  const detail = messages.find((message) => message.id === "lookup-detail").venue;
+  assert.deepEqual(detail.publishers, lookupCatalog.venues[0].publishers);
+  assert.deepEqual(detail.issns, lookupCatalog.venues[0].issns);
+  await Promise.all([
+    receive({ data: { type: "search", id: "old-lookup", mode: "lookup", query: "ACM" } }),
+    receive({ data: { type: "search", id: "new-lookup", mode: "lookup", query: "LLM" } }),
+  ]);
+  assert.equal(messages.some((message) => message.id === "old-lookup" && message.type === "results"), false);
+  assert.deepEqual(resultIds(messages.find((message) => message.id === "new-lookup" && message.type === "results")), ["llm-a", "llm-b"]);
 });

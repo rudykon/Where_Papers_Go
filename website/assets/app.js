@@ -1,3 +1,5 @@
+import { createCatalogUI } from "./catalog.js";
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -12,7 +14,7 @@ const zhText = new WeakMap();
 const views = {
   overview: { title: ["项目概览", "Overview"], links: [["intro", "项目介绍", "Introduction"], ["journey", "使用流程", "Getting started"], ["examples", "研究示例", "Example topics"]] },
   recommend: { title: ["投稿推荐", "Find a venue"], links: [["search-form", "描述研究", "Your research"], ["results", "推荐清单", "Your shortlist"]] },
-  catalog: { title: ["刊会目录", "Venue directory"], links: [["search-form", "检索与筛选", "Search & filters"], ["results", "目录结果", "Venues"]] },
+  catalog: { title: ["准确搜索", "Exact lookup"], links: [["lookup-form", "字段与筛选", "Fields & filters"], ["catalog-results", "查找结果", "Search results"]] },
   method: { title: ["检索方法", "How it works"], links: [["pipeline", "检索流程", "Retrieval pipeline"], ["boundaries", "能力边界", "Scope & limits"]] },
   data: { title: ["数据说明", "Data & sources"], links: [["sources", "榜单来源", "Ranking sources"], ["scope-data", "审核范围", "Reviewed scopes"], ["privacy", "本地计算", "Local processing"]] },
 };
@@ -37,6 +39,13 @@ let toastTimer;
 const storedForms = {};
 const storedResults = {};
 const newId = () => `wpg-${++sequence}`;
+const catalogUI = createCatalogUI({
+  locale: () => locale,
+  send: (message) => { if (!workerReady || !worker) return false; worker.postMessage(message); return true; },
+  retry: () => initializeWorker(),
+  openDetail: (venue) => { detailVenue = venue; renderDetail(venue); $("#venue-dialog").showModal(); },
+  exportRows: (rows) => downloadCsv(rows, "lookup"),
+});
 const safeUrl = (value) => {
   try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : ""; } catch { return ""; }
 };
@@ -57,6 +66,7 @@ function translateStatic() {
   renderExploreHeading();
   renderDataset();
   renderEngineStatus();
+  catalogUI.translate();
   if (lastSearch && !activeSearchId && !queuedSearch) renderResults();
   else if (!lastSearch && !activeSearchId && !queuedSearch) clearResults();
   if (detailVenue) renderDetail(detailVenue);
@@ -75,14 +85,13 @@ function renderNavigation() {
 }
 
 function renderExploreHeading() {
-  const catalog = currentView === "catalog";
-  $("#explore-eyebrow").textContent = catalog ? "EXPLORE THE VENUE LANDSCAPE" : "FIND YOUR NEXT VENUE";
-  $("#explore-title").textContent = catalog ? text("你的刊会地图。", "Your map of research venues.") : text("从你的研究，出发。", "Start with your research.");
-  $("#explore-lead").textContent = catalog ? text("查看真实刊会目录，按名称、等级、研究分类与审核状态筛选。", "Browse real venues by name, ranking, research area, and reviewed-scope status.") : text("描述论文主题，找到相关刊会，并查看每一条推荐的匹配依据。", "Describe your research and see the evidence behind each venue match.");
-  $("#query-label").textContent = catalog ? text("名称、简称或关键词", "Name, abbreviation, or keyword") : text("论文主题", "Your research topic");
-  $("#query").placeholder = catalog ? text("例如 NeurIPS、Nature、人工智能；留空浏览全部目录", "For example NeurIPS, Nature, artificial intelligence; leave empty to browse all") : text("输入论文题目、摘要或关键词，中英文均可…", "Enter your title, abstract, or keywords in Chinese or English…");
-  $("#query").rows = catalog ? 2 : 4;
-  $("#query").required = !catalog;
+  $("#explore-eyebrow").textContent = "FIND YOUR NEXT VENUE";
+  $("#explore-title").textContent = text("从你的研究，出发。", "Start with your research.");
+  $("#explore-lead").textContent = text("描述论文主题，找到相关刊会，并查看每一条推荐的匹配依据。", "Describe your research and see the evidence behind each venue match.");
+  $("#query-label").textContent = text("论文主题", "Your research topic");
+  $("#query").placeholder = text("输入论文题目、摘要或关键词，中英文均可…", "Enter your title, abstract, or keywords in Chinese or English…");
+  $("#query").rows = 4;
+  $("#query").required = true;
 }
 
 function formValues() {
@@ -90,7 +99,7 @@ function formValues() {
     query: $("#query").value.trim(),
     targets: $("#rank-filters").children.length
       ? $$("#rank-filters input:checked").map((input) => input.value)
-      : currentView === "catalog" ? [] : ["CCF-A"],
+      : ["CCF-A"],
     recordType: $("#record-type").value,
     area: $("#area").value,
     reviewedOnly: $("#reviewed-only").checked,
@@ -118,14 +127,14 @@ function clearResults() {
   $("#export-results").hidden = true;
   $("#pagination").hidden = true;
   $("#results-note").hidden = true;
-  $("#result-list").innerHTML = `<div class="empty-state"><span class="empty-symbol">⌕</span><h3>${escape(text("下一站，从这里开始", "Your next destination starts here"))}</h3><p>${escape(text("输入研究主题，或前往刊会目录查看全部目标。", "Enter your topic or browse the venue directory."))}</p></div>`;
+  $("#result-list").innerHTML = `<div class="empty-state"><span class="empty-symbol">⌕</span><h3>${escape(text("下一站，从这里开始", "Your next destination starts here"))}</h3><p>${escape(text("输入研究主题，或使用准确搜索查找已知刊会。", "Enter a topic, or use exact lookup to find a known venue."))}</p></div>`;
   $("#results-meta").textContent = text("输入研究主题，开始探索。", "Enter a topic to begin.");
   $("#search-button").disabled = false;
 }
 
 function navigate(view, scroll = true) {
   if (!views[view]) return;
-  if (currentView === "catalog" || currentView === "recommend") {
+  if (currentView === "recommend") {
     storedForms[currentView] = formValues();
     storedResults[currentView] = lastSearch && !activeSearchId && !queuedSearch
       ? { params: lastSearch, rows: resultRows, total, offset, elapsed } : null;
@@ -138,9 +147,10 @@ function navigate(view, scroll = true) {
     $("#search-button").disabled = false;
   }
   currentView = view;
-  $$("[data-view]").forEach((element) => { element.hidden = element.dataset.view !== (["recommend", "catalog"].includes(view) ? "explore" : view); });
-  if (changed && ["recommend", "catalog"].includes(view)) {
-    restoreForm(storedForms[view] || { targets: view === "recommend" ? ["CCF-A"] : [] });
+  $$("[data-view]").forEach((element) => { element.hidden = element.dataset.view !== (view === "recommend" ? "explore" : view); });
+  catalogUI.activate(view === "catalog");
+  if (changed && view === "recommend") {
+    restoreForm(storedForms[view] || { targets: ["CCF-A"] });
     clearResults();
     if (storedResults[view]) {
       const saved = storedResults[view];
@@ -150,7 +160,7 @@ function navigate(view, scroll = true) {
       offset = saved.offset;
       elapsed = saved.elapsed;
       renderResults();
-    } else if (view === "catalog") submitSearch(0);
+    }
   }
   renderNavigation();
   renderExploreHeading();
@@ -185,7 +195,7 @@ function renderFilters(data) {
     const aRank = ordered.indexOf(a), bRank = ordered.indexOf(b);
     return (aRank < 0 ? 100 : aRank) - (bRank < 0 ? 100 : bRank) || a.localeCompare(b);
   });
-  const checked = currentView === "catalog" ? [] : ["CCF-A"];
+  const checked = ["CCF-A"];
   $("#rank-filters").innerHTML = targets.map((target) => `<label class="rank-chip"><input type="checkbox" value="${escape(target)}"${checked.includes(target) ? " checked" : ""}><span>${escape(target.replace("THCPL", "TH-CPL"))}</span></label>`).join("");
   $("#area").innerHTML = `<option value="" data-en="All areas">全部分类</option>` + data.areas.map((area) => `<option value="${escape(area)}">${escape(area)}</option>`).join("");
   zhText.set($("#area").options[0], "全部分类");
@@ -208,6 +218,7 @@ function showError(message) {
 
 function initializeWorker() {
   worker?.terminate();
+  catalogUI.loading();
   exportId = "";
   $("#export-results").disabled = false;
   workerReady = false;
@@ -217,12 +228,14 @@ function initializeWorker() {
   try {
     worker = new Worker(new URL("./search-worker.js", import.meta.url), { type: "module" });
     worker.addEventListener("message", ({ data }) => {
+      if (catalogUI.handle(data)) return;
       if (data.type === "ready") {
         workerReady = true;
         datasetInfo = data;
         renderFilters(data);
         renderDataset();
         renderEngineStatus();
+        catalogUI.ready(data);
         if (queuedSearch) {
           const pending = queuedSearch;
           queuedSearch = null;
@@ -252,7 +265,8 @@ function initializeWorker() {
         if (data.id === initId) {
           workerError = data.message;
           renderEngineStatus();
-          if (queuedSearch || ["recommend", "catalog"].includes(currentView)) showError(data.message);
+          catalogUI.failure(data.message);
+          if (queuedSearch || currentView === "recommend") showError(data.message);
           else toast(text("目录暂时未能加载，进入检索页可重试。", "Catalog loading failed. Open search to retry."));
         } else if (data.id === activeSearchId) showError(data.message);
         else if (data.id === exportId) { exportId = ""; $("#export-results").disabled = false; toast(data.message); }
@@ -262,12 +276,14 @@ function initializeWorker() {
       workerError = text("浏览器无法启动本地检索，请使用支持 Web Worker 的现代浏览器并刷新重试。", "The local worker could not start. Use a modern browser and reload.");
       workerReady = false;
       renderEngineStatus();
+      catalogUI.failure(workerError);
       if (queuedSearch || activeSearchId) showError(workerError);
     });
     worker.postMessage({ type: "init", id: initId });
   } catch {
     workerError = text("当前浏览器不支持模块化 Web Worker。请使用新版 Chrome、Edge、Firefox 或 Safari。", "This browser does not support module workers. Please use a current browser.");
     renderEngineStatus();
+    catalogUI.failure(workerError);
   }
 }
 
@@ -336,6 +352,7 @@ function renderDetail(venue) {
   ].filter(Boolean).join(" ");
   $("#venue-content").innerHTML = `<h2 id="venue-title">${escape(venue.name)}</h2><p class="venue-abbr">${escape(venue.abbreviation)}</p><div class="tags">${venue.ranks.map((rank) => `<span class="tag rank">${escape(rank.replace("THCPL", "TH-CPL"))}</span>`).join("")}<span class="tag">${escape(venue.record_type === "conference" ? text("会议", "Conference") : text("期刊", "Journal"))}</span></div>
   <section class="detail-section"><h3>${escape(text("研究分类", "Research areas"))}</h3><p>${escape(venue.areas.join(" · ") || "—")}</p></section>
+  <section class="detail-section"><h3>${escape(text("出版社与 ISSN", "Publishers & ISSN"))}</h3><p>${escape((venue.publishers || []).join(" · ") || "—")}<br>${escape((venue.issns || []).join(" · ") || "—")}</p></section>
   <section class="detail-section"><h3>${escape(text("已审核收稿范围", "Reviewed submission scope"))}${venue.scope_year ? ` · ${escape(venue.scope_year)}` : ""}</h3><p>${escape(venue.scope || text("暂无已审核范围。该记录仅使用榜单名称与分类进行匹配，不能确认具体投稿适配性。", "No reviewed scope is available. Matching uses the listed name and classification, which cannot confirm detailed submission fit."))}</p></section>
   ${venue.keywords.length ? `<section class="detail-section"><h3>${escape(text("覆盖主题", "Covered topics"))}</h3><div class="tags">${venue.keywords.map((keyword) => `<span class="tag">${escape(keyword)}</span>`).join("")}</div></section>` : ""}
   <section class="detail-section"><h3>${escape(text("明确排除的方向", "Scope exclusions"))}</h3><p class="exclusions">${escape(venue.exclusions || text("目录没有记录明确的排除方向；这不表示所有研究都适合投稿。", "No explicit exclusions are recorded. This does not mean all research topics are suitable."))}</p></section>
@@ -344,8 +361,9 @@ function renderDetail(venue) {
   <section class="detail-section"><p>${escape(text("榜单等级与范围反映所收录版本。投稿前请核实最新征稿、截止日期和投稿要求；匹配度不是录用概率。", "Ranks and scopes reflect the included editions. Verify current calls, deadlines, and submission rules. Match scores are not acceptance probabilities."))}</p></section>`;
 }
 
-function downloadCsv(rows) {
-  const fields = ["name", "abbreviation", "record_type", "ranks", "areas", "score", "scope", "exclusions", "scope_year", "scope_url", "url", "matchedTerms"];
+function downloadCsv(rows, mode = "recommend") {
+  const fields = ["name", "abbreviation", "record_type", "publishers", "issns", "ranks", "areas", "scope", "exclusions", "scope_year", "scope_url", "url"];
+  if (mode !== "lookup") fields.push("score", "matchedTerms");
   const cell = (value) => {
     let content = Array.isArray(value) ? value.join("; ") : String(value ?? "");
     // Prevent CSV formulas from executing in spreadsheet applications.
@@ -377,7 +395,7 @@ $("#query").addEventListener("input", () => { $("#query-count").textContent = `$
 $("#query").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); $("#search-form").requestSubmit(); } });
 $("#clear-query").addEventListener("click", () => { $("#query").value = ""; $("#query").dispatchEvent(new Event("input")); $("#query").focus(); });
 $("#search-form").addEventListener("submit", (event) => { event.preventDefault(); submitSearch(0); });
-$("#reset-filters").addEventListener("click", () => { restoreForm({ query: $("#query").value, targets: [] }); if (currentView === "catalog") submitSearch(0); });
+$("#reset-filters").addEventListener("click", () => { restoreForm({ query: $("#query").value, targets: [] }); });
 $("#cancel-search").addEventListener("click", () => { clearResults(); toast(text("已取消显示本次检索。", "Search cancelled.")); });
 $("#previous-page").addEventListener("click", () => { submitSearch(Math.max(0, offset - lastSearch.limit), true); $("#results").scrollIntoView({ behavior: "instant" }); });
 $("#next-page").addEventListener("click", () => { submitSearch(offset + lastSearch.limit, true); $("#results").scrollIntoView({ behavior: "instant" }); });
@@ -424,7 +442,7 @@ document.addEventListener("click", (event) => {
     $(link.hash).scrollIntoView();
   }
 });
-const focusSearch = () => { navigate("catalog"); history.pushState({ view: "catalog" }, "", "#catalog"); $("#query").focus(); };
+const focusSearch = () => { navigate("catalog"); history.pushState({ view: "catalog" }, "", "#catalog"); catalogUI.focus(); };
 $("#quick-search").addEventListener("click", focusSearch);
 document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !event.ctrlKey && !event.metaKey && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && !$("#venue-dialog").open) {
