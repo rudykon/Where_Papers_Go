@@ -15,7 +15,7 @@ const views = {
   overview: { title: ["项目概览", "Overview"], links: [["intro", "项目介绍", "Introduction"], ["journey", "使用流程", "Getting started"], ["examples", "研究示例", "Example topics"]] },
   recommend: { title: ["投稿推荐", "Find a venue"], links: [["search-form", "描述研究", "Your research"], ["results", "推荐清单", "Your shortlist"]] },
   catalog: { title: ["准确搜索", "Exact lookup"], links: [["lookup-form", "字段与筛选", "Fields & filters"], ["catalog-results", "查找结果", "Search results"]] },
-  method: { title: ["检索方法", "How it works"], links: [["pipeline", "检索流程", "Retrieval pipeline"], ["boundaries", "能力边界", "Scope & limits"]] },
+  method: { title: ["检索方法", "Retrieval methods"], links: [["pipeline", "检索流程", "Retrieval pipeline"], ["boundaries", "能力边界", "Scope & limits"]] },
   data: { title: ["数据说明", "Data & sources"], links: [["sources", "榜单来源", "Ranking sources"], ["scope-data", "审核范围", "Reviewed scopes"], ["privacy", "本地计算", "Local processing"]] },
 };
 let currentView = "overview";
@@ -63,7 +63,7 @@ function translateStatic() {
   $("#close-dialog").setAttribute("aria-label", text("关闭详情", "Close details"));
   $("#theme-toggle").title = text("切换深浅主题", "Toggle light and dark theme");
   renderNavigation();
-  renderExploreHeading();
+  renderSearchForm();
   renderDataset();
   renderEngineStatus();
   catalogUI.translate();
@@ -84,10 +84,7 @@ function renderNavigation() {
   });
 }
 
-function renderExploreHeading() {
-  $("#explore-eyebrow").textContent = "FIND YOUR NEXT VENUE";
-  $("#explore-title").textContent = text("从你的研究，出发。", "Start with your research.");
-  $("#explore-lead").textContent = text("描述论文主题，找到相关刊会，并查看每一条推荐的匹配依据。", "Describe your research and see the evidence behind each venue match.");
+function renderSearchForm() {
   $("#query-label").textContent = text("论文主题", "Your research topic");
   $("#query").placeholder = text("输入论文题目、摘要或关键词，中英文均可…", "Enter your title, abstract, or keywords in Chinese or English…");
   $("#query").rows = 4;
@@ -127,8 +124,8 @@ function clearResults() {
   $("#export-results").hidden = true;
   $("#pagination").hidden = true;
   $("#results-note").hidden = true;
-  $("#result-list").innerHTML = `<div class="empty-state"><span class="empty-symbol">⌕</span><h3>${escape(text("下一站，从这里开始", "Your next destination starts here"))}</h3><p>${escape(text("输入研究主题，或使用准确搜索查找已知刊会。", "Enter a topic, or use exact lookup to find a known venue."))}</p></div>`;
-  $("#results-meta").textContent = text("输入研究主题，开始探索。", "Enter a topic to begin.");
+  $("#result-list").replaceChildren();
+  $("#results-meta").textContent = text("尚未检索", "No search yet");
   $("#search-button").disabled = false;
 }
 
@@ -163,7 +160,7 @@ function navigate(view, scroll = true) {
     }
   }
   renderNavigation();
-  renderExploreHeading();
+  renderSearchForm();
   if (scroll) window.scrollTo({ top: 0, behavior: "instant" });
 }
 
