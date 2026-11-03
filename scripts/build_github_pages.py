@@ -37,6 +37,7 @@ STATIC_FILES = (
     "assets/favicon.svg",
     "assets/Where-Papers-Go.svg",
     "assets/paper-overview.png",
+    "assets/research-to-venue.webp",
     "assets/paper-data.png",
     "assets/paper-aggregation.png",
     "assets/paper-task-format.png",
