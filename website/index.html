@@ -29,6 +29,7 @@
         <a href="#recommend" class="nav-link" data-en="Find a venue">投稿推荐</a>
         <a href="#catalog" class="nav-link" data-en="Exact lookup">准确搜索</a>
         <a href="#method" class="nav-link" data-en="Retrieval methods">检索方法</a>
+        <a href="#research" class="nav-link" data-en="Paper &amp; results">论文与实验</a>
         <a href="#data" class="nav-link" data-en="Data & sources">数据说明</a>
       </div>
     </nav>
@@ -56,12 +57,19 @@
           </div>
           <a class="paper-figure" href="assets/paper-overview.png" target="_blank" rel="noopener noreferrer" aria-label="查看论文总览图大图" title="点击查看大图">
             <img src="assets/paper-overview.png" width="1800" height="859" alt="论文图 1：证据收集、期刊检索与评价总览" decoding="async">
+            <span class="paper-figure-label" data-en="Paper · Offline retrieval study">论文 · 离线检索研究</span>
           </a>
         </section>
         <div class="stat-strip" aria-label="目录规模"><div><strong data-stat="venues">—</strong><span data-en="Unique active venues">去重后的活动刊会</span></div><div><strong>4</strong><span data-en="Ranking sources">学术评价体系</span></div><div><strong data-stat="reviewed">—</strong><span data-en="Reviewed scope records">已审核收稿范围</span></div><div><strong>100<span class="stat-unit">%</span></strong><span data-en="Search runs in your browser">检索计算在浏览器完成</span></div></div>
         <section class="section" id="journey">
           <div class="section-heading"><h2 data-en="A clearer path to submission">让投稿选择，更清晰一点</h2><span class="section-index">01 / EXPLORE</span></div>
           <div class="task-grid"><a class="task-card" href="#recommend"><span class="number-label coral-block">01</span><h3 data-en="Start with your research">描述你的研究</h3><span class="card-link" data-en="Find a venue →">开始推荐 →</span></a><a class="task-card" href="#catalog"><span class="number-label purple-block">02</span><h3 data-en="Look up a known venue">准确查找刊会</h3><span class="card-link" data-en="Look up a venue →">准确查找 →</span></a><a class="task-card" href="#method"><span class="number-label teal-block">03</span><h3 data-en="Understand the fit">查看匹配依据</h3><span class="card-link" data-en="Explore the method →">了解检索方法 →</span></a></div>
+        </section>
+        <section class="section paper-highlight" id="paper-highlights">
+          <div class="section-heading"><h2 data-en="From the paper">论文实证</h2><span class="section-index">PAPER / RESULTS</span></div>
+          <p class="research-context" data-en="Base + hybrid · June 2026 development cohort, exposed during development">Base + hybrid · 2026 年 6 月开发集（已在开发中使用）</p>
+          <div class="research-metrics"><div><strong>26.19%</strong><span data-en="Publication-venue Hit@10">原发表期刊 Hit@10</span></div><div><strong>72.98%</strong><span data-en="Full-pool recall">完整候选池召回率</span></div><div><strong>2,161</strong><span data-en="June development queries">六月开发查询</span></div></div>
+          <a class="card-link" href="#research" data-en="Explore the paper, comparisons and cases →">查看论文方法、实验对比与案例 →</a>
         </section>
         <section class="section start-section" id="examples"><div><div class="eyebrow">A GOOD PLACE TO START</div><h2 data-en="What are you working on?">你正在研究什么？</h2></div><div class="example-list"><button type="button" data-example="large language model distributed training GPU scheduling"><span><small>AI SYSTEMS</small><strong data-en="Distributed training & GPU scheduling">大模型分布式训练与 GPU 调度</strong></span><b>↗</b></button><button type="button" data-example="medical image segmentation deep learning"><span><small>MEDICAL AI</small><strong data-en="Medical imaging & deep learning">医学图像分割与深度学习</strong></span><b>↗</b></button><button type="button" data-example="graph neural network recommendation"><span><small>GRAPH LEARNING</small><strong data-en="Graph neural networks & recommendation">图神经网络与推荐系统</strong></span><b>↗</b></button></div></section>
       </div>
@@ -102,9 +110,79 @@
         </section>
       </div>
 
+      <div data-view="research" class="reference-page" hidden>
+        <section class="page-heading"><h1 data-en="Paper & results">论文与实验</h1><p class="research-context">Where Papers Go: A Benchmark Study of Paper-Evidence Journal Retrieval</p></section>
+        <section class="section" id="paper-results">
+          <div class="section-heading"><h2 data-en="Main comparison">主要实验结果</h2><span class="section-index">TABLE 2 / JUNE 2026</span></div>
+          <p class="research-context" data-en="2,161 June queries exposed during development. Hit metrics measure publication-venue recovery; MRR is unscaled. — means unreported.">2,161 条已在开发中使用的六月查询。Hit 指标衡量原发表期刊找回率，MRR 为原始值；— 表示未报告。</p>
+          <div class="table-wrap"><table class="research-table" id="paper-main-table"><thead><tr><th scope="col" data-en="Method">方法</th><th scope="col" data-en="Hit@1 (%)">Hit@1 (%)</th><th scope="col" data-en="Hit@5 (%)">Hit@5 (%)</th><th scope="col" data-en="Hit@10 (%)">Hit@10 (%)</th><th scope="col" data-en="MRR@10">MRR@10</th><th scope="col" data-en="Pool recall (%)">候选召回 (%)</th><th scope="col" data-en="Mean pool size">平均候选数</th></tr></thead><tbody><tr><th scope="row"><span data-en="Base">Base</span></th><td>3.38</td><td>11.15</td><td>16.01</td><td>0.0660</td><td>51.09</td><td>206.82</td></tr><tr><th scope="row"><span data-en="BM25 (recent)">BM25（近期）</span></th><td>6.89</td><td>17.63</td><td>23.65</td><td>0.1161</td><td>—</td><td>—</td></tr><tr><th scope="row"><span data-en="BM25 (diverse)">BM25（多样化）</span></th><td>6.80</td><td>15.96</td><td>22.77</td><td>0.1089</td><td>—</td><td>—</td></tr><tr><th scope="row"><span data-en="SciNCL">SciNCL</span></th><td>5.83</td><td>15.22</td><td>21.15</td><td>0.0986</td><td>—</td><td>—</td></tr><tr><th scope="row"><span data-en="Base + BM25">Base + BM25</span></th><td>5.92</td><td>17.26</td><td>23.92</td><td>0.1082</td><td>71.36</td><td>281.68</td></tr><tr><th scope="row"><span data-en="Base + diverse BM25">Base + 多样化 BM25</span></th><td>6.25</td><td>17.35</td><td>23.60</td><td>0.1097</td><td>69.18</td><td>283.07</td></tr><tr><th scope="row"><span data-en="Base + SciNCL">Base + SciNCL</span></th><td>5.23</td><td>16.43</td><td>23.97</td><td>0.1003</td><td>70.48</td><td>276.97</td></tr><tr class="highlight"><th scope="row"><span data-en="Base + hybrid">Base + hybrid</span></th><td>5.46</td><td>18.42</td><td>26.19</td><td>0.1098</td><td>72.98</td><td>277.37</td></tr><tr><th scope="row"><span data-en="Catalog CE">Catalog CE</span></th><td>2.59</td><td>10.00</td><td>18.37</td><td>0.0610</td><td>—</td><td>—</td></tr><tr><th scope="row"><span data-en="Catalog + papers CE">Catalog + papers CE</span></th><td>3.47</td><td>13.47</td><td>22.21</td><td>0.0787</td><td>—</td><td>—</td></tr></tbody></table></div>
+          <p class="research-context" data-en="Base + hybrid reaches 26.19% Hit@10, 2.27 percentage points above Base + BM25 (95% paired interval [1.20, 3.29]; Holm p = 0.0064 across 32 tests).">Base + hybrid 的 Hit@10 为 26.19%，比 Base + BM25 高 2.27 个百分点（95% 配对区间 [1.20, 3.29]；Holm p = 0.0064，32 项检验）。</p>
+          <p class="research-context" data-en="Recent-paper BM25 has higher Hit@1 (6.89%) and MRR@10 (0.1161). Both cross-encoder rerankers trail their Base + BM25 input; the final hybrid has no independent future-period validation.">近期 BM25 的 Hit@1（6.89%）和 MRR@10（0.1161）更高。两种交叉编码器重排均低于其 Base + BM25 输入；最终混合方法尚无独立未来期验证。</p>
+        </section>
+        <section class="section" id="paper-analysis">
+          <div class="section-heading"><h2 data-en="Aggregation &amp; ranking depth">聚合方式与排名深度</h2><span class="section-index">FIG. 3 / FIG. 6</span></div>
+          <div class="research-grid"><figure class="research-figure">
+  <a class="figure-link" href="assets/paper-aggregation.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-aggregation.png" width="1800" height="1271" loading="lazy" decoding="async" alt="论文证据的 max 与 mean 聚合" data-alt-en="Max versus mean paper-evidence aggregation"></a>
+  <figcaption><span class="figure-number">FIG. 3</span><span data-en="Holding each retriever and index fixed, max aggregation beats mean at both MRR@10 and MRR@100 in all three groups.">固定检索器与索引后，三组实验的 max 聚合在 MRR@10 和 MRR@100 上均优于 mean。</span></figcaption>
+</figure><figure class="research-figure">
+  <a class="figure-link" href="assets/paper-retrieval-depth.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-retrieval-depth.png" width="1800" height="1000" loading="lazy" decoding="async" alt="排名深度与原发表期刊找回率" data-alt-en="Ranking depth and publication-venue recovery"></a>
+  <figcaption><span class="figure-number">FIG. 6</span><span data-en="Only measured cutoffs k = 1, 5, 10 and 100 are shown. Hybrid Hit@100 is 61.64%, versus 72.98% full-union recall.">只展示已测量的 k = 1、5、10、100。混合方法 Hit@100 为 61.64%，候选并集召回率为 72.98%。</span></figcaption>
+</figure></div>
+          <details class="paper-details"><summary data-en="Earlier systems: 300 July queries (Table 3)">较早系统的七月评测：300 条查询（表 3）</summary>
+            <div class="table-wrap"><table class="research-table"><thead><tr><th data-en="Earlier method">较早方法</th><th>Hit@10 (%)</th><th>Hit@50 (%)</th><th>MRR@10</th><th>nDCG@10</th></tr></thead><tbody><tr><th scope="row"><span data-en="Graph/vector mix">图 / 向量混合</span></th><td>14.67</td><td>28.67</td><td>0.0618</td><td>0.0815</td></tr><tr><th scope="row"><span data-en="Learned ranker">学习排序器</span></th><td>4.67</td><td>15.33</td><td>0.0209</td><td>0.0271</td></tr><tr><th scope="row"><span data-en="Fixed linear">固定线性</span></th><td>17.00</td><td>33.67</td><td>0.0656</td><td>0.0899</td></tr><tr><th scope="row"><span data-en="Fixed RRF">固定 RRF</span></th><td>17.00</td><td>33.67</td><td>0.0703</td><td>0.0934</td></tr></tbody></table></div>
+            <p class="research-context" data-en="These four earlier systems do not evaluate the final paper hybrid. Journal identities were repaired after first label access, so this was not a pristine single-pass sealed test.">这是较早的四个系统，未评测最终论文混合方法。标签首次访问后修复了期刊身份映射，不能视作未经触碰的单次封存测试。</p>
+          </details>
+        </section>
+        <section class="section" id="paper-assessment">
+          <div class="section-heading"><h2 data-en="Model evidence assessment">模型证据评估</h2><span class="section-index">FIG. 4 / FIG. 5 / TABLE 4</span></div>
+          <figure class="research-figure">
+  <a class="figure-link" href="assets/paper-task-format.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-task-format.png" width="1800" height="672" loading="lazy" decoding="async" alt="期刊找回与证据评估的输入输出" data-alt-en="Input and output contracts for recovery and assessment"></a>
+  <figcaption><span class="figure-number">FIG. 4</span><span data-en="Input and output contracts for recovery and assessment">期刊找回与证据评估的输入输出</span></figcaption>
+</figure>
+          <div class="research-metrics"><div><strong>18 / 54</strong><span data-en="Pilot queries / manuscript–journal pairs">试验查询 / 稿件–期刊对</span></div><div><strong>162 / 0</strong><span data-en="Model judgments / human judgments">模型判断 / 人工判断</span></div><div><strong>79.63–87.04%</strong><span data-en="Exact pairwise model agreement">模型两两完全一致率</span></div></div>
+          <p class="research-context" data-en="Three same-family models rated items in separate fresh contexts. This measures agreement without human validation; official policy text was absent, so all 162 policy-evidence judgments were insufficient.">3 个同家族模型分别在新上下文中评分。这里衡量一致性，没有人工验证；输入未提供官方政策文本，因此 162 条政策证据判断全部为不足。</p>
+          <div class="research-grid"><div><figure class="research-figure">
+  <a class="figure-link" href="assets/paper-consistency.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-consistency.png" width="1800" height="1163" loading="lazy" decoding="async" alt="模型评分分布与一致性" data-alt-en="Model-rating distributions and agreement"></a>
+  <figcaption><span class="figure-number">FIG. 5</span><span data-en="Model-rating distributions and agreement">模型评分分布与一致性</span></figcaption>
+</figure></div><div class="agreement-panel"><h3 data-en="Pairwise agreement on the same 54 items">同一批 54 项上的两两一致性</h3><div class="table-wrap"><table class="research-table"><thead><tr><th data-en="Pair">组合</th><th>n</th><th data-en="Exact agreement (%)">完全一致 (%)</th><th data-en="Within one level (%)">相差 ≤ 1 级 (%)</th><th>κw</th></tr></thead><tbody><tr><th scope="row">A–B</th><td>54</td><td>79.63</td><td>100.00</td><td>0.882</td></tr><tr><th scope="row">A–C</th><td>54</td><td>85.19</td><td>100.00</td><td>0.915</td></tr><tr><th scope="row">B–C</th><td>54</td><td>87.04</td><td>100.00</td><td>0.921</td></tr></tbody></table></div></div></div>
+        </section>
+        <section class="section" id="paper-cases">
+          <div class="section-heading"><h2 data-en="Cases from the paper">论文案例</h2><span class="section-index">FIG. 7 / FIG. 8</span></div>
+          <p class="research-context" data-en="Illustrative cases selected by frozen rating conditions and item IDs. They show model judgments and supplied historical evidence, without human validation of journal suitability.">按冻结标注条件与条目编号选取的说明性案例。展示模型判断与所给历史证据，未作人工适配性验证。</p>
+          <figure class="research-figure">
+  <a class="figure-link" href="assets/paper-supported-cases.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-supported-cases.png" width="1800" height="855" loading="lazy" decoding="async" alt="模型一致支持的主题匹配案例" data-alt-en="Illustrative pairs with unanimous model support"></a>
+  <figcaption><span class="figure-number">FIG. 7</span><span data-en="Family caregiving and algebraic geometry: A / B / C all assign topical level 3; policy evidence remains insufficient.">家庭照护与代数几何：A / B / C 均给出主题相关性 3 分，政策证据仍不足。</span></figcaption>
+</figure>
+          <figure class="research-figure">
+  <a class="figure-link" href="assets/paper-difficult-cases.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-difficult-cases.png" width="1800" height="903" loading="lazy" decoding="async" alt="模型分歧与主题不匹配案例" data-alt-en="Illustrative disagreement and topical mismatch"></a>
+  <figcaption><span class="figure-number">FIG. 8</span><span data-en="Alien-plant cases receive 2 / 3 / 3 and 0 / 0 / 0, showing disagreement and a mismatch in research organisms.">入侵植物案例：一组评分为 2 / 3 / 3，另一组为 0 / 0 / 0，分别体现分歧与研究对象不匹配。</span></figcaption>
+</figure>
+        </section>
+        <section class="section" id="paper-sources">
+          <div class="section-heading"><h2 data-en="Figures &amp; result sources">图表与结果来源</h2><span class="section-index">SOURCE</span></div>
+          <p class="research-context" data-en="Figures 1–8 and Tables 1–4 come from the current manuscript. This page reports offline research; the live demo uses browser-local BM25, TF-IDF and a keyword graph.">图 1–8 与表 1–4 来自当前论文稿。此页展示离线研究结果；在线演示使用浏览器本地 BM25、TF-IDF 与关键词图。</p>
+          <a class="button" href="https://github.com/rudykon/Where_Papers_Go/blob/main/docs/paper-study.md" target="_blank" rel="noopener noreferrer" data-en="Experimental scope & figure provenance ↗">实验口径与图表来源 ↗</a>
+        </section>
+      </div>
+
       <div data-view="method" class="reference-page" hidden>
         <section class="page-heading"><h1 data-en="Retrieval methods">检索方法</h1></section>
-        <section class="section" id="pipeline" aria-label="检索流程"><div class="method-steps">
+        <section class="section" id="paper-pipeline">
+          <div class="section-heading"><h2 data-en="Paper retrieval method">论文检索方法</h2><span class="section-index">FIG. 1 / METHOD</span></div>
+          <figure class="research-figure">
+  <a class="figure-link" href="assets/paper-overview.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-overview.png" width="1800" height="859" loading="lazy" decoding="async" alt="检索流程与评价总览" data-alt-en="Retrieval and evaluation overview"></a>
+  <figcaption><span class="figure-number">FIG. 1</span><span data-en="Retrieval and evaluation overview">检索流程与评价总览</span></figcaption>
+</figure>
+          <div class="research-step-grid">
+            <article><h3 data-en="01 · Freeze the evidence">01 · 固定证据</h3><p class="research-context" data-en="20,087 candidate journals and 387,688 historical papers; recorded dates are bounded by March 31, 2026, with at most 20 papers per journal.">20,087 个候选期刊，387,688 篇历史论文；记录日期截止 2026-03-31，每刊最多保留 20 篇。</p></article>
+            <article><h3 data-en="02 · Retrieve and aggregate">02 · 论文检索与聚合</h3><p class="research-context" data-en="BM25 and SciNCL retrieve papers separately. Each branch uses the highest paper score per journal and retains 100 journals.">BM25 与 SciNCL 分别检索论文，以每刊最高论文得分聚合；每路保留前 100 个期刊。</p></article>
+            <article><h3 data-en="03 · Fuse ranks twice">03 · 两层排序融合</h3><p class="research-context" data-en="First fuse the two paper lists and keep 100 journals; then fuse with the complete Base journal-profile ordering. Both stages use equal-weight RRF.">先融合两路论文排名并截取前 100，再与完整 Base 期刊画像排序融合。两层均用等权 RRF。</p></article>
+          </div>
+          <div class="paper-formula"><code>RRF(v) = Σ 1 / (60 + rank_j(v))</code></div>
+          <p class="research-context" data-en="Base is the fixed journal-profile reference. The hybrid keeps the outer paper-channel budget fixed while adding dense retrieval computation.">Base 为固定的期刊画像参照；论文混合方法固定外层论文通道预算，但增加了稠密检索计算。</p>
+          <a class="card-link" href="#research" data-en="Compare the experimental results →">查看实验对比 →</a>
+        </section>
+        <section class="section" id="pipeline" aria-label="检索流程"><div class="section-heading"><h2 data-en="Browser retrieval">浏览器版检索</h2><span class="section-index">ON DEVICE</span></div><div class="method-steps">
           <article><span>01</span><div><p data-en="A dedicated Web Worker loads the public catalog and indexes venue names, research areas, and approved scope keywords without blocking page interaction.">独立的 Web Worker 加载公开目录，为刊会名称、研究分类与已审核范围关键词建立索引，不阻塞页面交互。</p></div></article>
           <article><span>02</span><div><p data-en="Apply ranking, venue type, area, and reviewed-scope filters. Multiple selected tiers use OR semantics; other filter groups intersect.">按等级、会议或期刊、研究分类及审核状态筛选。多个等级之间取并集，不同筛选项之间取交集。</p></div></article>
           <article><span>03</span><div><p data-en="BM25 recalls matching terms. TF-IDF cosine similarity compares term vectors. A reviewed-keyword co-occurrence graph expands related topics, with aliases for common research concepts.">BM25 召回匹配词项；TF-IDF 余弦相似度比较词项向量；审核关键词共现图扩展相关主题，并辅助识别常见研究概念的别名。</p></div></article>
@@ -116,7 +194,17 @@
 
       <div data-view="data" class="reference-page" hidden>
         <section class="page-heading"><h1 data-en="Data & sources">数据说明</h1></section>
-        <section class="section" id="sources" aria-label="榜单来源"><div class="table-wrap"><table><thead><tr><th data-en="Source">评价体系</th><th data-en="Edition">版本</th><th data-en="Source records">原始记录</th><th data-en="Tiers">等级</th></tr></thead><tbody id="source-table"><tr><td colspan="4" data-en="Loading the catalog…">正在加载目录…</td></tr></tbody></table></div><p class="table-note" data-en="Source rows can overlap. Unique active venue counts exclude retired or non-actionable historical entities. Rankings reflect the included editions, not a live update.">各榜单记录可能重复。活动刊会数按实体去重，并排除已合并或不可独立投稿的历史目标。等级反映收录版本，不是实时更新结果。</p></section>
+        <section class="section" id="paper-data">
+          <div class="section-heading"><h2 data-en="Paper dataset">论文实验数据</h2><span class="section-index">FIG. 2 / TABLE 1</span></div>
+          <div class="research-metrics four"><div><strong>20,087</strong><span data-en="Candidate journals">候选期刊</span></div><div><strong>387,688</strong><span data-en="Historical papers">历史论文</span></div><div><strong>4,791</strong><span data-en="Train, validation and June queries">训练、验证与六月查询</span></div><div><strong>19,593</strong><span data-en="Journals with paper evidence">有历史论文的期刊</span></div></div>
+          <figure class="research-figure">
+  <a class="figure-link" href="assets/paper-data.png" target="_blank" rel="noopener noreferrer"><img src="assets/paper-data.png" width="1800" height="940" loading="lazy" decoding="async" alt="数据划分、学科分区与文本长度" data-alt-en="Dataset splits, subjects, quartiles and text lengths"></a>
+  <figcaption><span class="figure-number">FIG. 2</span><span data-en="Nine subject groups × four quartiles for 2,161 June queries, plus splits and text lengths for all 4,791 queries.">六月 2,161 条查询的 9 类学科 × 4 个分区，以及 4,791 条查询的数据划分与文本长度。</span></figcaption>
+</figure>
+          <div class="table-wrap"><table class="research-table"><thead><tr><th data-en="Resource">资源</th><th data-en="Count">数量</th><th data-en="Role">用途</th></tr></thead><tbody><tr><th scope="row"><span data-en="Training queries">训练查询</span></th><td>1,086</td><td><span data-en="Jan–Mar 2026">2026 年 1–3 月</span></td></tr><tr><th scope="row"><span data-en="Validation queries">验证查询</span></th><td>1,544</td><td><span data-en="Apr–May 2026">2026 年 4–5 月</span></td></tr><tr><th scope="row"><span data-en="June development queries">六月开发查询</span></th><td>2,161</td><td><span data-en="Main comparison; exposed during development">主要比较；已在开发中使用</span></td></tr><tr><th scope="row"><span data-en="Earlier July queries">较早的七月查询</span></th><td>300</td><td><span data-en="Earlier systems; repaired venue identities">较早系统；身份映射经修复</span></td></tr><tr><th scope="row"><span data-en="Candidate journals">候选期刊</span></th><td>20,087</td><td><span data-en="Fixed candidate universe">固定候选全集</span></td></tr><tr><th scope="row"><span data-en="Historical papers">历史论文</span></th><td>387,688</td><td><span data-en="At most 20 per journal">每刊至多 20 篇</span></td></tr><tr><th scope="row"><span data-en="Paper-covered journals">有论文证据的期刊</span></th><td>19,593</td><td><span data-en="97.54% of candidate journals">97.54% 的候选期刊</span></td></tr><tr><th scope="row"><span data-en="Pilot queries / manuscript–journal pairs">试验查询 / 稿件–期刊对</span></th><td>18 / 54</td><td><span data-en="Model-only pilot">仅模型参与</span></td></tr><tr><th scope="row"><span data-en="Model / human judgments">模型 / 人工判断</span></th><td>162 / 0</td><td><span data-en="Descriptive analysis">描述性分析</span></td></tr></tbody></table></div>
+          <p class="research-context" data-en="The paper uses a fixed journal universe. This website also covers conferences and multiple ranking lists, with separate counts. Historical evidence uses a recorded-date cutoff of March 31, 2026.">论文实验使用固定期刊全集；本网站目录还包含会议及多套榜单，采用各自的统计口径。历史证据以 2026-03-31 为记录日期上限。</p>
+        </section>
+        <section class="section" id="sources" aria-label="榜单来源"><div class="section-heading"><h2 data-en="Website ranking catalog">网站榜单目录</h2><span class="section-index">LIVE DEMO</span></div><div class="table-wrap"><table><thead><tr><th data-en="Source">评价体系</th><th data-en="Edition">版本</th><th data-en="Source records">原始记录</th><th data-en="Tiers">等级</th></tr></thead><tbody id="source-table"><tr><td colspan="4" data-en="Loading the catalog…">正在加载目录…</td></tr></tbody></table></div><p class="table-note" data-en="Source rows can overlap. Unique active venue counts exclude retired or non-actionable historical entities. Rankings reflect the included editions, not a live update.">各榜单记录可能重复。活动刊会数按实体去重，并排除已合并或不可独立投稿的历史目标。等级反映收录版本，不是实时更新结果。</p></section>
         <section class="section" id="scope-data" aria-label="审核范围"><div class="prose"><p data-en="Only approved records from the curated scope catalog appear as reviewed scopes. Automated, unreviewed web extractions are not included. Venues without reviewed scopes still have their original names, rankings, and research classifications.">只有人工审核目录中状态为 approved 的记录才显示为已审核范围。自动抓取但尚未审核的范围不会被发布。未覆盖审核范围的刊会仍可按原始名称、等级与学科分类检索。</p><p data-en="Each reviewed scope links to its source and can include covered topics, exclusions, article types, and submission context. A source may describe an earlier year; verify current calls, dates, and rules before submitting.">审核范围保留来源链接，并可能包含覆盖主题、排除方向、文章类型与投稿形式。来源可能对应历史年份；投稿前请自行核实最新征稿、日期与规则。</p></div></section>
         <section class="section" id="privacy" aria-label="本地计算与隐私"><div class="prose"><p data-en="The page downloads static assets and a public catalog from GitHub Pages. Queries, filters, ranking, and exports are processed on your device. The site has no analytics, query API, or external model downloads.">页面从 GitHub Pages 下载静态文件与公开目录。查询、筛选、排序和导出都在你的设备上完成；站点不包含统计追踪、查询 API 或外部模型下载。</p><p data-en="Your language and theme preferences may be saved in this browser. Abstracts and search histories are not stored. Opening source links navigates to the respective third-party websites.">浏览器仅可保存语言与主题偏好，不保存摘要和检索历史。打开证据链接时，将访问相应的第三方网站。</p></div><div class="actions"><a class="button" href="https://github.com/rudykon/Where_Papers_Go/tree/main/data" target="_blank" rel="noopener noreferrer" data-en="View source data ↗">查看数据文件 ↗</a><a class="button" href="https://github.com/rudykon/Where_Papers_Go/blob/main/docs/github-pages.md" target="_blank" rel="noopener noreferrer" data-en="Build & deployment guide ↗">构建与部署说明 ↗</a></div></section>
       </div>

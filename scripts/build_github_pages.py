@@ -37,6 +37,13 @@ STATIC_FILES = (
     "assets/favicon.svg",
     "assets/Where-Papers-Go.svg",
     "assets/paper-overview.png",
+    "assets/paper-data.png",
+    "assets/paper-aggregation.png",
+    "assets/paper-task-format.png",
+    "assets/paper-consistency.png",
+    "assets/paper-retrieval-depth.png",
+    "assets/paper-supported-cases.png",
+    "assets/paper-difficult-cases.png",
 )
 GENERATED_FILES = ("assets/catalog.json", ".nojekyll")
 SOURCE_LABELS = {"ccf": "CCF", "th_cpl": "TH-CPL", "cas": "中科院", "jcr": "JCR"}

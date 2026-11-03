@@ -1,0 +1,94 @@
+{
+  "manuscript_title": "Where Papers Go: A Benchmark Study of Paper-Evidence Journal Retrieval",
+  "source_directory": "manuscript/2026-10-25-illustrated-v2",
+  "figures": [
+    {
+      "number": 1,
+      "name": "paper-overview",
+      "source": "figures/fig1-overview.pdf",
+      "caption_zh": "检索流程与评价总览",
+      "caption_en": "Retrieval and evaluation overview",
+      "width": 1800,
+      "height": 859,
+      "source_sha256": "f0b12193c8f7ae0d8c12dbad6bcb850f9b31fe93b5bfe4e89cc29106fba0a377",
+      "asset_sha256": "1eabd2cbfc4f354335f7bdc8a1b8a1428720f4ccea3ccbf7ba49d7c5c616a656"
+    },
+    {
+      "number": 2,
+      "name": "paper-data",
+      "source": "figures/fig2-data-statistics.pdf",
+      "caption_zh": "数据划分、学科分区与文本长度",
+      "caption_en": "Dataset splits, subjects, quartiles and text lengths",
+      "width": 1800,
+      "height": 940,
+      "source_sha256": "65cd4c83ac9306e9b60bb97a26d129b9e91798555b4441e861606b06ca9ce983",
+      "asset_sha256": "7a922ea5e53a39d3de71d1ea91e8735ca07ee3e9fb25f67e906e5a31acdbffc1"
+    },
+    {
+      "number": 3,
+      "name": "paper-aggregation",
+      "source": "figures/fig3-aggregation.pdf",
+      "caption_zh": "论文证据的 max 与 mean 聚合",
+      "caption_en": "Max versus mean paper-evidence aggregation",
+      "width": 1800,
+      "height": 1271,
+      "source_sha256": "ca4c2100b22d421289b04e3eaff706419eb280e3d3967b804fcb96b9320d9b7f",
+      "asset_sha256": "8b63a8c852ea84c04bd41c9f15157eb35534f2f38bd813f0184942e7e4c98c6b"
+    },
+    {
+      "number": 4,
+      "name": "paper-task-format",
+      "source": "figures/fig4-task-format.pdf",
+      "caption_zh": "期刊找回与证据评估的输入输出",
+      "caption_en": "Input and output contracts for recovery and assessment",
+      "width": 1800,
+      "height": 672,
+      "source_sha256": "cb5318b32e622cde384eece46e49bae4a3b77284fad330b7e73dd4c4e54e5a20",
+      "asset_sha256": "d2bf92971154d64dd963773b0f0d8253de34345b9eb7b498e1d951aa4cf6ff3b"
+    },
+    {
+      "number": 5,
+      "name": "paper-consistency",
+      "source": "figures/fig5-model-consistency.pdf",
+      "caption_zh": "模型评分分布与一致性",
+      "caption_en": "Model-rating distributions and agreement",
+      "width": 1800,
+      "height": 1163,
+      "source_sha256": "76156b78feb18819b2bd491f86305630da70818e2e3d56c91fd2efea88a4e41c",
+      "asset_sha256": "88e588956b2ca80094a36246582a75bfd45a4658b1ee78b352ec7cef7e9c8339"
+    },
+    {
+      "number": 6,
+      "name": "paper-retrieval-depth",
+      "source": "figures/fig6-retrieval-depth.pdf",
+      "caption_zh": "排名深度与原发表期刊找回率",
+      "caption_en": "Ranking depth and publication-venue recovery",
+      "width": 1800,
+      "height": 1000,
+      "source_sha256": "8b4ba7fb5ba9e072b6f8bf17c9db083cd961e509516dad58a3ef266adf65683a",
+      "asset_sha256": "ed30928c9811ac5e0454d966f18a7fb5b55582dc8860b104296e25a6d3b92b67"
+    },
+    {
+      "number": 7,
+      "name": "paper-supported-cases",
+      "source": "figures/fig7-supported-cases.pdf",
+      "caption_zh": "模型一致支持的主题匹配案例",
+      "caption_en": "Illustrative pairs with unanimous model support",
+      "width": 1800,
+      "height": 855,
+      "source_sha256": "ab0b3157d45a7081c3cd28cd24c87e21e14ca80655a8b844d72e5d17162a21a4",
+      "asset_sha256": "93211ea85f49c481bd75c0f3fbfc104eeba09d9809653c1b0b0409fcacd7b576"
+    },
+    {
+      "number": 8,
+      "name": "paper-difficult-cases",
+      "source": "figures/fig8-difficult-cases.pdf",
+      "caption_zh": "模型分歧与主题不匹配案例",
+      "caption_en": "Illustrative disagreement and topical mismatch",
+      "width": 1800,
+      "height": 903,
+      "source_sha256": "8521b164cffcd205ecdca6557f3ff3cc4aca3df76b8eda968a1135e11623c672",
+      "asset_sha256": "2f046bce624f531dc5f232152145042d5dc4ff089389484c7d2ec29e8ca55041"
+    }
+  ]
+}

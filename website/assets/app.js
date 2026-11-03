@@ -12,11 +12,12 @@ const text = (zh, en) => locale === "en" ? en : zh;
 const number = (value) => Number(value).toLocaleString(locale === "en" ? "en-US" : "zh-CN");
 const zhText = new WeakMap();
 const views = {
-  overview: { title: ["项目概览", "Overview"], links: [["intro", "项目介绍", "Introduction"], ["journey", "使用流程", "Getting started"], ["examples", "研究示例", "Example topics"]] },
+  overview: { title: ["项目概览", "Overview"], links: [["intro", "项目介绍", "Introduction"], ["journey", "使用流程", "Getting started"], ["paper-highlights", "论文实证", "Paper results"], ["examples", "研究示例", "Example topics"]] },
   recommend: { title: ["投稿推荐", "Find a venue"], links: [["search-form", "描述研究", "Your research"], ["results", "推荐清单", "Your shortlist"]] },
   catalog: { title: ["准确搜索", "Exact lookup"], links: [["lookup-form", "字段与筛选", "Fields & filters"], ["catalog-results", "查找结果", "Search results"]] },
-  method: { title: ["检索方法", "Retrieval methods"], links: [["pipeline", "检索流程", "Retrieval pipeline"], ["boundaries", "能力边界", "Scope & limits"]] },
-  data: { title: ["数据说明", "Data & sources"], links: [["sources", "榜单来源", "Ranking sources"], ["scope-data", "审核范围", "Reviewed scopes"], ["privacy", "本地计算", "Local processing"]] },
+  method: { title: ["检索方法", "Retrieval methods"], links: [["paper-pipeline", "论文方法", "Paper method"], ["pipeline", "浏览器检索", "Browser retrieval"], ["boundaries", "能力边界", "Scope & limits"]] },
+  research: { title: ["论文与实验", "Paper & results"], links: [["paper-results", "主要结果", "Main results"], ["paper-analysis", "聚合与深度", "Aggregation & depth"], ["paper-assessment", "模型评估", "Model assessment"], ["paper-cases", "论文案例", "Paper cases"], ["paper-sources", "图表来源", "Sources"]] },
+  data: { title: ["数据说明", "Data & sources"], links: [["paper-data", "论文数据", "Paper dataset"], ["sources", "榜单来源", "Ranking sources"], ["scope-data", "审核范围", "Reviewed scopes"], ["privacy", "本地计算", "Local processing"]] },
 };
 let currentView = "overview";
 let sequence = 0;
@@ -54,6 +55,10 @@ function translateStatic() {
   $$("[data-en]").forEach((element) => {
     if (!zhText.has(element)) zhText.set(element, element.textContent);
     element.textContent = locale === "en" ? element.dataset.en : zhText.get(element);
+  });
+  $$("[data-alt-en]").forEach((image) => {
+    if (!image.dataset.altZh) image.dataset.altZh = image.alt;
+    image.alt = locale === "en" ? image.dataset.altEn : image.dataset.altZh;
   });
   document.documentElement.lang = locale === "en" ? "en" : "zh-CN";
   document.title = text("Where Papers Go · 为研究找到合适的去处", "Where Papers Go · Find the right venue");

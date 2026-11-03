@@ -5,11 +5,11 @@
 <p align="center">
   <img src="docs/Where-Papers-Go.svg" width="520" alt="Where Papers Go brand mark">
 </p>
-<h1 align="center">Where Shoud Your Papers Go ?</h1>
+<h1 align="center">Where Papers Go</h1>
 
 <p align="center">
-  <strong>Quality-first venue discovery for clear and fuzzy research topics</strong><br>
-  A graph-based recommendation system combining LightRAG, exact vector retrieval, LLM reasoning, and live search evidence.
+  <strong>Journal retrieval with paper evidence</strong><br>
+  A venue-discovery toolkit and benchmark study of journal profiles, historical papers, and rank fusion.
 </p>
 
 <p align="center">
@@ -22,6 +22,7 @@
 
 <p align="center">
   <a href="#overview">Overview</a> ·
+  <a href="#paper-study">Paper &amp; Results</a> ·
   <a href="#product-tour">Product Tour</a> ·
   <a href="#retrieval-pipeline">Pipeline</a> ·
   <a href="#quick-start">Quick Start</a> ·
@@ -44,12 +45,11 @@ See [build, deployment, and algorithm details](docs/github-pages.md).
 
 Where Papers Go turns a paper title, abstract, keyword set, or early research idea into a ranked list of conferences and journals. It is designed for both precise technical descriptions and fuzzy, cross-domain expressions that keyword dictionaries alone cannot cover.
 
-| Goal | Approach | Output |
+| Edition | Method | Purpose |
 | --- | --- | --- |
-| Respect submission constraints | Hard-filter by ranking system, tier, venue type, and research area | Only eligible venues enter retrieval |
-| Recall diverse topic expressions | LLM intent parsing + multilingual embeddings + LightRAG graph paths + query-adaptive channel budgets | Broad candidates for clear or fuzzy queries |
-| Keep recommendations grounded | Search API evidence + reviewed scope records + known venue facts | Evidence-linked results instead of invented venues |
-| Make ranking understandable | Multi-signal fusion, LLM reranking, and explanations for the top 10 | Scores, matched concepts, graph paths, and reasons |
+| [Browser demo](https://rudykon.github.io/Where_Papers_Go/) | Local BM25 + TF-IDF + keyword graph | Venue lookup and topic search without API keys |
+| [Paper benchmark](#paper-study) | Paper BM25 + SciNCL + two-level RRF | Offline publication-venue recovery over 20,087 journals |
+| Python application | LightRAG + embeddings + LLM + Search API | Configured online retrieval and evidence review |
 
 Key product behavior:
 
@@ -60,10 +60,99 @@ Key product behavior:
 - Complete results and API responses are cached, while the web UI streams progress and available recommendations.
 - The runtime query layer is a rebuildable file-based property graph—no Neo4j service is required.
 
-<a id="product-tour"></a>
-## Product tour and workflow
+<a id="paper-study"></a>
+## Paper study
 
-The web interface keeps querying, scope controls, ranked recommendations, and evidence review in one responsive workspace.
+**Where Papers Go: A Benchmark Study of Paper-Evidence Journal Retrieval**
+
+The study combines journal profiles with historical paper evidence and evaluates candidate coverage, publication-venue recovery, and model evidence assessment separately.
+
+<p align="center">
+  <a href="website/assets/paper-overview.png"><img src="website/assets/paper-overview.png" alt="Retrieval and evaluation overview" width="100%"></a>
+</p>
+
+### Method and dataset
+
+- **Bounded evidence:** 20,087 candidate journals and 387,688 historical papers, at most 20 per journal, with recorded dates bounded by March 31, 2026.
+- **Paper retrieval:** BM25 and SciNCL retrieve separately, aggregate by each journal's highest paper score, and each retain 100 journals.
+- **Two-level RRF:** fuse the paper lists and keep 100 journals, then fuse with the complete Base journal-profile ordering. Both stages use equal weights and a rank constant of 60. The outer paper-channel budget is fixed; the hybrid adds dense retrieval computation.
+
+<p align="center">
+  <a href="website/assets/paper-data.png"><img src="website/assets/paper-data.png" alt="Dataset splits, subjects, quartiles and text lengths" width="100%"></a>
+</p>
+
+The 4,791 queries are split by publication date: 1,086 training, 1,544 validation, and 2,161 June development queries. June covers nine subject groups and four JCR quartiles. A separate 300-query July cohort evaluates earlier systems.
+
+### Main results
+
+Paper Table 2: **2,161 June queries exposed during development**. Hit metrics measure publication-venue recovery; MRR is unscaled, and — means unreported.
+
+| Method | Hit@1 (%) | Hit@5 (%) | Hit@10 (%) | MRR@10 | Pool recall (%) | Mean pool size |
+| --- | --- | --- | --- | --- | --- | --- |
+| Base | 3.38 | 11.15 | 16.01 | 0.0660 | 51.09 | 206.82 |
+| BM25 (recent) | 6.89 | 17.63 | 23.65 | 0.1161 | — | — |
+| BM25 (diverse) | 6.80 | 15.96 | 22.77 | 0.1089 | — | — |
+| SciNCL | 5.83 | 15.22 | 21.15 | 0.0986 | — | — |
+| Base + BM25 | 5.92 | 17.26 | 23.92 | 0.1082 | 71.36 | 281.68 |
+| Base + diverse BM25 | 6.25 | 17.35 | 23.60 | 0.1097 | 69.18 | 283.07 |
+| Base + SciNCL | 5.23 | 16.43 | 23.97 | 0.1003 | 70.48 | 276.97 |
+| Base + hybrid | 5.46 | 18.42 | 26.19 | 0.1098 | 72.98 | 277.37 |
+| Catalog CE | 2.59 | 10.00 | 18.37 | 0.0610 | — | — |
+| Catalog + papers CE | 3.47 | 13.47 | 22.21 | 0.0787 | — | — |
+
+Base + hybrid reaches **26.19% Hit@10**, **2.27 percentage points** above Base + BM25 (95% paired interval **[1.20, 3.29]**; Holm p = 0.0064 across 32 tests). Recent-paper BM25 has higher Hit@1 (6.89%) and MRR@10 (0.1161). Both cross-encoder rerankers trail their Base + BM25 input. The final hybrid has no independent future-period validation.
+
+<p align="center">
+  <a href="website/assets/paper-retrieval-depth.png"><img src="website/assets/paper-retrieval-depth.png" alt="Ranking depth and publication-venue recovery" width="100%"></a>
+</p>
+
+Figure 6 shows only measured cutoffs k = 1, 5, 10 and 100. Hybrid Hit@100 is 61.64%, below 72.98% full-union recall, exposing the gap between candidate coverage and final ordering.
+
+<details>
+<summary>Aggregation, model assessment and cases (Figures 3, 4, 5, 7 and 8)</summary>
+
+### Paper-evidence aggregation
+
+<p align="center">
+  <a href="website/assets/paper-aggregation.png"><img src="website/assets/paper-aggregation.png" alt="Max versus mean paper-evidence aggregation" width="100%"></a>
+</p>
+
+Holding each index and retriever fixed, max aggregation beats the mean of up to three paper scores at both MRR@10 and MRR@100.
+
+### Model evidence assessment
+
+<p align="center">
+  <a href="website/assets/paper-task-format.png"><img src="website/assets/paper-task-format.png" alt="Input and output contracts for recovery and assessment" width="100%"></a>
+</p>
+
+Three same-family models in separate fresh contexts rated 54 manuscript–journal pairs from 18 queries: **162 model judgments and 0 human judgments**. Exact pairwise agreement is **79.63–87.04%**, with weighted κ of **0.882–0.921**. These are consistency measures. Official policy text was absent, so all 162 policy-evidence judgments were insufficient.
+
+<p align="center">
+  <a href="website/assets/paper-consistency.png"><img src="website/assets/paper-consistency.png" alt="Model-rating distributions and agreement" width="100%"></a>
+</p>
+
+### Case analysis
+
+<p align="center">
+  <a href="website/assets/paper-supported-cases.png"><img src="website/assets/paper-supported-cases.png" alt="Illustrative pairs with unanimous model support" width="100%"></a>
+</p>
+
+The family-caregiving and algebraic-geometry examples receive topical ratings of 3 / 3 / 3.
+
+<p align="center">
+  <a href="website/assets/paper-difficult-cases.png"><img src="website/assets/paper-difficult-cases.png" alt="Illustrative disagreement and topical mismatch" width="100%"></a>
+</p>
+
+Alien-plant examples receive 2 / 3 / 3 and 0 / 0 / 0, illustrating disagreement and topical mismatch. Cases were selected by frozen conditions and item IDs, without human validation of suitability; policy evidence is insufficient in all four examples.
+
+</details>
+
+[Explore the paper on the website](https://rudykon.github.io/Where_Papers_Go/#research) · [Experimental scope, all tables and figure provenance](docs/paper-study.md)
+
+<a id="product-tour"></a>
+## Python application tour
+
+The Python application provides querying, scope controls, ranked recommendations, and evidence review. The screenshots below show that service.
 
 | Search broadly | Follow every stage | Verify the recommendation |
 | --- | --- | --- |
@@ -105,18 +194,17 @@ flowchart LR
     I --> V[Exact vector recall]
     I --> G[LightRAG mix recall]
     I --> S[Search API evidence]
-    V --> A[Experimental SCOPE-Rank research path]
-    G --> A
-    S --> A
-    A --> M[Candidate fusion]
+    V --> M[Candidate fusion]
+    G --> M
     M --> R[Concurrent LLM reranking]
+    S --> R
     R --> O[Streaming ranked results]
     O --> E[Top-10 explanations]
 ```
 
 The file-based property graph stores venues, tiers, topics, reviewed scopes, exclusions, and evidence as nodes and edges. Source CSV/TSV files remain the auditable facts; graph, vector, LightRAG, and cache files are rebuildable artifacts and are excluded from Git.
 
-Exact cosine recall uses a preloaded NumPy matrix while retaining the scalar implementation as a quality-regression reference. The web worker pays the matrix-build cost during startup, not on the first user query.
+Exact cosine recall uses a preloaded NumPy matrix while retaining the scalar implementation as a quality-regression reference. The Python service worker pays the matrix-build cost during startup, not on the first user query.
 
 See [retrieval architecture](docs/retrieval-architecture.md) for scoring, failure boundaries, caching, and storage details.
 
@@ -239,7 +327,7 @@ Machine-readable output is available through `--format json` and `--format csv`.
 
 The reviewed fine-grained scope catalog covers all 58 CCF-A conferences, all 117 TH-CPL-A venues, and all 53 CAS Zone 1 computer-science journals. Overlapping venues reuse one reviewed scope record, so these counts should not be added as unique entities.
 
-The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). A separate causally clean research derivative now covers the same 20,087-candidate universe: every research record is bounded by the 2026-03-31 cutoff, all warm/few-shot venues have paper-backed prototypes, and the P0-C frozen-run/leakage gates passed on all 4,791 exposed development queries. The ignored acquisition and research artifacts remain distinct from the reviewed product scope overlay above; these results establish the offline experimental baseline, not a validated SCOPE-Rank gain.
+The completed local candidate-side acquisition snapshot dated 2026-03-31 contains all 20,087 JCR Q1--Q4 venue profiles and historical-paper evidence for 19,593 venues (97.54%). A separate date-bounded, leakage-audited research derivative now covers the same 20,087-candidate universe: every research record is bounded by the 2026-03-31 cutoff, all warm/few-shot venues have paper-backed prototypes, and the P0-C frozen-run/leakage gates passed on all 4,791 exposed development queries. The ignored acquisition and research artifacts remain distinct from the reviewed product scope overlay above; these results establish the offline experimental baseline, not a validated SCOPE-Rank gain.
 
 Source details and validation rules are documented in [`data/README.md`](data/README.md). Ranking names, third-party data, and source descriptions remain subject to their respective terms.
 
@@ -269,7 +357,7 @@ python3 -m research evaluate \
   --config research/configs/cached_crossref_baselines.json
 ```
 
-The completed M3 engineering platform evaluates 11 lexical, dense, scientific-encoder, graph, LightRAG, cross-encoder, and hybrid methods through one interface. All methods share the 4,791-query development set, ordered 20,087-candidate universe, query order, metrics, and 55-pair statistical family. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, baselines, ablations, statistics, and claims boundary.
+The earlier M3 engineering study evaluates 11 lexical, dense, scientific-encoder, graph, LightRAG, cross-encoder, and hybrid methods through one interface. All methods share the 4,791-query development set, ordered 20,087-candidate universe, query order, metrics, and a 55-pair statistical family, separate from the final paper-fusion study’s 32 tests. See the [CCF-A research roadmap](docs/ccf-a-research-roadmap.md) for the task definition, baselines, ablations, statistics, and claims boundary.
 
 P0-A through P0-C and the M3 strong-baseline engineering platform are complete. The accepted clean-PCL runs bind the 4,791-query development set, ordered 20,087-candidate universe, exact inputs, configurations, code state, environment, and per-run sidecars; the leakage gate has zero critical findings. M3 and SCOPE-Rank use that same Search-free exposed development set. The learned SCOPE-Rank full method is significantly worse than the strongest M3 baseline there; fixed linear/RRF fusion does not establish a significant gain. See the [complete negative-result freeze](docs/scope-rank-results.md).
 
@@ -282,7 +370,7 @@ complete acquisition-evidence bundle. The legacy 500-paper files
 `99abb875...e0026c`) remain mode `0664` and lack that evidence, so the formal
 preflight rejects them; they cannot be relabeled as a formal evaluation.
 
-The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the evaluated LightRAG baseline and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic exact-namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described only as an **audited post-access namespace-repaired future evaluation**, not as clean confirmatory evidence that SCOPE-Rank works.
+The July 2026 future evaluation retains all 300 queries, the same 20,087 candidates, four frozen methods, and all six method pairs. Its learned SCOPE-Rank full result is again significantly worse, while the linear and RRF replacements are only numerically higher than the frozen graph/vector mix and are not statistically significant after correction. This evidence is explicitly **not a pristine single-pass sealed test**: the first evaluation attempt accessed labels and failed before metrics because of an identifier-namespace mismatch, and the published result uses a deterministic exact-namespace repair without changing predictions, methods, statistics, candidates, or the denominator. It must therefore be described only as an **audited post-access namespace-repaired future evaluation**, not as clean confirmatory evidence that SCOPE-Rank works.
 
 The blinded expert-review tools and materials are complete for 250 queries, 6,129 deduplicated review items, and three expert assignments. They contain **zero real annotations**; agreement and expert-effectiveness conclusions remain unavailable until human reviewers perform the evaluation.
 

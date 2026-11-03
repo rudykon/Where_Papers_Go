@@ -8,8 +8,8 @@
 <h1 align="center">Where Papers Go</h1>
 
 <p align="center">
-  <strong>面向明确主题与模糊研究想法的质量优先投稿目标检索</strong><br>
-  融合 LightRAG、精确向量召回、大模型推理与实时搜索证据的图谱推荐系统。
+  <strong>基于论文证据的期刊检索</strong><br>
+  结合期刊画像、历史论文与排序融合，提供投稿检索工具及可复核的论文实验。
 </p>
 
 <p align="center">
@@ -22,6 +22,7 @@
 
 <p align="center">
   <a href="#overview">项目概览</a> ·
+  <a href="#paper-study">论文与实验</a> ·
   <a href="#product-tour">功能展示</a> ·
   <a href="#retrieval-pipeline">检索流水线</a> ·
   <a href="#quick-start">快速开始</a> ·
@@ -43,12 +44,11 @@
 
 Where Papers Go 将论文题目、摘要、关键词或尚未定型的研究想法转换为会议与期刊推荐列表。系统同时面向明确的技术描述和跨学科、口语化的模糊表达，避免只靠关键词字典造成漏检。
 
-| 目标 | 实现方式 | 输出 |
+| 版本 | 方法 | 用途 |
 | --- | --- | --- |
-| 严格遵守投稿限制 | 按榜单、等级、会刊类型和研究方向硬过滤 | 只有符合范围的会刊进入召回 |
-| 覆盖多样主题表达 | LLM 意图解析 + 多语言向量 + LightRAG 图路径 + 查询自适应通道预算 | 对明确或模糊主题进行广泛召回 |
-| 推荐有事实依据 | Search API 证据 + 人工审核范围 + 已知会刊事实 | 输出带证据的真实候选，不由模型虚构会刊 |
-| 排名可以理解 | 多路融合、LLM 重排、前十结果解释 | 展示得分、概念命中、图路径和推荐理由 |
+| [浏览器演示](https://rudykon.github.io/Where_Papers_Go/) | 本地 BM25 + TF-IDF + 关键词图 | 无需 API 密钥的刊会查询与主题检索 |
+| [论文实验](#paper-study) | 论文 BM25 + SciNCL + 两层 RRF | 在 20,087 个期刊上进行离线原发表期刊找回 |
+| Python 应用 | LightRAG + 向量 + LLM + Search API | 配置服务后的在线检索与证据核对 |
 
 核心行为：
 
@@ -59,10 +59,99 @@ Where Papers Go 将论文题目、摘要、关键词或尚未定型的研究想�
 - 完整结果和 API 响应均可缓存；Web 端持续显示检索状态，并流式输出可用结果。
 - 在线查询使用可重建的文件化属性图谱，不需要 Neo4j 服务。
 
-<a id="product-tour"></a>
-## 功能展示与使用步骤
+<a id="paper-study"></a>
+## 论文研究
 
-Web 界面把主题描述、投稿范围、推荐结果和证据核验集中在一个响应式工作区中。
+**Where Papers Go: A Benchmark Study of Paper-Evidence Journal Retrieval**
+
+研究将期刊画像与历史论文证据结合，分别比较候选覆盖、原发表期刊找回和模型证据评估。
+
+<p align="center">
+  <a href="website/assets/paper-overview.png"><img src="website/assets/paper-overview.png" alt="检索流程与评价总览" width="100%"></a>
+</p>
+
+### 方法与数据
+
+- **固定证据**：20,087 个候选期刊、387,688 篇历史论文，每刊至多 20 篇，记录日期截止 2026-03-31。
+- **论文级检索**：BM25 与 SciNCL 各自检索，按每刊最高论文得分聚合，各保留 100 个期刊。
+- **两层 RRF**：先融合两路论文排名并截取前 100，再与完整 Base 期刊画像排名融合；两层均等权，参数为 60。外层论文通道预算固定，混合方法增加了稠密检索计算。
+
+<p align="center">
+  <a href="website/assets/paper-data.png"><img src="website/assets/paper-data.png" alt="数据划分、学科分区与文本长度" width="100%"></a>
+</p>
+
+4,791 条查询按发表日期划分：训练 1,086 条、验证 1,544 条、六月开发查询 2,161 条。六月样本覆盖 9 类学科与 4 个 JCR 分区；另有 300 条七月查询用于较早系统的评测。
+
+### 主要结果
+
+论文表 2：**2,161 条已在开发中使用的六月查询**；Hit 衡量原发表期刊找回，MRR 为原始值，— 为未报告。
+
+| 方法 | Hit@1 (%) | Hit@5 (%) | Hit@10 (%) | MRR@10 | 候选召回 (%) | 平均候选数 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Base | 3.38 | 11.15 | 16.01 | 0.0660 | 51.09 | 206.82 |
+| BM25（近期） | 6.89 | 17.63 | 23.65 | 0.1161 | — | — |
+| BM25（多样化） | 6.80 | 15.96 | 22.77 | 0.1089 | — | — |
+| SciNCL | 5.83 | 15.22 | 21.15 | 0.0986 | — | — |
+| Base + BM25 | 5.92 | 17.26 | 23.92 | 0.1082 | 71.36 | 281.68 |
+| Base + 多样化 BM25 | 6.25 | 17.35 | 23.60 | 0.1097 | 69.18 | 283.07 |
+| Base + SciNCL | 5.23 | 16.43 | 23.97 | 0.1003 | 70.48 | 276.97 |
+| Base + hybrid | 5.46 | 18.42 | 26.19 | 0.1098 | 72.98 | 277.37 |
+| Catalog CE | 2.59 | 10.00 | 18.37 | 0.0610 | — | — |
+| Catalog + papers CE | 3.47 | 13.47 | 22.21 | 0.0787 | — | — |
+
+Base + hybrid 的 Hit@10 为 **26.19%**，比 Base + BM25 高 **2.27 个百分点**（95% 配对区间 **[1.20, 3.29]**；Holm p = 0.0064，32 项检验）。近期 BM25 的 Hit@1（6.89%）和 MRR@10（0.1161）更高；两种交叉编码器重排均低于其 Base + BM25 输入。最终混合方法尚无独立未来期验证。
+
+<p align="center">
+  <a href="website/assets/paper-retrieval-depth.png"><img src="website/assets/paper-retrieval-depth.png" alt="排名深度与原发表期刊找回率" width="100%"></a>
+</p>
+
+图 6 只展示已测量的 k = 1、5、10、100。混合方法的 Hit@100 为 61.64%，完整候选并集召回率为 72.98%，体现了候选覆盖与最终排序之间的差距。
+
+<details>
+<summary>聚合对比、模型标注与案例（图 3、4、5、7、8）</summary>
+
+### 论文证据聚合
+
+<p align="center">
+  <a href="website/assets/paper-aggregation.png"><img src="website/assets/paper-aggregation.png" alt="论文证据的 max 与 mean 聚合" width="100%"></a>
+</p>
+
+固定各组索引与检索器后，max 聚合在 MRR@10、MRR@100 上均优于最多三篇论文得分的 mean 聚合。
+
+### 模型证据评估
+
+<p align="center">
+  <a href="website/assets/paper-task-format.png"><img src="website/assets/paper-task-format.png" alt="期刊找回与证据评估的输入输出" width="100%"></a>
+</p>
+
+18 条查询、54 个稿件–期刊对，由 3 个同家族模型在新上下文中分别评分，形成 **162 条模型判断、0 条人工判断**。两两完全一致率为 **79.63–87.04%**，加权 κ 为 **0.882–0.921**。这些数值衡量一致性；输入未提供官方政策文本，全部 162 条政策证据判断均为不足。
+
+<p align="center">
+  <a href="website/assets/paper-consistency.png"><img src="website/assets/paper-consistency.png" alt="模型评分分布与一致性" width="100%"></a>
+</p>
+
+### 案例分析
+
+<p align="center">
+  <a href="website/assets/paper-supported-cases.png"><img src="website/assets/paper-supported-cases.png" alt="模型一致支持的主题匹配案例" width="100%"></a>
+</p>
+
+家庭照护与代数几何示例的主题评分均为 3 / 3 / 3。
+
+<p align="center">
+  <a href="website/assets/paper-difficult-cases.png"><img src="website/assets/paper-difficult-cases.png" alt="模型分歧与主题不匹配案例" width="100%"></a>
+</p>
+
+入侵植物示例分别出现 2 / 3 / 3 的模型分歧和 0 / 0 / 0 的主题不匹配。案例按冻结条件与条目编号选取，未做人类适配性验证；四个示例的政策证据都不足。
+
+</details>
+
+[网页中的论文与实验](https://rudykon.github.io/Where_Papers_Go/#research) · [实验口径、全部表格与图表来源](docs/paper-study.md)
+
+<a id="product-tour"></a>
+## Python 应用展示
+
+Python 应用提供查询、投稿范围、推荐结果和证据核对，以下截图来自该服务。
 
 | 自然语言检索 | 全程可见进度 | 可核验推荐依据 |
 | --- | --- | --- |
@@ -104,18 +193,17 @@ flowchart LR
     I --> V[精确向量召回]
     I --> G[LightRAG mix 召回]
     I --> S[Search API 证据]
-    V --> A[离线 SCOPE-Rank 研究路径]
-    G --> A
-    S --> A
-    A --> M[候选融合]
+    V --> M[候选融合]
+    G --> M
     M --> R[双并发 LLM 重排]
+    S --> R
     R --> O[流式推荐结果]
     O --> E[前十结果解释]
 ```
 
 文件化属性图保存会刊、等级、主题、审核范围、排除边界和证据之间的节点与关系。CSV/TSV 是可审计事实源；属性图、向量、LightRAG 库和查询缓存都是可重建产物，不进入 Git。
 
-精确余弦召回使用启动时预加载的 NumPy 矩阵，同时保留标量实现用于质量回归对照。矩阵构建成本由 Web worker 启动阶段承担，不占用用户首次查询。
+精确余弦召回使用启动时预加载的 NumPy 矩阵，同时保留标量实现用于质量回归对照。矩阵构建成本由 Python 服务工作进程的启动阶段承担，不占用用户首次查询。
 
 评分、失败边界、缓存和存储设计详见[检索架构](docs/retrieval-architecture.md)。
 
@@ -226,7 +314,7 @@ where-paper-go \
 
 细粒度审核范围已覆盖全部 58 个 CCF-A 会议、117 个 TH-CPL-A 投稿目标和 53 个中科院 1 区计算机科学大类期刊。跨榜单重复会刊复用同一条审核范围，因此这些数量不能直接相加为唯一实体数。
 
-本地已完成截止 2026-03-31 的候选侧采集快照：20,087 个 JCR Q1--Q4 期刊画像全部存在，其中 19,593 个具有历史论文证据（97.54%）。独立的因果清洁研究派生集覆盖同一 20,087 候选空间：记录均受 2026-03-31 截止日限制，warm/few-shot 期刊具有论文证据原型，P0-C 冻结 run 和泄漏门禁已在 4,791 条暴露开发查询上通过。这些被 Git 忽略的采集/研究产物与上述产品审核 scope 仍是不同口径；它们建立离线实验基线，不代表 SCOPE-Rank 获得有效增益。
+本地已完成截止 2026-03-31 的候选侧采集快照：20,087 个 JCR Q1--Q4 期刊画像全部存在，其中 19,593 个具有历史论文证据（97.54%）。按记录日期约束并经过泄漏审计的研究派生集覆盖同一 20,087 候选空间：记录均受 2026-03-31 截止日限制，warm/few-shot 期刊具有论文证据原型，P0-C 冻结 run 和泄漏门禁已在 4,791 条暴露开发查询上通过。这些被 Git 忽略的采集/研究产物与上述产品审核 scope 仍是不同口径；它们建立离线实验基线，不代表 SCOPE-Rank 获得有效增益。
 
 数据来源与校验规则见 [`data/README.md`](data/README.md)。榜单名称、第三方数据和来源描述仍遵循各自的使用条款。
 
@@ -240,7 +328,7 @@ python3 -m scripts.benchmark_retrieval
 
 测试覆盖等级表达式、源记录数量、实体合并、图谱完整性、模糊图路径、精确语义召回、LightRAG 引用、API 约束、流式输出、缓存和代表性主题排序。
 
-### 无泄漏离线论文评测
+### 时间与泄漏审计的离线论文评测
 
 `research` 包将论文实验与在线产品链路隔离：它不导入、也不调用 LLM/Search 客户端，所有检索失败都保留在分母中，会刊档案冻结在训练截止日，并在评分前审计 DOI、标题和时间泄漏。
 
@@ -256,13 +344,13 @@ python3 -m research evaluate \
   --config research/configs/cached_crossref_baselines.json
 ```
 
-已完成的 M3 研究工程平台通过同一接口评测 11 种词法、稠密、科学文献编码器、图、LightRAG、cross-encoder 和混合方法。所有方法共享 4,791 条开发查询、按顺序冻结的 20,087 候选、查询顺序、指标和 55 对统计比较族。任务定义、强基线、消融、统计方法和结论边界见 [CCF-A 研究化路线图](docs/ccf-a-research-roadmap.md)。
+较早的 M3 研究工程实验通过同一接口评测 11 种词法、稠密、科学文献编码器、图、LightRAG、cross-encoder 和混合方法。所有方法共享 4,791 条开发查询、按顺序冻结的 20,087 候选、查询顺序、指标和 55 对统计比较族；该比较族与论文最终融合实验的 32 项检验不同。任务定义、强基线、消融、统计方法和结论边界见 [CCF-A 研究化路线图](docs/ccf-a-research-roadmap.md)。
 
 P0-A～P0-C 和 M3 强基线工程平台已完成。M3 与 SCOPE-Rank 共用 Search-free 暴露开发集；学习版 SCOPE-Rank full 显著弱于最强 M3 基线，linear/RRF 固定融合未建立显著增益。详见[完整负结果冻结](docs/scope-rank-results.md)。
 
 独立的 future 500-paper 正式采集和完整分母评测器的机器基础设施已完成，但尚未授权或执行新的实时 500-paper Search/LLM 运行。正式准入必须使用新采集、由当前用户控制且 mode-`0444` 的 dataset 和 builder manifest，并附完整 acquisition-evidence bundle。历史 500-paper 文件（`dataset.jsonl` SHA-256 `4c4d59dc...cbf65f1`，`manifest.json` SHA-256 `99abb875...e0026c`）仍为 mode `0664` 且缺少该证据，因此会被正式 preflight 拒绝，不得改称为正式评测。
 
-2026 年 7 月未来评测保留全部 300 条查询、同一 20,087 候选、4 种冻结方法和全部 6 对比较。SCOPE-Rank full 再次呈现显著负结果；linear 和 RRF 替代方案仅在数值上高于所评 LightRAG 基线，经多重比较校正后均不显著。该证据明确**不是 pristine single-pass sealed test**：首次评测已访问标签，随后因 ID 命名空间不一致在计算指标前 fail-closed；发布结果使用了确定性的精确 ID 命名空间修复，未改变预测、方法、统计、候选或分母。因此它只能称为**经审计的 post-access namespace-repaired future evaluation**，不能作为 SCOPE-Rank 有效的干净确证。
+2026 年 7 月未来评测保留全部 300 条查询、同一 20,087 候选、4 种冻结方法和全部 6 对比较。SCOPE-Rank full 再次呈现显著负结果；linear 和 RRF 替代方案仅在数值上高于冻结图/向量混合基线，经多重比较校正后均不显著。该证据明确**不是 pristine single-pass sealed test**：首次评测已访问标签，随后因 ID 命名空间不一致在计算指标前 fail-closed；发布结果使用了确定性的精确 ID 命名空间修复，未改变预测、方法、统计、候选或分母。因此它只能称为**经审计的 post-access namespace-repaired future evaluation**，不能作为 SCOPE-Rank 有效的干净确证。
 
 专家盲评工具与材料已完成：250 条查询、6,129 个去重评审项、3 份专家分配。当前真实标注数为 **0**，一致性和专家效果结论均待人工评测。
 
