@@ -74,10 +74,14 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory dist/github-pages
 会受到浏览器对 Worker 和数据请求的限制。
 
 静态源代码位于 `website/`，发布目录位于 `dist/github-pages/`。
-构建仅复制 HTML、样式、页面脚本、目录脚本、Worker、检索模块和图标七个显式文件，
+构建仅复制 HTML、样式、页面脚本、目录脚本、Worker、检索模块和图标等显式文件，
 并生成安全字段白名单目录及 `.nojekyll`。不会发布 API 配置、缓存、
 图谱与模型索引、原始本地路径或未经审核的自动范围文本。
 生成目录已由 `.gitignore` 排除。
+
+页眉、页脚和浏览器标签页使用项目的完整 logo，网页资源保存在
+`website/assets/Where-Papers-Go.svg`，来自仓库的 `docs/Where-Papers-Go.svg`。
+页面按原比例显示，深色主题下保留白色底衬，保证字标可读。
 
 独立验证入口：
 

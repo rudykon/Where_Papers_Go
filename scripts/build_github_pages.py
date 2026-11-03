@@ -35,6 +35,7 @@ STATIC_FILES = (
     "assets/search-worker.js",
     "assets/search-engine.js",
     "assets/favicon.svg",
+    "assets/Where-Papers-Go.svg",
 )
 GENERATED_FILES = ("assets/catalog.json", ".nojekyll")
 SOURCE_LABELS = {"ccf": "CCF", "th_cpl": "TH-CPL", "cas": "中科院", "jcr": "JCR"}
