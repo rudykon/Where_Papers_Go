@@ -153,39 +153,13 @@ Base + hybrid 的 Hit@10 为 **26.19%**，比 Base + BM25 高 **2.27 个百分�
 [网页中的论文与实验](https://rudykon.github.io/Where_Papers_Go/#research) · [实验口径、全部表格与图表来源](docs/paper-study.md)
 
 <a id="product-tour"></a>
-## Python 应用展示
+## 浏览器版展示
 
-Python 应用提供查询、投稿范围、推荐结果和证据核对，以下截图来自该服务。
-
-| 自然语言检索 | 全程可见进度 | 可核验推荐依据 |
-| --- | --- | --- |
-| 用明确或模糊表达描述论文，并组合投稿限制。 | 页面滚动到任意位置，底部检索进度仍保持可见。 | 打开任一结果，查看收稿边界、召回信号和外部证据。 |
-
-### 1. 描述研究并限定投稿范围
-
-输入论文题目、摘要或研究想法；需要限制等级、会刊类型、研究分类或返回数量时，再展开“投稿范围”。
+[打开浏览器版](https://rudykon.github.io/Where_Papers_Go/#recommend)，输入研究主题，按等级与范围筛选刊会，对照推荐结果及来源。
 
 <p align="center">
-  <img src="docs/screenshots/01-search-and-filters-zh.png" alt="中文检索页：输入分布式 GPU 研究主题并展开投稿范围筛选" width="94%">
+  <a href="docs/screenshots/01-search-and-filters-zh.png"><img src="docs/screenshots/01-search-and-filters-zh.png?v=5c59ef73" alt="当前浏览器版检索页：分布式并行计算研究主题与投稿范围筛选" width="100%"></a>
 </p>
-
-### 2. 边检索边查看推荐结果
-
-推荐结果会陆续进入页面；无论滚动到哪里，底部进度条都会显示 LLM 意图理解、向量召回、LightRAG 和 Search API 的状态。
-
-<p align="center">
-  <img src="docs/screenshots/02-ranked-results-zh.png" alt="中文推荐结果页与常驻显示的四阶段检索进度" width="94%">
-</p>
-
-### 3. 核对收稿范围与证据
-
-点击“查看收稿范围”，对照覆盖主题、明确排除方向、参与排序的检索信号和外部或官方证据，再决定是否投稿。
-
-<p align="center">
-  <img src="docs/screenshots/03-venue-details-zh.png" alt="中文会刊详情抽屉：展示覆盖主题、排除方向、检索信号与外部证据" width="94%">
-</p>
-
-<p align="center"><sub>截图来自当前运行系统的缓存示例查询；源数据和 API 更新后，推荐顺序与证据可能变化。</sub></p>
 
 <a id="retrieval-pipeline"></a>
 ## 检索流水线
