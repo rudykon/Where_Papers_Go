@@ -44,6 +44,10 @@
 
 Where Papers Go 将论文题目、摘要、关键词或尚未定型的研究想法转换为会议与期刊推荐列表。系统同时面向明确的技术描述和跨学科、口语化的模糊表达，避免只靠关键词字典造成漏检。
 
+<p align="center">
+  <a href="website/assets/research-to-venue.webp"><img src="website/assets/research-to-venue.webp" alt="从论文摘要出发，比较期刊与会议，形成投稿候选清单" width="100%"></a>
+</p>
+
 | 版本 | 方法 | 用途 |
 | --- | --- | --- |
 | [浏览器演示](https://rudykon.github.io/Where_Papers_Go/) | 本地 BM25 + TF-IDF + 关键词图 | 无需 API 密钥的刊会查询与主题检索 |

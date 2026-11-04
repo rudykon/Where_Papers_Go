@@ -45,6 +45,10 @@ See [build, deployment, and algorithm details](docs/github-pages.md).
 
 Where Papers Go turns a paper title, abstract, keyword set, or early research idea into a ranked list of conferences and journals. It is designed for both precise technical descriptions and fuzzy, cross-domain expressions that keyword dictionaries alone cannot cover.
 
+<p align="center">
+  <a href="website/assets/research-to-venue.webp"><img src="website/assets/research-to-venue.webp" alt="From a research manuscript to a shortlist of journals and conferences" width="100%"></a>
+</p>
+
 | Edition | Method | Purpose |
 | --- | --- | --- |
 | [Browser demo](https://rudykon.github.io/Where_Papers_Go/) | Local BM25 + TF-IDF + keyword graph | Venue lookup and topic search without API keys |
