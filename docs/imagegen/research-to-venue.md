@@ -1,15 +1,24 @@
 # Homepage illustration: research to venue
 
-Generated with the built-in imagegen tool on 2026-11-03.
+## Current asset — 2026-11-04
 
 - Use: homepage overview hero.
 - Asset: [research-to-venue.webp](../../website/assets/research-to-venue.webp), 1536 × 1024.
-- Style reference: [paper-overview.png](../../website/assets/paper-overview.png).
-- Delivery: lossless WebP; decoded pixels are identical to the generated PNG.
-- The illustration shows preparing a manuscript, comparing topic/rank/scope, and reviewing a submission shortlist.
-- The original paper figure remains in the paper method section and documentation.
+- Source supplied by the project owner: `manuscript/2026-10-25-illustrated-v2/figures/fig0-Research_Workflow_Final.pdf`, page 1.
+- Source PDF SHA-256: `c72d1ee3d97f0693d08269d76e86615e268b0a25893c91913efc865456fb90ff`.
+- Published WebP SHA-256: `6c2db4b9e8389803e64f7a1c6f0f26ff4b56e2b718c9dd9901f9fa24010aeefb`.
+- Export: render the PDF at 1536 × 1024 with Poppler, then encode lossless WebP. Decoded pixels match the rendered PNG.
+- The image URL is unchanged; the homepage uses a content version query to refresh cached copies.
 
-## Final prompt
+Render command:
+
+```bash
+pdftoppm -png -singlefile -scale-to 1536 manuscript/2026-10-25-illustrated-v2/figures/fig0-Research_Workflow_Final.pdf /tmp/wpg-fig0-research-workflow
+```
+
+## Archived imagegen prompt — 2026-11-03
+
+The initial illustration was generated with the built-in imagegen tool using [paper-overview.png](../../website/assets/paper-overview.png) as a style reference. It was replaced by the supplied PDF export on 2026-11-04. The prompt below records that earlier version.
 
 ```text
 Use case: infographic-diagram.
