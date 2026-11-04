@@ -21,7 +21,7 @@ estimates:
 - P0-A through P0-C remain complete and all exit gates passed;
 - Stage A's historical user service remains enabled and active. On 2026-09-01
   the user explicitly authorized its temporary direct all-client LAN binding at
-  `0.0.0.0:8765`; the current host address is `192.0.2.155/24`. That installed
+  `0.0.0.0:8765`; the current host address is `<PRIVATE_LAN_ADDRESS>`. That installed
   predecessor still has no Nginx TLS/front-door authentication. Do not restart
   it into the successor loopback configuration until the proxy is active, and
   never describe the direct listener as Internet-hardened. The current successor
@@ -177,7 +177,7 @@ service keeps the same private runtime generation and shared quota state but
 uses `WPG_HOST=0.0.0.0`, `WPG_PORT=8765`, and
 an unrestricted historical client CIDR. That policy is recorded only to explain
 the installed predecessor and must not be copied into a new render; the bounded
-direct fallback is `192.0.2.0/24`. The successor immutable-source/runtime
+direct fallback is `<PRIVATE_LAN_CIDR>`. The successor immutable-source/runtime
 unit, process closeout proof, and append-only deployment-reproof workflow are
 specified later in this section. The immutable v3 closeout proves only the
 predecessor; no successor closeout exists before merge and deployment.
@@ -582,7 +582,7 @@ P0-B clean corpus result:
 P0-C formal acceptance result:
 
 - command from the repository root:
-  `/home/USER/miniconda3/bin/python -m research evaluate --config research/configs/p0c_clean_pcl_acceptance.json`;
+  `python3 -m research evaluate --config research/configs/p0c_clean_pcl_acceptance.json`;
 - successful artifact:
   `benchmark_artifacts/p0c_acceptance_20260824/clean_pcl_lexical_v2/`;
 - acceptance manifest SHA-256:

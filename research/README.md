@@ -250,7 +250,7 @@ revision、最小推理文件集合及约 3.188 GB 的规划估计。以下命�
 python -m research materialize-model-assets \
   --config research/configs/m3_official_model_assets.json \
   --output-root benchmark_artifacts/m3_model_assets_20260828 \
-  --hf-cli /home/USER/.cache/adodas_venv/bin/hf
+  --hf-cli /absolute/path/to/venv/bin/hf
 ```
 
 只有收到明确下载授权后，才可在同一命令追加：
@@ -259,7 +259,7 @@ python -m research materialize-model-assets \
 python -m research materialize-model-assets \
   --config research/configs/m3_official_model_assets.json \
   --output-root benchmark_artifacts/m3_model_assets_20260828 \
-  --hf-cli /home/USER/.cache/adodas_venv/bin/hf \
+  --hf-cli /absolute/path/to/venv/bin/hf \
   --execute \
   --authorization-reference '<non-secret authorization audit ID>'
 ```

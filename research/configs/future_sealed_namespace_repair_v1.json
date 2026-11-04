@@ -74,7 +74,7 @@
   },
   "first_attempt": {
     "record": {
-      "path": "future_sealed_evaluation_first_attempt_v1.json",
+      "path": "../../benchmark_artifacts/private-provenance/future_sealed_evaluation_first_attempt_v1.json",
       "sha256": "cd42393f21f0ce07a0fe3c955925f349a63d02c440a36ffadab322e9f801161b",
       "bytes": 3335,
       "required_mode": "0444"
@@ -134,5 +134,8 @@
     "embedding_calls": 0,
     "estimated_external_cost_usd": 0,
     "pristine_single_pass_sealed_test": false
+  },
+  "privacy_redaction": {
+    "note": "Only the location of the original first-attempt record changed to private storage; its expected digest and all scientific settings are preserved. This public configuration is a privacy-redacted derivative of the historical protocol."
   }
 }

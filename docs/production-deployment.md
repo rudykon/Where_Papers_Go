@@ -11,7 +11,7 @@ This subsection freezes the 2026-08-30 loopback evidence. A later 2026-09-01
 direct-LAN listener temporarily used an unrestricted client policy. That policy
 is **deprecated and must not be copied into a current render**. The only current
 direct-LAN fallback is the explicitly bounded `0.0.0.0:8765` listener for
-`192.0.2.0/24`, with proxy-header trust disabled. It has no Nginx TLS or
+`<PRIVATE_LAN_CIDR>`, with proxy-header trust disabled. It has no Nginx TLS or
 front-door authentication and is not the primary production topology. Use the
 immutable-source/runtime procedure and latest closeout below for current
 identity; retain the older hashes and PIDs only as historical evidence.

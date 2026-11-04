@@ -54,3 +54,9 @@ benchmark_artifacts/
 paper/
 papers/*
 !papers/README.md
+
+# Local author forms, draft history, browser traces, and private audit records.
+manuscript/
+.playwright-mcp/
+.privacy-audit/
+docs/refer/

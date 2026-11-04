@@ -9,7 +9,7 @@
     "artifact_integrity_source": "sha256_recalculated_after_failure"
   },
   "command": [
-    "/home/USER/miniconda3/bin/python",
+    "python3",
     "-m",
     "research",
     "evaluate-sealed-test",
@@ -78,5 +78,14 @@
     "original_output_directory_must_not_be_changed_to_bypass_gate": true,
     "post_access_repair_requires_separate_frozen_protocol": true,
     "pristine_single_pass_sealed_test": false
+  },
+  "privacy_redaction": {
+    "status": "public_redacted_copy",
+    "redacted_fields": [
+      "command interpreter path"
+    ],
+    "original_record_sha256": "cd42393f21f0ce07a0fe3c955925f349a63d02c440a36ffadab322e9f801161b",
+    "original_record_path": "../../benchmark_artifacts/private-provenance/future_sealed_evaluation_first_attempt_v1.json",
+    "note": "The original failure evidence is retained privately. This redacted display copy is not a replacement for the original hash-bound record."
   }
 }
